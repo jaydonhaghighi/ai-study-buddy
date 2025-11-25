@@ -423,6 +423,9 @@
 .message-text {
   font-size: 0.95rem;
   line-height: 1.5;
+}
+
+.message-text .plain-text {
   white-space: pre-wrap;
 }
 

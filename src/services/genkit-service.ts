@@ -33,7 +33,8 @@ const getFunctionsUrl = () => {
 export async function getAIResponse(
   userMessage: string,
   sessionId: string,
-  userId: string
+  userId: string,
+  onChunk?: (text: string) => void
 ): Promise<AIResponse> {
   const functionsUrl = getFunctionsUrl();
 
@@ -55,12 +56,61 @@ export async function getAIResponse(
       throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
     }
 
-    const data = await response.json();
-    return {
-      text: data.text,
-      model: data.model || 'gemini-1.5-flash',
-      sessionId: data.sessionId || sessionId,
-    };
+    if (response.headers.get('content-type')?.includes('text/event-stream')) {
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let fullText = '';
+      let buffer = '';
+
+      if (!reader) {
+        throw new Error('Response body is not readable');
+      }
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (data.done) {
+                return {
+                  text: data.fullText || fullText,
+                  model: data.model || 'gemini-2.0-flash-exp',
+                  sessionId: data.sessionId || sessionId,
+                };
+              }
+              if (data.text) {
+                fullText += data.text;
+                if (onChunk) {
+                  onChunk(data.text);
+                }
+              }
+            } catch (e) {
+              console.error('Error parsing SSE data:', e);
+            }
+          }
+        }
+      }
+
+      return {
+        text: fullText,
+        model: 'gemini-2.0-flash-exp',
+        sessionId: sessionId,
+      };
+    } else {
+      const data = await response.json();
+      return {
+        text: data.text,
+        model: data.model || 'gemini-2.5-flash',
+        sessionId: data.sessionId || sessionId,
+      };
+    }
   } catch (error) {
     if (error instanceof Error) {
       throw error;

@@ -3,13 +3,14 @@ import { initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import { genkit } from "genkit/beta";
 import { googleAI } from "@genkit-ai/googleai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 initializeApp();
 const db = getFirestore();
 const ai = genkit({
     plugins: [googleAI({
             apiKey: process.env.GOOGLE_GENAI_API_KEY || "",
         })],
-    model: googleAI.model("gemini-1.5-flash"),
+    model: googleAI.model("gemini-2.5-flash"),
 });
 class FirestoreSessionStore {
     async get(sessionId) {
@@ -19,10 +20,21 @@ class FirestoreSessionStore {
                 return undefined;
             }
             const data = sessionDoc.data();
-            return {
+            const sessionData = {
                 id: sessionId,
                 state: (data?.state || {}),
             };
+            if (data?.threads) {
+                sessionData.threads = data.threads;
+                console.log("Loaded session with threads:", {
+                    sessionId,
+                    threadCount: Object.keys(data.threads).length,
+                });
+            }
+            else {
+                console.log("Loaded session without threads:", sessionId);
+            }
+            return sessionData;
         }
         catch (error) {
             console.error("Error loading session:", error);
@@ -31,11 +43,22 @@ class FirestoreSessionStore {
     }
     async save(sessionId, data) {
         try {
-            await db.collection("genkit_sessions").doc(sessionId).set({
+            const saveData = {
                 id: sessionId,
                 state: data.state || {},
                 updatedAt: new Date(),
-            }, { merge: true });
+            };
+            const dataAny = data;
+            if (dataAny.threads) {
+                saveData.threads = dataAny.threads;
+            }
+            console.log("Saving session with threads:", {
+                sessionId,
+                hasThreads: !!dataAny.threads,
+                threadCount: dataAny.threads ? Object.keys(dataAny.threads).length : 0,
+            });
+            await db.collection("genkit_sessions").doc(sessionId).set(saveData, { merge: true });
+            console.log("Session saved successfully with history");
         }
         catch (error) {
             console.error("Error saving session:", error);
@@ -59,23 +82,58 @@ export const chat = onRequest({
             res.status(400).json({ error: "Missing required fields: sessionId, message, userId" });
             return;
         }
+        console.log("Loading session:", sessionId);
         let session = await ai.loadSession(sessionId, {
             store: sessionStore,
         });
         if (!session) {
-            session = ai.createSession({
-                store: sessionStore,
+            console.error("Session not found:", sessionId);
+            res.status(404).json({
+                error: "Session not found. The session may have been deleted or never created.",
+                sessionId: sessionId
             });
+            return;
         }
+        console.log("Loaded existing session:", session.id);
         const chat = session.chat({
-            system: "You are a helpful AI study buddy. You help students learn, answer questions, and provide educational support. Be friendly, encouraging, and clear in your explanations.",
+            model: googleAI.model("gemini-2.5-flash"),
+            system: "You are a helpful AI study buddy. You help students learn, answer questions, and provide educational support. Be friendly, encouraging, and clear in your explanations. Format your responses using Markdown for better readability: use **bold** for emphasis, `code blocks` for code examples, numbered or bulleted lists for steps, and headings for organizing information.",
         });
-        const { text } = await chat.send(message);
-        res.json({
-            text: text,
-            model: "gemini-1.5-flash",
-            sessionId: session.id,
+        const apiKey = process.env.GOOGLE_GENAI_API_KEY || "";
+        const genAI = new GoogleGenerativeAI(apiKey);
+        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
+        const sessionDoc = await db.collection("genkit_sessions").doc(session.id).get();
+        const sessionData = sessionDoc.data();
+        const threads = sessionData?.threads || {};
+        const threadKeys = Object.keys(threads);
+        const history = threadKeys.length > 0 ? threads[threadKeys[0]] : [];
+        const chatHistory = history.map((h) => ({
+            role: h.role === "user" ? "user" : "model",
+            parts: [{ text: h.content || h.text || "" }],
+        }));
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        let fullText = '';
+        const streamingChat = model.startChat({
+            history: chatHistory,
+            generationConfig: {
+                temperature: 0.7,
+            },
         });
+        const result = await streamingChat.sendMessageStream(message);
+        for await (const chunk of result.stream) {
+            const chunkText = chunk.text();
+            if (chunkText) {
+                fullText += chunkText;
+                res.write(`data: ${JSON.stringify({ text: chunkText, done: false })}\n\n`);
+            }
+        }
+        await chat.send(message);
+        console.log("Message sent, session should be auto-saved by Genkit");
+        res.write(`data: ${JSON.stringify({ text: '', done: true, model: "gemini-2.0-flash-exp", sessionId: session.id, fullText: fullText })}\n\n`);
+        res.end();
     }
     catch (error) {
         console.error("Chat error:", error);
@@ -102,6 +160,12 @@ export const createSession = onRequest({
         const session = ai.createSession({
             store: sessionStore,
         });
+        console.log("Created new Genkit session:", session.id);
+        await sessionStore.save(session.id, {
+            id: session.id,
+            state: {},
+        });
+        console.log("Session saved to Firestore:", session.id);
         await db.collection("sessions").doc(session.id).set({
             id: session.id,
             name: sessionName || `Chat ${Date.now()}`,

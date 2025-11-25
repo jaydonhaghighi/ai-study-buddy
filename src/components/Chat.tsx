@@ -15,6 +15,7 @@ import {
   doc
 } from 'firebase/firestore';
 import { getAIResponse, createGenkitSession } from '../services/genkit-service';
+import MarkdownMessage from './MarkdownMessage';
 import './Chat.css';
 
 interface Message {
@@ -201,7 +202,35 @@ export default function Chat({ user }: ChatProps) {
       await updateSessionLastMessage(currentSessionId);
 
       try {
-        const aiResponse = await getAIResponse(userMessage, currentSessionId, user.uid);
+        let streamingText = '';
+        const tempMessageId = `temp-${Date.now()}`;
+        const tempMessage: Message = {
+          id: tempMessageId,
+          text: '',
+          userId: user.uid,
+          userName: 'AI Study Buddy',
+          sessionId: currentSessionId,
+          createdAt: Timestamp.now().toDate(),
+          isAI: true,
+          model: 'gemini-2.0-flash-exp'
+        };
+        setMessages(prev => [...prev, tempMessage]);
+
+        const aiResponse = await getAIResponse(
+          userMessage, 
+          currentSessionId, 
+          user.uid,
+          (chunk: string) => {
+            streamingText += chunk;
+            setMessages(prev => prev.map(msg => 
+              msg.id === tempMessageId 
+                ? { ...msg, text: streamingText }
+                : msg
+            ));
+          }
+        );
+        
+        setMessages(prev => prev.filter(msg => msg.id !== tempMessageId));
         
         await addDoc(collection(db, 'messages'), {
           text: aiResponse.text,
@@ -217,7 +246,7 @@ export default function Chat({ user }: ChatProps) {
       } catch (aiError) {
         const errorMessage = aiError instanceof Error 
           ? `Error: ${aiError.message}` 
-          : 'Sorry, I encountered an error. Please check your OpenAI API key configuration.';
+          : 'Sorry, I encountered an error. Please check your Google AI API key configuration.';
         
         await addDoc(collection(db, 'messages'), {
           text: errorMessage,
@@ -495,7 +524,13 @@ export default function Chat({ user }: ChatProps) {
                   </span>
                 )}
               </div>
-              <div className="message-text">{message.text}</div>
+              <div className="message-text">
+                {message.isAI ? (
+                  <MarkdownMessage content={message.text} isAI={true} />
+                ) : (
+                  <div className="plain-text">{message.text}</div>
+                )}
+              </div>
               </div>
             </div>
           ))
