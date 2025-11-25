@@ -14,7 +14,7 @@ import {
   updateDoc,
   doc
 } from 'firebase/firestore';
-import { getAIResponse } from '../services/openai';
+import { getAIResponse, createGenkitSession } from '../services/genkit-service';
 import './Chat.css';
 
 interface Message {
@@ -104,16 +104,29 @@ export default function Chat({ user }: ChatProps) {
         hasCreatedDefaultRef.current = true;
         const createDefaultSession = async () => {
           try {
-            const newSession = await addDoc(collection(db, 'sessions'), {
-              name: 'Chat 1',
+            const genkitSession = await createGenkitSession(user.uid, 'Chat 1');
+            await addDoc(collection(db, 'sessions'), {
+              id: genkitSession.sessionId,
+              name: genkitSession.name,
               userId: user.uid,
               createdAt: serverTimestamp(),
               lastMessageAt: serverTimestamp()
             });
-            setCurrentSessionId(newSession.id);
+            setCurrentSessionId(genkitSession.sessionId);
           } catch (error) {
             console.error('Error creating default session:', error);
             hasCreatedDefaultRef.current = false;
+            try {
+              const newSession = await addDoc(collection(db, 'sessions'), {
+                name: 'Chat 1',
+                userId: user.uid,
+                createdAt: serverTimestamp(),
+                lastMessageAt: serverTimestamp()
+              });
+              setCurrentSessionId(newSession.id);
+            } catch (fallbackError) {
+              console.error('Error creating fallback default session:', fallbackError);
+            }
           }
         };
         createDefaultSession();
@@ -187,14 +200,8 @@ export default function Chat({ user }: ChatProps) {
 
       await updateSessionLastMessage(currentSessionId);
 
-      const recentMessages = messages.slice(-10);
-      const conversationHistory = recentMessages.map(msg => ({
-        role: (!msg.isAI ? 'user' : 'assistant') as 'user' | 'assistant',
-        content: msg.text
-      }));
-
       try {
-        const aiResponse = await getAIResponse(userMessage, conversationHistory);
+        const aiResponse = await getAIResponse(userMessage, currentSessionId, user.uid);
         
         await addDoc(collection(db, 'messages'), {
           text: aiResponse.text,
@@ -247,16 +254,31 @@ export default function Chat({ user }: ChatProps) {
     const sessionName = name || `Chat ${sessions.length + 1}`;
     
     try {
-      const newSession = await addDoc(collection(db, 'sessions'), {
-        name: sessionName,
+      const genkitSession = await createGenkitSession(user.uid, sessionName);
+      
+      await addDoc(collection(db, 'sessions'), {
+        id: genkitSession.sessionId,
+        name: genkitSession.name,
         userId: user.uid,
         createdAt: serverTimestamp(),
         lastMessageAt: serverTimestamp()
       });
 
-      setCurrentSessionId(newSession.id);
+      setCurrentSessionId(genkitSession.sessionId);
     } catch (error) {
       console.error('Error creating session:', error);
+      const sessionName = name || `Chat ${sessions.length + 1}`;
+      try {
+        const newSession = await addDoc(collection(db, 'sessions'), {
+          name: sessionName,
+          userId: user.uid,
+          createdAt: serverTimestamp(),
+          lastMessageAt: serverTimestamp()
+        });
+        setCurrentSessionId(newSession.id);
+      } catch (fallbackError) {
+        console.error('Error creating fallback session:', fallbackError);
+      }
     }
   };
 
