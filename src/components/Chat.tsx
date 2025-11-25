@@ -14,8 +14,7 @@ import {
   updateDoc,
   doc
 } from 'firebase/firestore';
-import { getAIResponse, createGenkitSession } from '../services/genkit-service';
-import MarkdownMessage from './MarkdownMessage';
+import { getAIResponse, createGenkitChat } from '../services/genkit-service';
 import './Chat.css';
 
 interface Message {
@@ -23,14 +22,30 @@ interface Message {
   text: string;
   userId: string;
   userName: string;
-  sessionId: string;
+  sessionId: string; // This corresponds to chatId now
   createdAt: Date | null;
   isAI?: boolean;
   model?: string;
 }
 
+interface Course {
+  id: string;
+  name: string;
+  userId: string;
+}
+
+interface Session {
+  id: string;
+  courseId: string;
+  name: string;
+  userId: string;
+  createdAt: Date | null;
+}
+
 interface ChatSession {
   id: string;
+  sessionId: string;
+  courseId: string;
   name: string;
   userId: string;
   createdAt: Date | null;
@@ -42,20 +57,39 @@ interface ChatProps {
 }
 
 export default function Chat({ user }: ChatProps) {
+  // Navigation State
+  const [courses, setCourses] = useState<Course[]>([]);
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [chats, setChats] = useState<ChatSession[]>([]);
+  
+  const [expandedCourseId, setExpandedCourseId] = useState<string | null>(null);
+  const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null);
+  const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
+
+  // Chat State
   const [messages, setMessages] = useState<Message[]>([]);
-  const [sessions, setSessions] = useState<ChatSession[]>([]);
-  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  
+  // Auth State
   const [showAuth, setShowAuth] = useState(false);
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [isSignUp, setIsSignUp] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
+
+  // UI State
+  const [isCreatingCourse, setIsCreatingCourse] = useState(false);
+  const [newCourseName, setNewCourseName] = useState('');
+  const [isCreatingSession, setIsCreatingSession] = useState(false);
+  const [newSessionName, setNewSessionName] = useState('');
+  
+  const [editingChatId, setEditingChatId] = useState<string | null>(null);
+  const [editChatName, setEditChatName] = useState('');
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
-  const hasCreatedDefaultRef = useRef(false);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -65,266 +99,252 @@ export default function Chat({ user }: ChatProps) {
     scrollToBottom();
   }, [messages]);
 
+  // 1. Fetch Courses
   useEffect(() => {
     if (!user) {
-      setMessages([]);
-      setSessions([]);
-      setCurrentSessionId(null);
-      hasCreatedDefaultRef.current = false;
+      setCourses([]);
       return;
     }
 
-    const sessionsQuery = query(
+    const q = query(
+      collection(db, 'courses'),
+      where('userId', '==', user.uid),
+      orderBy('name', 'asc')
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      setCourses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Course)));
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // 2. Fetch Sessions (when a course is expanded)
+  useEffect(() => {
+    if (!user || !expandedCourseId) {
+      setSessions([]);
+      return;
+    }
+
+    const q = query(
       collection(db, 'sessions'),
       where('userId', '==', user.uid),
+      where('courseId', '==', expandedCourseId),
+      orderBy('createdAt', 'desc')
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      setSessions(snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          ...data,
+          createdAt: data.createdAt instanceof Timestamp ? data.createdAt.toDate() : null
+        } as Session;
+      }));
+    });
+
+    return () => unsubscribe();
+  }, [user, expandedCourseId]);
+
+  // 3. Fetch Chats (when a session is expanded)
+  useEffect(() => {
+    if (!user || !expandedSessionId) {
+      setChats([]);
+      return;
+    }
+
+    const q = query(
+      collection(db, 'chats'),
+      where('userId', '==', user.uid),
+      where('sessionId', '==', expandedSessionId),
       orderBy('lastMessageAt', 'desc')
     );
 
-    const unsubscribeSessions = onSnapshot(sessionsQuery, (querySnapshot) => {
-      const newSessions: ChatSession[] = [];
-      querySnapshot.forEach((doc) => {
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      setChats(snapshot.docs.map(doc => {
         const data = doc.data();
-        newSessions.push({
+        return {
           id: doc.id,
-          name: data.name || 'New Chat',
-          userId: data.userId,
-          createdAt: data.createdAt instanceof Timestamp 
-            ? data.createdAt.toDate() 
-            : null,
-          lastMessageAt: data.lastMessageAt instanceof Timestamp 
-            ? data.lastMessageAt.toDate() 
-            : null
-        });
-      });
-      setSessions(newSessions);
-
-      if (newSessions.length > 0 && !currentSessionId) {
-        setCurrentSessionId(newSessions[0].id);
-        hasCreatedDefaultRef.current = false;
-      } else if (newSessions.length === 0 && user && !currentSessionId && !hasCreatedDefaultRef.current) {
-        hasCreatedDefaultRef.current = true;
-        const createDefaultSession = async () => {
-          try {
-            const genkitSession = await createGenkitSession(user.uid, 'Chat 1');
-            await addDoc(collection(db, 'sessions'), {
-              id: genkitSession.sessionId,
-              name: genkitSession.name,
-              userId: user.uid,
-              createdAt: serverTimestamp(),
-              lastMessageAt: serverTimestamp()
-            });
-            setCurrentSessionId(genkitSession.sessionId);
-          } catch (error) {
-            console.error('Error creating default session:', error);
-            hasCreatedDefaultRef.current = false;
-            try {
-              const newSession = await addDoc(collection(db, 'sessions'), {
-                name: 'Chat 1',
-                userId: user.uid,
-                createdAt: serverTimestamp(),
-                lastMessageAt: serverTimestamp()
-              });
-              setCurrentSessionId(newSession.id);
-            } catch (fallbackError) {
-              console.error('Error creating fallback default session:', fallbackError);
-            }
-          }
-        };
-        createDefaultSession();
-      }
+          ...data,
+          createdAt: data.createdAt instanceof Timestamp ? data.createdAt.toDate() : null,
+          lastMessageAt: data.lastMessageAt instanceof Timestamp ? data.lastMessageAt.toDate() : null
+        } as ChatSession;
+      }));
     });
 
-    return () => unsubscribeSessions();
-  }, [user]);
+    return () => unsubscribe();
+  }, [user, expandedSessionId]);
 
+  // 4. Fetch Messages (when a chat is selected)
   useEffect(() => {
-    if (!user || !currentSessionId) {
+    if (!user || !selectedChatId) {
       setMessages([]);
       return;
     }
 
-    const messagesQuery = query(
+    const q = query(
       collection(db, 'messages'),
-      where('sessionId', '==', currentSessionId),
+      where('sessionId', '==', selectedChatId),
       where('userId', '==', user.uid),
       orderBy('createdAt', 'asc')
     );
 
-    const unsubscribe = onSnapshot(messagesQuery, (querySnapshot) => {
-      const newMessages: Message[] = [];
-      querySnapshot.forEach((doc) => {
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const msgs: Message[] = [];
+      snapshot.forEach((doc) => {
         const data = doc.data();
-        
         let messageText = data.text;
         if (typeof messageText === 'object' && messageText !== null) {
           messageText = messageText.text || messageText.content || JSON.stringify(messageText);
         }
-        messageText = String(messageText || '');
-        
-        newMessages.push({
+        msgs.push({
           id: doc.id,
-          text: messageText,
+          text: String(messageText || ''),
           userId: data.userId,
           userName: data.userName || 'User',
           sessionId: data.sessionId,
-          createdAt: data.createdAt instanceof Timestamp 
-            ? data.createdAt.toDate() 
-            : null,
+          createdAt: data.createdAt instanceof Timestamp ? data.createdAt.toDate() : null,
           isAI: data.isAI || false,
-          model: data.model || undefined
+          model: data.model
         });
       });
-      setMessages(newMessages);
+      setMessages(msgs);
     });
 
     return () => unsubscribe();
-  }, [user, currentSessionId]);
+  }, [user, selectedChatId]);
+
+  // Actions
+  const handleCreateCourse = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user || !newCourseName.trim()) return;
+    try {
+      await addDoc(collection(db, 'courses'), {
+        userId: user.uid,
+        name: newCourseName.trim(),
+        createdAt: serverTimestamp()
+      });
+      setNewCourseName('');
+      setIsCreatingCourse(false);
+    } catch (error) {
+      console.error("Error creating course:", error);
+    }
+  };
+
+  const handleCreateSession = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user || !expandedCourseId || !newSessionName.trim()) return;
+    try {
+      const docRef = await addDoc(collection(db, 'sessions'), {
+        userId: user.uid,
+        courseId: expandedCourseId,
+        name: newSessionName.trim(),
+        createdAt: serverTimestamp(),
+        focusScore: 0
+      });
+      setNewSessionName('');
+      setIsCreatingSession(false);
+      setExpandedSessionId(docRef.id); // Auto expand
+    } catch (error) {
+      console.error("Error creating session:", error);
+    }
+  };
+
+  const handleCreateChat = async () => {
+    if (!user || !expandedCourseId || !expandedSessionId) return;
+    try {
+      const chat = await createGenkitChat(user.uid, expandedCourseId, expandedSessionId, 'New Chat');
+      setSelectedChatId(chat.chatId);
+    } catch (error) {
+      console.error("Error creating chat:", error);
+    }
+  };
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    if (!input.trim() || !user || !currentSessionId) return;
+    if (!input.trim() || !user || !selectedChatId) return;
 
     const userMessage = input.trim();
     setInput('');
     setLoading(true);
 
     try {
+      // Save user message
       await addDoc(collection(db, 'messages'), {
         text: userMessage,
         userId: user.uid,
         userName: user.email?.split('@')[0] || 'User',
-        sessionId: currentSessionId,
+        sessionId: selectedChatId,
         createdAt: serverTimestamp(),
         isAI: false
       });
 
-      await updateSessionLastMessage(currentSessionId);
-
-      try {
-        let streamingText = '';
-        const tempMessageId = `temp-${Date.now()}`;
-        const tempMessage: Message = {
-          id: tempMessageId,
-          text: '',
-          userId: user.uid,
-          userName: 'AI Study Buddy',
-          sessionId: currentSessionId,
-          createdAt: Timestamp.now().toDate(),
-          isAI: true,
-          model: 'gemini-2.0-flash-exp'
-        };
-        setMessages(prev => [...prev, tempMessage]);
-
-        const aiResponse = await getAIResponse(
-          userMessage, 
-          currentSessionId, 
-          user.uid,
-          (chunk: string) => {
-            streamingText += chunk;
-            setMessages(prev => prev.map(msg => 
-              msg.id === tempMessageId 
-                ? { ...msg, text: streamingText }
-                : msg
-            ));
-          }
-        );
-        
-        setMessages(prev => prev.filter(msg => msg.id !== tempMessageId));
-        
-        await addDoc(collection(db, 'messages'), {
-          text: aiResponse.text,
-          userId: user.uid,
-          userName: 'AI Study Buddy',
-          sessionId: currentSessionId,
-          createdAt: serverTimestamp(),
-          isAI: true,
-          model: aiResponse.model
-        });
-
-        await updateSessionLastMessage(currentSessionId);
-      } catch (aiError) {
-        const errorMessage = aiError instanceof Error 
-          ? `Error: ${aiError.message}` 
-          : 'Sorry, I encountered an error. Please check your Google AI API key configuration.';
-        
-        await addDoc(collection(db, 'messages'), {
-          text: errorMessage,
-          userId: user.uid,
-          userName: 'AI Study Buddy',
-          sessionId: currentSessionId,
-          createdAt: serverTimestamp(),
-          isAI: true,
-          model: 'error'
-        });
-      }
-
-      setLoading(false);
-    } catch (error) {
-      console.error('Error sending message:', error);
-      setLoading(false);
-    }
-  };
-
-  const updateSessionLastMessage = async (sessionId: string) => {
-    try {
-      const sessionRef = doc(db, 'sessions', sessionId);
-      await updateDoc(sessionRef, {
+      // Update chat timestamp
+      await updateDoc(doc(db, 'chats', selectedChatId), {
         lastMessageAt: serverTimestamp()
       });
-    } catch (error) {
-      console.error('Error updating session:', error);
-    }
-  };
 
-  const handleCreateSession = async (name?: string) => {
-    if (!user) return;
-
-    const sessionName = name || `Chat ${sessions.length + 1}`;
-    
-    try {
-      const genkitSession = await createGenkitSession(user.uid, sessionName);
-      
-      await addDoc(collection(db, 'sessions'), {
-        id: genkitSession.sessionId,
-        name: genkitSession.name,
+      // Streaming placeholder
+      const tempId = `temp-${Date.now()}`;
+      setMessages(prev => [...prev, {
+        id: tempId,
+        text: '',
         userId: user.uid,
+        userName: 'AI Study Buddy',
+        sessionId: selectedChatId,
+        createdAt: new Date(),
+        isAI: true
+      }]);
+
+      // Call AI
+      let streamingText = '';
+      const response = await getAIResponse(userMessage, selectedChatId, user.uid, (chunk) => {
+        streamingText += chunk;
+        setMessages(prev => prev.map(m => m.id === tempId ? { ...m, text: streamingText } : m));
+      });
+
+      // Remove placeholder and add real message
+      setMessages(prev => prev.filter(m => m.id !== tempId));
+      await addDoc(collection(db, 'messages'), {
+        text: response.text,
+        userId: user.uid,
+        userName: 'AI Study Buddy',
+        sessionId: selectedChatId,
         createdAt: serverTimestamp(),
+        isAI: true,
+        model: response.model
+      });
+
+      // Update chat timestamp again
+      await updateDoc(doc(db, 'chats', selectedChatId), {
         lastMessageAt: serverTimestamp()
       });
 
-      setCurrentSessionId(genkitSession.sessionId);
     } catch (error) {
-      console.error('Error creating session:', error);
-      const sessionName = name || `Chat ${sessions.length + 1}`;
-      try {
-        const newSession = await addDoc(collection(db, 'sessions'), {
-          name: sessionName,
-          userId: user.uid,
-          createdAt: serverTimestamp(),
-          lastMessageAt: serverTimestamp()
-        });
-        setCurrentSessionId(newSession.id);
-      } catch (fallbackError) {
-        console.error('Error creating fallback session:', fallbackError);
-      }
+      console.error("Error sending message:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  const handleUpdateChatName = async (chatId: string, newName: string) => {
+    if (!user || !newName.trim()) return;
+    try {
+      await updateDoc(doc(db, 'chats', chatId), { name: newName.trim() });
+      setEditingChatId(null);
+    } catch (error) {
+      console.error('Error updating chat name:', error);
     }
   };
 
-  const handleDeleteSession = async (sessionId: string) => {
-    if (!user || sessions.length <= 1) return;
-
+  const handleDeleteChat = async (chatId: string) => {
+    if (!confirm('Are you sure you want to delete this chat?')) return;
     try {
-      await deleteDoc(doc(db, 'sessions', sessionId));
-      
-      if (currentSessionId === sessionId) {
-        const remainingSessions = sessions.filter(s => s.id !== sessionId);
-        if (remainingSessions.length > 0) {
-          setCurrentSessionId(remainingSessions[0].id);
-        }
-      }
+      await deleteDoc(doc(db, 'chats', chatId));
+      if (selectedChatId === chatId) setSelectedChatId(null);
     } catch (error) {
-      console.error('Error deleting session:', error);
+      console.error('Error deleting chat:', error);
     }
   };
 
@@ -332,7 +352,6 @@ export default function Chat({ user }: ChatProps) {
     e.preventDefault();
     setAuthError(null);
     setAuthLoading(true);
-
     try {
       if (isSignUp) {
         await createUserWithEmailAndPassword(auth, authEmail, authPassword);
@@ -342,10 +361,8 @@ export default function Chat({ user }: ChatProps) {
       setAuthEmail('');
       setAuthPassword('');
       setShowAuth(false);
-    } catch (err: unknown) {
-      if (err instanceof Error) {
-        setAuthError(err.message);
-      }
+    } catch (err: any) {
+      setAuthError(err.message);
     } finally {
       setAuthLoading(false);
     }
@@ -354,31 +371,29 @@ export default function Chat({ user }: ChatProps) {
   const handleSignOut = async () => {
     try {
       await signOut(auth);
-    } catch (err) {
-      console.error('Error signing out:', err);
+      setCourses([]);
+      setSessions([]);
+      setChats([]);
+      setMessages([]);
+      setSelectedChatId(null);
+    } catch (error) {
+      console.error("Sign out error:", error);
     }
   };
 
   if (!user) {
+    // Auth View
     return (
       <div className="chat-container">
         <div className="chat-header">
-          <h2>AI Study Buddy Chat</h2>
-          <p>Sign in to start chatting!</p>
+           <h2>AI Study Buddy</h2>
+           <p>Sign in to start learning!</p>
         </div>
         {!showAuth ? (
           <div className="chat-placeholder">
             <div className="auth-prompt">
-              <p>🚀 Welcome to AI Study Buddy!</p>
-              <p style={{ fontSize: '0.9rem', opacity: 0.8, marginTop: '10px' }}>
-                Sign in to start chatting with your AI study companion
-              </p>
-              <button 
-                className="auth-toggle-button"
-                onClick={() => setShowAuth(true)}
-              >
-                Sign In / Sign Up
-              </button>
+              <p>🚀 Organize your learning with Courses & Sessions</p>
+              <button className="auth-toggle-button" onClick={() => setShowAuth(true)}>Sign In / Sign Up</button>
             </div>
           </div>
         ) : (
@@ -386,52 +401,13 @@ export default function Chat({ user }: ChatProps) {
             <form onSubmit={handleAuth}>
               <h3>{isSignUp ? 'Create Account' : 'Sign In'}</h3>
               {authError && <div className="auth-error">{authError}</div>}
-              <input
-                type="email"
-                placeholder="Email"
-                value={authEmail}
-                onChange={(e) => setAuthEmail(e.target.value)}
-                required
-                className="auth-input"
-              />
-              <input
-                type="password"
-                placeholder="Password (min 6 characters)"
-                value={authPassword}
-                onChange={(e) => setAuthPassword(e.target.value)}
-                required
-                minLength={6}
-                className="auth-input"
-              />
-              <button 
-                type="submit" 
-                className="auth-submit-button"
-                disabled={authLoading}
-              >
-                {authLoading ? 'Loading...' : (isSignUp ? 'Sign Up' : 'Sign In')}
+              <input type="email" placeholder="Email" value={authEmail} onChange={e => setAuthEmail(e.target.value)} className="auth-input" required />
+              <input type="password" placeholder="Password" value={authPassword} onChange={e => setAuthPassword(e.target.value)} className="auth-input" required />
+              <button type="submit" className="auth-submit-button" disabled={authLoading}>{authLoading ? 'Loading...' : (isSignUp ? 'Sign Up' : 'Sign In')}</button>
+              <button type="button" className="auth-switch-button" onClick={() => setIsSignUp(!isSignUp)}>
+                {isSignUp ? 'Have account? Sign In' : 'No account? Sign Up'}
               </button>
-              <button
-                type="button"
-                className="auth-switch-button"
-                onClick={() => {
-                  setIsSignUp(!isSignUp);
-                  setAuthError(null);
-                }}
-                disabled={authLoading}
-              >
-                {isSignUp ? 'Already have an account? Sign In' : "Don't have an account? Sign Up"}
-              </button>
-              <button
-                type="button"
-                className="auth-cancel-button"
-                onClick={() => {
-                  setShowAuth(false);
-                  setAuthError(null);
-                }}
-                disabled={authLoading}
-              >
-                Cancel
-              </button>
+              <button type="button" className="auth-cancel-button" onClick={() => setShowAuth(false)}>Cancel</button>
             </form>
           </div>
         )}
@@ -439,140 +415,175 @@ export default function Chat({ user }: ChatProps) {
     );
   }
 
-  const currentSession = sessions.find(s => s.id === currentSessionId);
+  const currentChat = chats.find(c => c.id === selectedChatId);
 
   return (
     <div className="chat-container">
+      {/* Sidebar */}
       <div className="chat-sidebar">
         <div className="sidebar-header">
-          <button 
-            onClick={() => handleCreateSession()}
-            className="new-chat-button"
-            title="New Chat"
-          >
-            + New Chat
-          </button>
+          <h3>My Courses</h3>
+          <button onClick={() => setIsCreatingCourse(true)} className="add-button" title="Add Course">+</button>
         </div>
-        <div className="sessions-list">
-          {sessions.map((session) => (
-            <div
-              key={session.id}
-              className={`session-item ${currentSessionId === session.id ? 'active' : ''}`}
-              onClick={() => setCurrentSessionId(session.id)}
-            >
-              <span className="session-name">{session.name}</span>
-              {sessions.length > 1 && (
-                <button
-                  className="delete-session-button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleDeleteSession(session.id);
-                  }}
-                  title="Delete Chat"
-                >
-                  ×
-                </button>
+
+        {isCreatingCourse && (
+          <form onSubmit={handleCreateCourse} className="create-form">
+            <input 
+              autoFocus
+              value={newCourseName}
+              onChange={e => setNewCourseName(e.target.value)}
+              placeholder="Course Name"
+              onBlur={() => setIsCreatingCourse(false)}
+            />
+          </form>
+        )}
+
+        <div className="sidebar-content">
+          {courses.map(course => (
+            <div key={course.id} className="course-group">
+              <div 
+                className={`course-item ${expandedCourseId === course.id ? 'expanded' : ''}`}
+                onClick={() => setExpandedCourseId(expandedCourseId === course.id ? null : course.id)}
+              >
+                <span className="icon">{expandedCourseId === course.id ? '▼' : '▶'}</span>
+                <span className="name">{course.name}</span>
+              </div>
+
+              {expandedCourseId === course.id && (
+                <div className="session-list">
+                  <div className="session-header">
+                    <small>Sessions</small>
+                    <button onClick={() => setIsCreatingSession(true)} className="add-button-small">+</button>
+                  </div>
+                  
+                  {isCreatingSession && (
+                    <form onSubmit={handleCreateSession} className="create-form-small">
+                      <input 
+                        autoFocus
+                        value={newSessionName}
+                        onChange={e => setNewSessionName(e.target.value)}
+                        placeholder="Session Name"
+                        onBlur={() => setIsCreatingSession(false)}
+                      />
+                    </form>
+                  )}
+
+                  {sessions.map(session => (
+                    <div key={session.id} className="session-group">
+                      <div 
+                        className={`session-item ${expandedSessionId === session.id ? 'expanded' : ''}`}
+                        onClick={() => setExpandedSessionId(expandedSessionId === session.id ? null : session.id)}
+                      >
+                        <span className="icon">{expandedSessionId === session.id ? '📂' : '📁'}</span>
+                        <span className="name">{session.name}</span>
+                      </div>
+
+                      {expandedSessionId === session.id && (
+                        <div className="chat-list">
+                          <button onClick={handleCreateChat} className="new-chat-button-small">+ New Chat</button>
+                          {chats.map(chat => (
+                            <div 
+                              key={chat.id} 
+                              className={`chat-item ${selectedChatId === chat.id ? 'active' : ''}`}
+                              onClick={() => setSelectedChatId(chat.id)}
+                            >
+                              {editingChatId === chat.id ? (
+                                <input
+                                  value={editChatName}
+                                  onChange={e => setEditChatName(e.target.value)}
+                                  onBlur={() => handleUpdateChatName(chat.id, editChatName)}
+                                  onKeyDown={e => {
+                                    if(e.key === 'Enter') handleUpdateChatName(chat.id, editChatName);
+                                    if(e.key === 'Escape') setEditingChatId(null);
+                                  }}
+                                  autoFocus
+                                  onClick={e => e.stopPropagation()}
+                                  className="chat-name-input"
+                                />
+                              ) : (
+                                <>
+                                  <span className="chat-name" onDoubleClick={(e) => {
+                                    e.stopPropagation();
+                                    setEditingChatId(chat.id);
+                                    setEditChatName(chat.name);
+                                  }}>{chat.name}</span>
+                                  <div className="chat-actions">
+                                    <button onClick={(e) => {
+                                      e.stopPropagation();
+                                      setEditingChatId(chat.id);
+                                      setEditChatName(chat.name);
+                                    }} className="action-btn">✎</button>
+                                    <button onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleDeleteChat(chat.id);
+                                    }} className="action-btn">×</button>
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  {sessions.length === 0 && !isCreatingSession && (
+                    <div className="empty-state-small">No sessions yet</div>
+                  )}
+                </div>
               )}
             </div>
           ))}
         </div>
       </div>
 
+      {/* Main Area */}
       <div className="chat-main">
         <div className="chat-header">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div>
-              <h2>{currentSession?.name || 'AI Study Buddy Chat'}</h2>
-              <p>Ask me anything!</p>
+              <h2>{currentChat?.name || 'Select a Chat'}</h2>
+              <p>{currentChat ? 'AI Study Buddy' : 'Select a course and session to start chatting'}</p>
             </div>
-            <button 
-              onClick={handleSignOut}
-              className="sign-out-button"
-              title="Sign Out"
-            >
-              Sign Out
+            <button onClick={handleSignOut} className="sign-out-button">Sign Out</button>
+          </div>
+        </div>
+
+        <div className="chat-messages" ref={messagesContainerRef}>
+          {messages.length === 0 && !selectedChatId ? (
+             <div className="chat-welcome"><p>Select or create a chat to begin.</p></div>
+          ) : (
+            messages.map((message) => (
+              <div key={message.id} className={`message ${!message.isAI ? 'message-user' : 'message-ai'}`}>
+                <div className="message-content">
+                  <div className="message-header">
+                    <span className="message-name">{!message.isAI ? 'You' : (message.userName || 'AI Study Buddy')}</span>
+                    {message.model && message.isAI && <span className="message-model">{message.model}</span>}
+                  </div>
+                  <div className="message-text"><div className="plain-text">{message.text}</div></div>
+                </div>
+              </div>
+            ))
+          )}
+          {loading && <div className="message message-ai"><div className="message-content"><div className="typing-indicator"><span></span><span></span><span></span></div></div></div>}
+          <div ref={messagesEndRef} />
+        </div>
+
+        <form className="chat-input-form" onSubmit={handleSend}>
+          <div className="chat-input-wrapper">
+            <input
+              type="text"
+              className="chat-input"
+              placeholder={selectedChatId ? "Type your message..." : "Select a chat first"}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              disabled={loading || !selectedChatId}
+            />
+            <button type="submit" className="chat-send-button" disabled={!input.trim() || loading || !selectedChatId}>
+              Send
             </button>
           </div>
-        </div>
-        
-        <div className="chat-messages" ref={messagesContainerRef}>
-        {messages.length === 0 ? (
-          <div className="chat-welcome">
-            <p>Start a conversation!</p>
-          </div>
-        ) : (
-          messages.map((message) => (
-            <div
-              key={message.id}
-              className={`message ${!message.isAI ? 'message-user' : 'message-ai'}`}
-            >
-              <div className="message-content">
-              <div className="message-header">
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span className="message-name">
-                    {!message.isAI ? 'You' : (message.userName || 'AI Study Buddy')}
-                  </span>
-                  {message.model && message.isAI && (
-                    <span className="message-model" title={`Model: ${message.model}`}>
-                      {message.model}
-                    </span>
-                  )}
-                </div>
-                {message.createdAt && (
-                  <span className="message-time">
-                    {message.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </span>
-                )}
-              </div>
-              <div className="message-text">
-                {message.isAI ? (
-                  <MarkdownMessage content={message.text} isAI={true} />
-                ) : (
-                  <div className="plain-text">{message.text}</div>
-                )}
-              </div>
-              </div>
-            </div>
-          ))
-        )}
-        {loading && (
-          <div className="message message-ai">
-            <div className="message-content">
-              <div className="typing-indicator">
-                <span></span>
-                <span></span>
-                <span></span>
-              </div>
-            </div>
-          </div>
-        )}
-        <div ref={messagesEndRef} />
-      </div>
-
-      <form className="chat-input-form" onSubmit={handleSend}>
-        <div className="chat-input-wrapper">
-          <input
-            type="text"
-            className="chat-input"
-            placeholder="Type your message..."
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            disabled={loading}
-          />
-          <button 
-            type="submit" 
-            className="chat-send-button"
-            disabled={!input.trim() || loading}
-          >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <line x1="22" y1="2" x2="11" y2="13"></line>
-              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-            </svg>
-          </button>
-        </div>
-      </form>
+        </form>
       </div>
     </div>
   );
 }
-

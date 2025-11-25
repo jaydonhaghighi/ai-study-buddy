@@ -17,9 +17,11 @@ interface ChatRequest {
   userId: string;
 }
 
-interface CreateSessionRequest {
+interface CreateChatRequest {
   userId: string;
-  sessionName?: string;
+  courseId: string;
+  sessionId: string;
+  chatName?: string;
 }
 
 const getFunctionsUrl = () => {
@@ -30,31 +32,42 @@ const getFunctionsUrl = () => {
   return `https://us-central1-${projectId}.cloudfunctions.net`;
 };
 
+async function fetchFunction(endpoint: string, options: RequestInit = {}) {
+  const functionsUrl = getFunctionsUrl();
+  const response = await fetch(`${functionsUrl}${endpoint}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+    throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+  }
+
+  return response;
+}
+
+function handleError(error: unknown, defaultMessage: string): never {
+  if (error instanceof Error) {
+    throw error;
+  }
+  throw new Error(defaultMessage);
+}
+
 export async function getAIResponse(
   userMessage: string,
   sessionId: string,
   userId: string,
   onChunk?: (text: string) => void
 ): Promise<AIResponse> {
-  const functionsUrl = getFunctionsUrl();
-
   try {
-    const response = await fetch(`${functionsUrl}/chat`, {
+    const response = await fetchFunction('/chat', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        sessionId,
-        message: userMessage,
-        userId,
-      } as ChatRequest),
+      body: JSON.stringify({ sessionId, message: userMessage, userId } as ChatRequest),
     });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
-      throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
-    }
 
     if (response.headers.get('content-type')?.includes('text/event-stream')) {
       const reader = response.body?.getReader();
@@ -79,9 +92,12 @@ export async function getAIResponse(
             try {
               const data = JSON.parse(line.slice(6));
               if (data.done) {
+                if (!data.model) {
+                  throw new Error('Model name not provided in response');
+                }
                 return {
                   text: data.fullText || fullText,
-                  model: data.model || 'gemini-2.0-flash-exp',
+                  model: data.model,
                   sessionId: data.sessionId || sessionId,
                 };
               }
@@ -98,56 +114,37 @@ export async function getAIResponse(
         }
       }
 
-      return {
-        text: fullText,
-        model: 'gemini-2.0-flash-exp',
-        sessionId: sessionId,
-      };
+      throw new Error('Stream ended without model information');
     } else {
       const data = await response.json();
+      if (!data.model) {
+        throw new Error('Model name not provided in response');
+      }
       return {
         text: data.text,
-        model: data.model || 'gemini-2.5-flash',
+        model: data.model,
         sessionId: data.sessionId || sessionId,
       };
     }
   } catch (error) {
-    if (error instanceof Error) {
-      throw error;
-    }
-    throw new Error('Failed to get AI response');
+    handleError(error, 'Failed to get AI response');
   }
 }
 
-export async function createGenkitSession(
+export async function createGenkitChat(
   userId: string,
-  sessionName?: string
-): Promise<{ sessionId: string; name: string }> {
-  const functionsUrl = getFunctionsUrl();
-
+  courseId: string,
+  sessionId: string,
+  chatName?: string
+): Promise<{ chatId: string; name: string }> {
   try {
-    const response = await fetch(`${functionsUrl}/createSession`, {
+    const response = await fetchFunction('/createChat', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        userId,
-        sessionName,
-      } as CreateSessionRequest),
+      body: JSON.stringify({ userId, courseId, sessionId, chatName } as CreateChatRequest),
     });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
-      throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
-    }
-
     return await response.json();
   } catch (error) {
-    if (error instanceof Error) {
-      throw error;
-    }
-    throw new Error('Failed to create session');
+    handleError(error, 'Failed to create chat');
   }
 }
 
@@ -155,27 +152,13 @@ export async function getSessionHistory(sessionId: string): Promise<{
   history: Array<{ role: string; content: string }>;
   state: any;
 }> {
-  const functionsUrl = getFunctionsUrl();
-
   try {
-    const response = await fetch(`${functionsUrl}/getSessionHistory?sessionId=${encodeURIComponent(sessionId)}`, {
+    const response = await fetchFunction(`/getSessionHistory?sessionId=${encodeURIComponent(sessionId)}`, {
       method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      },
     });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
-      throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
-    }
-
     return await response.json();
   } catch (error) {
-    if (error instanceof Error) {
-      throw error;
-    }
-    throw new Error('Failed to get session history');
+    handleError(error, 'Failed to get session history');
   }
 }
 
