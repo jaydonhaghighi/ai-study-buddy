@@ -3,6 +3,8 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Any, Iterator
 
+from .opencv_tuning import apply_opencv_videoio_env
+
 
 def _device_path_to_index(device: str) -> int | None:
     # "/dev/video0" -> 0
@@ -21,6 +23,7 @@ def open_camera(index: int = 0, device: str | None = None) -> Iterator[Any]:
     In simulation mode you can skip calling this entirely.
     """
     try:
+        apply_opencv_videoio_env()
         import cv2  # type: ignore
     except Exception as e:  # pragma: no cover
         raise RuntimeError("OpenCV (cv2) is not installed. Install opencv-python on the Pi.") from e
@@ -41,17 +44,29 @@ def open_camera(index: int = 0, device: str | None = None) -> Iterator[Any]:
             raise RuntimeError(f"Failed to open camera ({device or f'index={cam_index}'})")
 
         # Try common formats/resolutions that tend to work on Pi
-        try:
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            # Prefer MJPG (often supported); fallback to YUYV is handled by backend
-            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-        except Exception:
-            pass
+        candidates = [
+            (640, 480, "MJPG"),
+            (640, 480, "YUYV"),
+            (1280, 720, "MJPG"),
+            (1280, 720, "YUYV"),
+        ]
+        for w, h, fourcc in candidates:
+            try:
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
+            except Exception:
+                continue
+            # Warm-up reads; if frames start coming in, keep this config
+            ok_any = False
+            for _ in range(10):
+                ok, frame = cap.read()
+                if ok and frame is not None:
+                    ok_any = True
+                    break
+            if ok_any:
+                break
 
-        # Warm-up reads
-        for _ in range(5):
-            cap.read()
         yield cap
     finally:
         cap.release()

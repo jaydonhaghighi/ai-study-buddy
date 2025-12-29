@@ -127,6 +127,12 @@ class Agent:
                         frames_captured = 0
                         last_heartbeat = 0.0
                         print(f"[ai-study-buddy] Focus session START: {current_focus_session_id}")
+                        # Avoid camera contention: stop calibration preview while a focus session is running.
+                        try:
+                            if self._preview_server is not None:
+                                self._preview_server.state.disable()
+                        except Exception:
+                            pass
                         # Open camera on session start (even if inference is simulated)
                         if self.config.enable_camera:
                             camera_ctx = open_camera(index=self.config.camera_index, device=self.config.camera_device)
@@ -176,6 +182,9 @@ class Agent:
                             pass
                     if frame is not None:
                         frames_captured += 1
+                    else:
+                        # help debug "opened but no frames" issues
+                        pass
 
                 res = inference.predict(frame=frame)
                 fsm.update(res.is_focused, now=tick_start)

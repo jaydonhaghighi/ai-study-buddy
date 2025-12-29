@@ -7,6 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from .opencv_tuning import apply_opencv_videoio_env
 
 class _SharedState:
     def __init__(self, camera_index: int = 0):
@@ -71,6 +72,7 @@ class _SharedState:
 
     def _open_camera(self) -> None:
         try:
+            apply_opencv_videoio_env()
             import cv2  # type: ignore
         except Exception as e:
             raise RuntimeError("OpenCV (cv2) is required for calibration preview") from e
@@ -98,12 +100,27 @@ class _SharedState:
             pass
 
         # Try common formats/resolutions that tend to work on Raspberry Pi
-        try:
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-        except Exception:
-            pass
+        candidates = [
+            (640, 480, "MJPG"),
+            (640, 480, "YUYV"),
+            (1280, 720, "MJPG"),
+            (1280, 720, "YUYV"),
+        ]
+        for w, h, fourcc in candidates:
+            try:
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
+            except Exception:
+                continue
+            ok_any = False
+            for _ in range(10):
+                ok, frame = cap.read()
+                if ok and frame is not None:
+                    ok_any = True
+                    break
+            if ok_any:
+                break
 
         self.cap = cap
         self.last_error = None
