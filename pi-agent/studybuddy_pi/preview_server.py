@@ -21,6 +21,7 @@ class _SharedState:
         self.face_detected: bool = False
         self.aligned: bool = False
         self.face_box: list[int] | None = None  # [x, y, w, h]
+        self.last_error: str | None = None
 
         self._stop = False
         self._thread: threading.Thread | None = None
@@ -52,6 +53,7 @@ class _SharedState:
             self.face_detected = False
             self.aligned = False
             self.face_box = None
+            self.last_error = None
             self._close_camera()
 
     def _open_camera(self) -> None:
@@ -60,10 +62,19 @@ class _SharedState:
         except Exception as e:
             raise RuntimeError("OpenCV (cv2) is required for calibration preview") from e
 
-        cap = cv2.VideoCapture(self.camera_index)
+        # Prefer V4L2 backend on Raspberry Pi
+        cap = cv2.VideoCapture(self.camera_index, cv2.CAP_V4L2)
         if not cap.isOpened():
             raise RuntimeError(f"Failed to open camera index={self.camera_index}")
+
+        # Try to reduce buffering and improve responsiveness
+        try:
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except Exception:
+            pass
+
         self.cap = cap
+        self.last_error = None
 
         if self._face_cascade is None:
             try:
@@ -90,10 +101,14 @@ class _SharedState:
             try:
                 import cv2  # type: ignore
             except Exception:
+                with self.lock:
+                    self.last_error = "cv2 import failed in capture thread"
                 continue
 
             ok, frame = cap.read()
             if not ok or frame is None:
+                with self.lock:
+                    self.last_error = "cap.read() returned no frame (camera busy? wrong index? permissions?)"
                 continue
 
             h, w = frame.shape[:2]
@@ -123,6 +138,8 @@ class _SharedState:
             # Encode JPEG
             ok2, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
             if not ok2:
+                with self.lock:
+                    self.last_error = "cv2.imencode(.jpg) failed"
                 continue
 
             jpeg = buf.tobytes()
@@ -133,6 +150,7 @@ class _SharedState:
                 self.face_detected = face_detected
                 self.aligned = aligned
                 self.face_box = face_box
+                self.last_error = None
 
 
 class PreviewServer:
@@ -189,6 +207,7 @@ class PreviewServer:
                             "faceDetected": server.state.face_detected,
                             "aligned": server.state.aligned,
                             "faceBox": server.state.face_box,
+                            "lastError": server.state.last_error,
                         }
                     self.send_response(200)
                     self._cors()
