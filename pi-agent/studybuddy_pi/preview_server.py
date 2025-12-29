@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlparse
 class _SharedState:
     def __init__(self, camera_index: int = 0):
         self.camera_index = camera_index
+        self.camera_device: str | None = None
         self.enabled = False
         self.lock = threading.Lock()
 
@@ -40,10 +41,22 @@ class _SharedState:
             self._close_camera()
 
     def enable(self) -> None:
+        # Only mark enabled if camera successfully opens
         with self.lock:
-            self.enabled = True
             if self.cap is None:
-                self._open_camera()
+                try:
+                    self._open_camera()
+                except Exception:
+                    self.enabled = False
+                    raise
+            self.enabled = True
+
+    def set_camera(self, *, camera_index: int | None = None, camera_device: str | None = None) -> None:
+        with self.lock:
+            if camera_index is not None:
+                self.camera_index = camera_index
+            if camera_device is not None:
+                self.camera_device = camera_device
 
     def disable(self) -> None:
         with self.lock:
@@ -62,10 +75,14 @@ class _SharedState:
         except Exception as e:
             raise RuntimeError("OpenCV (cv2) is required for calibration preview") from e
 
-        # Prefer V4L2 backend on Raspberry Pi
-        cap = cv2.VideoCapture(self.camera_index, cv2.CAP_V4L2)
+        # Prefer V4L2 backend on Raspberry Pi, but fallback if needed.
+        device_or_index: Any = self.camera_device if self.camera_device else self.camera_index
+        cap = cv2.VideoCapture(device_or_index, cv2.CAP_V4L2)
         if not cap.isOpened():
-            raise RuntimeError(f"Failed to open camera index={self.camera_index}")
+            cap.release()
+            cap = cv2.VideoCapture(device_or_index)
+        if not cap.isOpened():
+            raise RuntimeError(f"Failed to open camera ({device_or_index})")
 
         # Try to reduce buffering and improve responsiveness
         try:
@@ -165,10 +182,11 @@ class PreviewServer:
     - GET /stream.mjpg (multipart MJPEG stream)
     """
 
-    def __init__(self, host: str = "0.0.0.0", port: int = 8080, camera_index: int = 0):
+    def __init__(self, host: str = "0.0.0.0", port: int = 8080, camera_index: int = 0, camera_device: str | None = None):
         self.host = host
         self.port = port
         self.state = _SharedState(camera_index=camera_index)
+        self.state.camera_device = camera_device
         self.httpd: ThreadingHTTPServer | None = None
         self.thread: threading.Thread | None = None
 
@@ -208,6 +226,8 @@ class PreviewServer:
                             "aligned": server.state.aligned,
                             "faceBox": server.state.face_box,
                             "lastError": server.state.last_error,
+                            "cameraIndex": server.state.camera_index,
+                            "cameraDevice": server.state.camera_device,
                         }
                     self.send_response(200)
                     self._cors()
@@ -252,10 +272,25 @@ class PreviewServer:
                 self.end_headers()
 
             def do_POST(self) -> None:  # noqa: N802
-                path = urlparse(self.path).path
+                parsed = urlparse(self.path)
+                path = parsed.path
+                qs = parse_qs(parsed.query)
 
                 if path == "/start":
                     try:
+                        # Allow overriding camera for debugging:
+                        # /start?index=0  or /start?device=/dev/video0
+                        if "index" in qs:
+                            try:
+                                idx = int(qs["index"][0])
+                                server.state.set_camera(camera_index=idx)
+                            except Exception:
+                                pass
+                        if "device" in qs:
+                            dev = qs["device"][0]
+                            if isinstance(dev, str) and dev.startswith("/dev/video"):
+                                server.state.set_camera(camera_device=dev)
+
                         server.state.enable()
                         self.send_response(200)
                         self._cors()
@@ -263,6 +298,10 @@ class PreviewServer:
                         self.end_headers()
                         self.wfile.write(json.dumps({"ok": True, "enabled": True}).encode("utf-8"))
                     except Exception as e:
+                        try:
+                            server.state.disable()
+                        except Exception:
+                            pass
                         self.send_response(500)
                         self._cors()
                         self.send_header("Content-Type", "application/json")
