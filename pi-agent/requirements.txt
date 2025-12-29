@@ -1,0 +1,8 @@
+requests==2.32.3
+pydantic==2.10.4
+
+# Optional on Raspberry Pi (install separately depending on OS image)
+# tflite-runtime
+# opencv-python
+
+

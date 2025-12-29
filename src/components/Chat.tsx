@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { db, auth } from '../firebase-config';
+import { db, auth, storage } from '../firebase-config';
 import { User, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { 
   collection, 
@@ -14,7 +14,9 @@ import {
   updateDoc,
   doc
 } from 'firebase/firestore';
+import { ref, uploadBytes, getDownloadURL, listAll, deleteObject, getMetadata } from 'firebase/storage';
 import { getAIResponse, createGenkitChat } from '../services/genkit-service';
+import { claimDevice, startFocusSession, stopFocusSession } from '../services/focus-service';
 import './Chat.css';
 
 interface Message {
@@ -52,6 +54,32 @@ interface ChatSession {
   lastMessageAt: Date | null;
 }
 
+interface UploadedFile {
+  id: string;
+  name: string;
+  url: string;
+  type: string;
+  size: number;
+  uploadedAt: Date;
+}
+
+interface Device {
+  id: string;
+  claimCode?: string;
+  status?: string;
+  pairedUserId?: string;
+  activeFocusSessionId?: string | null;
+}
+
+interface FocusSession {
+  id: string;
+  userId: string;
+  deviceId: string;
+  status: string;
+  courseId?: string | null;
+  sessionId?: string | null;
+}
+
 interface ChatProps {
   user: User | null;
 }
@@ -87,9 +115,31 @@ export default function Chat({ user }: ChatProps) {
   
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
   const [editChatName, setEditChatName] = useState('');
+  
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Files Sidebar State
+  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
+  const [uploading, setUploading] = useState(false);
+
+  // Device + Focus Tracking State
+  const [claimCode, setClaimCode] = useState('');
+  const [devices, setDevices] = useState<Device[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
+  const [activeFocusSession, setActiveFocusSession] = useState<FocusSession | null>(null);
+  const [focusBusy, setFocusBusy] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (toastMessage) {
+      const timer = setTimeout(() => setToastMessage(null), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [toastMessage]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -114,6 +164,55 @@ export default function Chat({ user }: ChatProps) {
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
       setCourses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Course)));
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // Devices (paired to user)
+  useEffect(() => {
+    if (!user) {
+      setDevices([]);
+      setSelectedDeviceId('');
+      return;
+    }
+
+    const q = query(
+      collection(db, 'devices'),
+      where('pairedUserId', '==', user.uid)
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const ds = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Device));
+      setDevices(ds);
+      if (!selectedDeviceId && ds.length > 0) {
+        setSelectedDeviceId(ds[0].id);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [user, selectedDeviceId]);
+
+  // Active focus session (assume at most 1 active per user for MVP)
+  useEffect(() => {
+    if (!user) {
+      setActiveFocusSession(null);
+      return;
+    }
+
+    const q = query(
+      collection(db, 'focusSessions'),
+      where('userId', '==', user.uid),
+      where('status', '==', 'active')
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      if (snapshot.empty) {
+        setActiveFocusSession(null);
+        return;
+      }
+      const doc0 = snapshot.docs[0];
+      setActiveFocusSession({ id: doc0.id, ...doc0.data() } as FocusSession);
     });
 
     return () => unsubscribe();
@@ -339,14 +438,128 @@ export default function Chat({ user }: ChatProps) {
   };
 
   const handleDeleteChat = async (chatId: string) => {
-    if (!confirm('Are you sure you want to delete this chat?')) return;
     try {
       await deleteDoc(doc(db, 'chats', chatId));
       if (selectedChatId === chatId) setSelectedChatId(null);
+      setToastMessage("Chat deleted");
     } catch (error) {
       console.error('Error deleting chat:', error);
+      setToastMessage("Error deleting chat");
     }
   };
+
+  // File Upload Handlers
+  const handleFileUpload = async (files: FileList | null) => {
+    if (!user || !selectedChatId || !files || files.length === 0) return;
+
+    setUploading(true);
+    const uploadPromises: Promise<void>[] = [];
+
+    Array.from(files).forEach((file) => {
+      const uploadPromise = (async () => {
+        try {
+          const fileRef = ref(storage, `chats/${selectedChatId}/${user.uid}/${Date.now()}_${file.name}`);
+          await uploadBytes(fileRef, file);
+          const url = await getDownloadURL(fileRef);
+          
+          const newFile: UploadedFile = {
+            id: fileRef.fullPath,
+            name: file.name,
+            url,
+            type: file.type,
+            size: file.size,
+            uploadedAt: new Date(),
+          };
+          
+          setUploadedFiles(prev => [...prev, newFile]);
+          setToastMessage(`${file.name} uploaded successfully`);
+        } catch (error) {
+          console.error('Error uploading file:', error);
+          setToastMessage(`Error uploading ${file.name}`);
+        }
+      })();
+      uploadPromises.push(uploadPromise);
+    });
+
+    await Promise.all(uploadPromises);
+    setUploading(false);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    handleFileUpload(e.dataTransfer.files);
+  };
+
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    handleFileUpload(e.target.files);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const handleDeleteFile = async (fileId: string, fileName: string) => {
+    if (!user) return;
+    try {
+      const fileRef = ref(storage, fileId);
+      await deleteObject(fileRef);
+      setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
+      setToastMessage(`${fileName} deleted`);
+    } catch (error) {
+      console.error('Error deleting file:', error);
+      setToastMessage(`Error deleting ${fileName}`);
+    }
+  };
+
+  // Load files for selected chat
+  useEffect(() => {
+    if (!user || !selectedChatId) {
+      setUploadedFiles([]);
+      return;
+    }
+
+    const loadFiles = async () => {
+      try {
+        const filesRef = ref(storage, `chats/${selectedChatId}/${user.uid}`);
+        const filesList = await listAll(filesRef);
+        
+        const filePromises = filesList.items.map(async (itemRef) => {
+          const url = await getDownloadURL(itemRef);
+          const metadata = await getMetadata(itemRef);
+          // Extract original filename (remove timestamp prefix)
+          const fileName = itemRef.name.replace(/^\d+_/, '');
+          return {
+            id: itemRef.fullPath,
+            name: fileName,
+            url,
+            type: metadata.contentType || 'application/octet-stream',
+            size: metadata.size || 0,
+            uploadedAt: metadata.timeCreated ? new Date(metadata.timeCreated) : new Date(),
+          } as UploadedFile;
+        });
+
+        const files = await Promise.all(filePromises);
+        setUploadedFiles(files);
+      } catch (error) {
+        console.error('Error loading files:', error);
+      }
+    };
+
+    loadFiles();
+  }, [user, selectedChatId]);
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -376,8 +589,62 @@ export default function Chat({ user }: ChatProps) {
       setChats([]);
       setMessages([]);
       setSelectedChatId(null);
+      setDevices([]);
+      setSelectedDeviceId('');
+      setActiveFocusSession(null);
     } catch (error) {
       console.error("Sign out error:", error);
+    }
+  };
+
+  const handleClaimDevice = async () => {
+    if (!user || !claimCode.trim()) return;
+    setFocusBusy(true);
+    try {
+      await claimDevice(claimCode.trim(), user.uid);
+      setToastMessage("Device paired. Turn on your Pi agent to complete pairing.");
+      setClaimCode('');
+    } catch (error) {
+      console.error('Error claiming device:', error);
+      setToastMessage("Error pairing device");
+    } finally {
+      setFocusBusy(false);
+    }
+  };
+
+  const handleStartFocus = async () => {
+    if (!user) return;
+    if (!selectedDeviceId) {
+      setToastMessage("Select a device first");
+      return;
+    }
+    // Optional: link focus session to the currently expanded course/session (chapter)
+    const courseId = expandedCourseId || undefined;
+    const sessionId = expandedSessionId || undefined;
+
+    setFocusBusy(true);
+    try {
+      const res = await startFocusSession({ userId: user.uid, deviceId: selectedDeviceId, courseId, sessionId });
+      setToastMessage(`Focus tracking started (${res.focusSessionId.slice(0, 6)}...)`);
+    } catch (error) {
+      console.error('Error starting focus session:', error);
+      setToastMessage("Error starting focus tracking");
+    } finally {
+      setFocusBusy(false);
+    }
+  };
+
+  const handleStopFocus = async () => {
+    if (!user || !activeFocusSession) return;
+    setFocusBusy(true);
+    try {
+      await stopFocusSession({ userId: user.uid, focusSessionId: activeFocusSession.id, deviceId: activeFocusSession.deviceId });
+      setToastMessage("Focus tracking stopped. Waiting for Pi summary...");
+    } catch (error) {
+      console.error('Error stopping focus session:', error);
+      setToastMessage("Error stopping focus tracking");
+    } finally {
+      setFocusBusy(false);
     }
   };
 
@@ -418,7 +685,7 @@ export default function Chat({ user }: ChatProps) {
   const currentChat = chats.find(c => c.id === selectedChatId);
 
   return (
-    <div className="chat-container">
+    <div className="chat-container files-sidebar-open">
       {/* Sidebar */}
       <div className="chat-sidebar">
         <div className="sidebar-header">
@@ -445,8 +712,8 @@ export default function Chat({ user }: ChatProps) {
                 className={`course-item ${expandedCourseId === course.id ? 'expanded' : ''}`}
                 onClick={() => setExpandedCourseId(expandedCourseId === course.id ? null : course.id)}
               >
-                <span className="icon">{expandedCourseId === course.id ? '▼' : '▶'}</span>
                 <span className="name">{course.name}</span>
+                <span className="dropdown-arrow">›</span>
               </div>
 
               {expandedCourseId === course.id && (
@@ -474,8 +741,17 @@ export default function Chat({ user }: ChatProps) {
                         className={`session-item ${expandedSessionId === session.id ? 'expanded' : ''}`}
                         onClick={() => setExpandedSessionId(expandedSessionId === session.id ? null : session.id)}
                       >
-                        <span className="icon">{expandedSessionId === session.id ? '📂' : '📁'}</span>
-                        <span className="name">{session.name}</span>
+                        <div style={{ display: 'flex', alignItems: 'center' }}>
+                          <svg 
+                            xmlns="http://www.w3.org/2000/svg" 
+                            viewBox="0 0 24 24" 
+                            className="folder-icon"
+                          >
+                            <path d="M19,3H12.472a1.019,1.019,0,0,1-.447-.1L8.869,1.316A3.014,3.014,0,0,0,7.528,1H5A5.006,5.006,0,0,0,0,6V18a5.006,5.006,0,0,0,5,5H19a5.006,5.006,0,0,0,5-5V8A5.006,5.006,0,0,0,19,3ZM5,3H7.528a1.019,1.019,0,0,1,.447.1l3.156,1.579A3.014,3.014,0,0,0,12.472,5H19a3,3,0,0,1,2.779,1.882L2,6.994V6A3,3,0,0,1,5,3ZM19,21H5a3,3,0,0,1-3-3V8.994l20-.113V18A3,3,0,0,1,19,21Z"/>
+                          </svg>
+                          <span className="name">{session.name}</span>
+                        </div>
+                        <span className="dropdown-arrow">›</span>
                       </div>
 
                       {expandedSessionId === session.id && (
@@ -542,48 +818,194 @@ export default function Chat({ user }: ChatProps) {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div>
               <h2>{currentChat?.name || 'Select a Chat'}</h2>
-              <p>{currentChat ? 'AI Study Buddy' : 'Select a course and session to start chatting'}</p>
+              <p>{currentChat ? 'AI Study Buddy' : 'Choose an existing chat or create a new one to get started'}</p>
             </div>
-            <button onClick={handleSignOut} className="sign-out-button">Sign Out</button>
+            <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <input
+                    value={claimCode}
+                    onChange={(e) => setClaimCode(e.target.value)}
+                    placeholder="Enter Pi claim code"
+                    className="auth-input"
+                    style={{ width: 180 }}
+                    disabled={focusBusy}
+                  />
+                  <button onClick={handleClaimDevice} className="auth-submit-button" disabled={focusBusy || !claimCode.trim()}>
+                    Pair
+                  </button>
+                </div>
+
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <select
+                    value={selectedDeviceId}
+                    onChange={(e) => setSelectedDeviceId(e.target.value)}
+                    className="auth-input"
+                    style={{ width: 180 }}
+                    disabled={focusBusy || devices.length === 0}
+                  >
+                    {devices.length === 0 ? (
+                      <option value="">No paired devices</option>
+                    ) : (
+                      devices.map(d => <option key={d.id} value={d.id}>{d.id.slice(0, 8)}...</option>)
+                    )}
+                  </select>
+
+                  {!activeFocusSession ? (
+                    <button onClick={handleStartFocus} className="auth-submit-button" disabled={focusBusy || !selectedDeviceId}>
+                      Start Focus
+                    </button>
+                  ) : (
+                    <button onClick={handleStopFocus} className="auth-cancel-button" disabled={focusBusy}>
+                      Stop Focus
+                    </button>
+                  )}
+                </div>
+                {activeFocusSession && (
+                  <div style={{ fontSize: 12, opacity: 0.8 }}>
+                    Focus active on device {activeFocusSession.deviceId.slice(0, 8)}...
+                  </div>
+                )}
+              </div>
+              <button onClick={handleSignOut} className="sign-out-button">Sign Out</button>
+            </div>
           </div>
         </div>
 
         <div className="chat-messages" ref={messagesContainerRef}>
-          {messages.length === 0 && !selectedChatId ? (
-             <div className="chat-welcome"><p>Select or create a chat to begin.</p></div>
+          {!selectedChatId ? (
+             <div className="chat-welcome">
+               <div className="welcome-icon">💬</div>
+               <h3 className="welcome-title">Welcome to AI Study Buddy</h3>
+               <p className="welcome-message">To get started, choose an existing chat or create a new one from the sidebar</p>
+             </div>
           ) : (
-            messages.map((message) => (
-              <div key={message.id} className={`message ${!message.isAI ? 'message-user' : 'message-ai'}`}>
-                <div className="message-content">
-                  <div className="message-header">
-                    <span className="message-name">{!message.isAI ? 'You' : (message.userName || 'AI Study Buddy')}</span>
-                    {message.model && message.isAI && <span className="message-model">{message.model}</span>}
+            <>
+              {messages.map((message) => (
+                <div key={message.id} className={`message ${!message.isAI ? 'message-user' : 'message-ai'}`}>
+                  <div className="message-content">
+                    <div className="message-header">
+                      <span className="message-name">{!message.isAI ? 'You' : (message.userName || 'AI Study Buddy')}</span>
+                      {message.model && message.isAI && <span className="message-model">{message.model}</span>}
+                    </div>
+                    <div className="message-text"><div className="plain-text">{message.text}</div></div>
                   </div>
-                  <div className="message-text"><div className="plain-text">{message.text}</div></div>
                 </div>
-              </div>
-            ))
+              ))}
+              {loading && <div className="message message-ai"><div className="message-content"><div className="typing-indicator"><span></span><span></span><span></span></div></div></div>}
+              <div ref={messagesEndRef} />
+            </>
           )}
-          {loading && <div className="message message-ai"><div className="message-content"><div className="typing-indicator"><span></span><span></span><span></span></div></div></div>}
-          <div ref={messagesEndRef} />
         </div>
 
-        <form className="chat-input-form" onSubmit={handleSend}>
-          <div className="chat-input-wrapper">
-            <input
-              type="text"
-              className="chat-input"
-              placeholder={selectedChatId ? "Type your message..." : "Select a chat first"}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              disabled={loading || !selectedChatId}
-            />
-            <button type="submit" className="chat-send-button" disabled={!input.trim() || loading || !selectedChatId}>
-              Send
-            </button>
-          </div>
-        </form>
+        {selectedChatId && (
+          <form className="chat-input-form" onSubmit={handleSend}>
+            <div className="chat-input-wrapper">
+              <input
+                type="text"
+                className="chat-input"
+                placeholder="Type your message..."
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                disabled={loading}
+              />
+              <button type="submit" className="chat-send-button" disabled={!input.trim() || loading}>
+                Send
+              </button>
+            </div>
+          </form>
+        )}
       </div>
+
+      {/* Files Sidebar */}
+      {user && (
+        <div className="files-sidebar">
+          <div className="files-sidebar-header">
+            <h3>Files</h3>
+          </div>
+
+              <div 
+                className={`files-drop-zone ${isDragging ? 'dragging' : ''} ${uploading ? 'uploading' : ''}`}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  onChange={handleFileInputChange}
+                  style={{ display: 'none' }}
+                  accept="*/*"
+                />
+                <div className="drop-zone-content">
+                  <div className="drop-zone-icon">📁</div>
+                  <p className="drop-zone-text">
+                    {uploading ? 'Uploading...' : isDragging ? 'Drop files here' : 'Drag & drop files here'}
+                  </p>
+                  <button 
+                    className="drop-zone-button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={uploading}
+                  >
+                    Or click to browse
+                  </button>
+                </div>
+              </div>
+
+              <div className="files-list">
+                {uploadedFiles.length === 0 ? (
+                  <div className="files-empty">
+                    <p>No files uploaded yet</p>
+                  </div>
+                ) : (
+                  uploadedFiles.map((file) => (
+                    <div key={file.id} className="file-item">
+                      <div className="file-info">
+                        <span className="file-icon">
+                          {file.type.startsWith('image/') ? '🖼️' : 
+                           file.type.includes('pdf') ? '📄' :
+                           file.type.includes('word') || file.name.endsWith('.docx') ? '📝' :
+                           file.type.includes('powerpoint') || file.name.endsWith('.pptx') ? '📊' :
+                           '📎'}
+                        </span>
+                        <div className="file-details">
+                          <span className="file-name" title={file.name}>{file.name}</span>
+                          <span className="file-size">
+                            {(file.size / 1024).toFixed(1)} KB
+                          </span>
+                        </div>
+                      </div>
+                      <div className="file-actions">
+                        <a 
+                          href={file.url} 
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          className="file-action-btn"
+                          title="Open"
+                        >
+                          ↗
+                        </a>
+                        <button
+                          onClick={() => handleDeleteFile(file.id, file.name)}
+                          className="file-action-btn"
+                          title="Delete"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+        </div>
+      )}
+      
+      {toastMessage && (
+        <div className="toast-notification">
+          {toastMessage}
+        </div>
+      )}
     </div>
   );
 }
