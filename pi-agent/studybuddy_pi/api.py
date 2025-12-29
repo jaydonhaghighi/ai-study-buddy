@@ -25,7 +25,7 @@ class StudyBuddyApi:
         if device_id:
             payload["deviceId"] = device_id
         r = requests.post(
-            f"{self.base_url}/device/register",
+            f"{self.base_url}/deviceRegister",
             json=payload,
             headers={"Content-Type": "application/json"},
             timeout=self.timeout_seconds,
@@ -38,7 +38,7 @@ class StudyBuddyApi:
         if device_id:
             params["deviceId"] = device_id
         r = requests.get(
-            f"{self.base_url}/device/pairingStatus",
+            f"{self.base_url}/devicePairingStatus",
             params=params,
             headers={"Content-Type": "application/json"},
             timeout=self.timeout_seconds,
@@ -61,7 +61,7 @@ class StudyBuddyApi:
             params["since"] = since_epoch_ms
 
         r = requests.get(
-            f"{self.base_url}/device/currentFocusSession",
+            f"{self.base_url}/deviceCurrentFocusSession",
             params=params,
             headers=self._headers(),
             timeout=(wait_seconds + 5) if wait_seconds else self.timeout_seconds,
@@ -71,7 +71,7 @@ class StudyBuddyApi:
 
     def post_session_summary(self, summary: dict[str, Any]) -> dict[str, Any]:
         r = requests.post(
-            f"{self.base_url}/device/sessionSummary",
+            f"{self.base_url}/deviceSessionSummary",
             json=summary,
             headers=self._headers(),
             timeout=self.timeout_seconds,

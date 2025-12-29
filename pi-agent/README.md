@@ -43,9 +43,15 @@ python -m studybuddy_pi run
 - Use the provided systemd unit in `systemd/ai-study-buddy.service`.
 
 ### Backend endpoints expected (PRD-aligned)
-- `POST /device/register` (claim code registration)
-- `GET /device/pairingStatus` (poll until paired, returns device token)
-- `GET /device/currentFocusSession` (poll/long-poll assignment)
-- `POST /device/sessionSummary` (upload aggregated summary)
+Firebase Cloud Functions expose endpoints using the **exported function name**:
+- `POST /deviceRegister` (claim code registration)
+- `GET /devicePairingStatus` (poll until paired, returns device token once)
+- `GET /deviceCurrentFocusSession` (poll/long-poll assignment)
+- `POST /deviceSessionSummary` (upload aggregated summary)
+
+Focus session control (web -> backend):
+- `POST /deviceClaim` (user claims device by claim code)
+- `POST /focusStart` (start focus tracking; assigns active focusSessionId to device)
+- `POST /focusStop` (stop focus tracking; clears device assignment)
 
 

@@ -34,6 +34,8 @@ class Config:
     # Capture/inference loop (when active)
     target_fps: float
     simulate: bool
+    enable_camera: bool
+    record_dir: str | None
 
     # Optional device identity hints (depending on backend design)
     device_id: str | None
@@ -62,6 +64,8 @@ def load_config() -> Config:
         refocus_threshold_seconds=float(os.getenv("STUDYBUDDY_REFOCUS_THRESHOLD_SECONDS", "3.0")),
         target_fps=float(os.getenv("STUDYBUDDY_TARGET_FPS", "10.0")),
         simulate=_env_bool("STUDYBUDDY_SIMULATE", False),
+        enable_camera=_env_bool("STUDYBUDDY_ENABLE_CAMERA", True),
+        record_dir=os.getenv("STUDYBUDDY_RECORD_DIR"),
         device_id=os.getenv("STUDYBUDDY_DEVICE_ID"),
     )
 

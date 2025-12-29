@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from typing import Any
 
@@ -8,6 +9,7 @@ from .api import StudyBuddyApi
 from .config import Config
 from .focus_state import FocusStateMachine
 from .inference import FocusInference
+from .camera import open_camera, read_frame
 from .storage import StoredAuth, enqueue_summary, list_queued_summaries, load_auth, save_auth
 from .summary import compute_focus_summary, summary_to_payload
 
@@ -75,6 +77,10 @@ class Agent:
         # Active session state
         fsm: FocusStateMachine | None = None
         session_start_ts: float | None = None
+        cap: Any | None = None
+        camera_ctx: Any | None = None
+        video_writer: Any | None = None
+        video_path: str | None = None
 
         while True:
             # Always try to flush any queued summaries
@@ -98,6 +104,26 @@ class Agent:
                             refocus_threshold_seconds=self.config.refocus_threshold_seconds,
                         )
                         session_start_ts = time.time()
+                        # Open camera on session start (even if inference is simulated)
+                        if self.config.enable_camera:
+                            camera_ctx = open_camera(index=0)
+                            cap = camera_ctx.__enter__()
+                            # Optional local recording to a file for verification/debug
+                            if self.config.record_dir:
+                                try:
+                                    import cv2  # type: ignore
+                                    os.makedirs(self.config.record_dir, exist_ok=True)
+                                    video_path = os.path.join(
+                                        self.config.record_dir,
+                                        f"{current_focus_session_id}.avi",
+                                    )
+                                    fourcc = cv2.VideoWriter_fourcc(*"XVID")
+                                    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 640)
+                                    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 480)
+                                    video_writer = cv2.VideoWriter(video_path, fourcc, self.config.target_fps, (w, h))
+                                except Exception:
+                                    video_writer = None
+                                    video_path = None
                         last_control_check = 0.0
                         poll_sleep = self.config.poll_interval_seconds
                     else:
@@ -115,7 +141,16 @@ class Agent:
 
             tick_start = time.time()
             try:
-                res = inference.predict(frame=None)
+                frame = None
+                if cap is not None:
+                    frame = read_frame(cap)
+                    if frame is not None and video_writer is not None:
+                        try:
+                            video_writer.write(frame)
+                        except Exception:
+                            pass
+
+                res = inference.predict(frame=frame)
                 fsm.update(res.is_focused, now=tick_start)
             except NotImplementedError:
                 # If real inference isn't wired, require simulate
@@ -156,6 +191,22 @@ class Agent:
                         # Always enqueue first (reliability), then try upload
                         enqueue_summary(self.config.state_dir, payload)
                         self.flush_outbox(api)
+
+                        # Close camera/recording
+                        try:
+                            if video_writer is not None:
+                                video_writer.release()
+                        except Exception:
+                            pass
+                        video_writer = None
+                        video_path = None
+                        try:
+                            if camera_ctx is not None:
+                                camera_ctx.__exit__(None, None, None)
+                        except Exception:
+                            pass
+                        cap = None
+                        camera_ctx = None
 
                         # Reset local state
                         current_focus_session_id = None

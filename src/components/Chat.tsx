@@ -16,6 +16,7 @@ import {
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL, listAll, deleteObject, getMetadata } from 'firebase/storage';
 import { getAIResponse, createGenkitChat } from '../services/genkit-service';
+import { claimDevice, startFocusSession, stopFocusSession } from '../services/focus-service';
 import './Chat.css';
 
 interface Message {
@@ -62,6 +63,23 @@ interface UploadedFile {
   uploadedAt: Date;
 }
 
+interface Device {
+  id: string;
+  claimCode?: string;
+  status?: string;
+  pairedUserId?: string;
+  activeFocusSessionId?: string | null;
+}
+
+interface FocusSession {
+  id: string;
+  userId: string;
+  deviceId: string;
+  status: string;
+  courseId?: string | null;
+  sessionId?: string | null;
+}
+
 interface ChatProps {
   user: User | null;
 }
@@ -105,6 +123,13 @@ export default function Chat({ user }: ChatProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
 
+  // Device + Focus Tracking State
+  const [claimCode, setClaimCode] = useState('');
+  const [devices, setDevices] = useState<Device[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
+  const [activeFocusSession, setActiveFocusSession] = useState<FocusSession | null>(null);
+  const [focusBusy, setFocusBusy] = useState(false);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -139,6 +164,55 @@ export default function Chat({ user }: ChatProps) {
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
       setCourses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Course)));
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // Devices (paired to user)
+  useEffect(() => {
+    if (!user) {
+      setDevices([]);
+      setSelectedDeviceId('');
+      return;
+    }
+
+    const q = query(
+      collection(db, 'devices'),
+      where('pairedUserId', '==', user.uid)
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const ds = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Device));
+      setDevices(ds);
+      if (!selectedDeviceId && ds.length > 0) {
+        setSelectedDeviceId(ds[0].id);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [user, selectedDeviceId]);
+
+  // Active focus session (assume at most 1 active per user for MVP)
+  useEffect(() => {
+    if (!user) {
+      setActiveFocusSession(null);
+      return;
+    }
+
+    const q = query(
+      collection(db, 'focusSessions'),
+      where('userId', '==', user.uid),
+      where('status', '==', 'active')
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      if (snapshot.empty) {
+        setActiveFocusSession(null);
+        return;
+      }
+      const doc0 = snapshot.docs[0];
+      setActiveFocusSession({ id: doc0.id, ...doc0.data() } as FocusSession);
     });
 
     return () => unsubscribe();
@@ -515,8 +589,62 @@ export default function Chat({ user }: ChatProps) {
       setChats([]);
       setMessages([]);
       setSelectedChatId(null);
+      setDevices([]);
+      setSelectedDeviceId('');
+      setActiveFocusSession(null);
     } catch (error) {
       console.error("Sign out error:", error);
+    }
+  };
+
+  const handleClaimDevice = async () => {
+    if (!user || !claimCode.trim()) return;
+    setFocusBusy(true);
+    try {
+      await claimDevice(claimCode.trim(), user.uid);
+      setToastMessage("Device paired. Turn on your Pi agent to complete pairing.");
+      setClaimCode('');
+    } catch (error) {
+      console.error('Error claiming device:', error);
+      setToastMessage("Error pairing device");
+    } finally {
+      setFocusBusy(false);
+    }
+  };
+
+  const handleStartFocus = async () => {
+    if (!user) return;
+    if (!selectedDeviceId) {
+      setToastMessage("Select a device first");
+      return;
+    }
+    // Optional: link focus session to the currently expanded course/session (chapter)
+    const courseId = expandedCourseId || undefined;
+    const sessionId = expandedSessionId || undefined;
+
+    setFocusBusy(true);
+    try {
+      const res = await startFocusSession({ userId: user.uid, deviceId: selectedDeviceId, courseId, sessionId });
+      setToastMessage(`Focus tracking started (${res.focusSessionId.slice(0, 6)}...)`);
+    } catch (error) {
+      console.error('Error starting focus session:', error);
+      setToastMessage("Error starting focus tracking");
+    } finally {
+      setFocusBusy(false);
+    }
+  };
+
+  const handleStopFocus = async () => {
+    if (!user || !activeFocusSession) return;
+    setFocusBusy(true);
+    try {
+      await stopFocusSession({ userId: user.uid, focusSessionId: activeFocusSession.id, deviceId: activeFocusSession.deviceId });
+      setToastMessage("Focus tracking stopped. Waiting for Pi summary...");
+    } catch (error) {
+      console.error('Error stopping focus session:', error);
+      setToastMessage("Error stopping focus tracking");
+    } finally {
+      setFocusBusy(false);
     }
   };
 
@@ -692,7 +820,55 @@ export default function Chat({ user }: ChatProps) {
               <h2>{currentChat?.name || 'Select a Chat'}</h2>
               <p>{currentChat ? 'AI Study Buddy' : 'Choose an existing chat or create a new one to get started'}</p>
             </div>
-            <button onClick={handleSignOut} className="sign-out-button">Sign Out</button>
+            <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <input
+                    value={claimCode}
+                    onChange={(e) => setClaimCode(e.target.value)}
+                    placeholder="Enter Pi claim code"
+                    className="auth-input"
+                    style={{ width: 180 }}
+                    disabled={focusBusy}
+                  />
+                  <button onClick={handleClaimDevice} className="auth-submit-button" disabled={focusBusy || !claimCode.trim()}>
+                    Pair
+                  </button>
+                </div>
+
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <select
+                    value={selectedDeviceId}
+                    onChange={(e) => setSelectedDeviceId(e.target.value)}
+                    className="auth-input"
+                    style={{ width: 180 }}
+                    disabled={focusBusy || devices.length === 0}
+                  >
+                    {devices.length === 0 ? (
+                      <option value="">No paired devices</option>
+                    ) : (
+                      devices.map(d => <option key={d.id} value={d.id}>{d.id.slice(0, 8)}...</option>)
+                    )}
+                  </select>
+
+                  {!activeFocusSession ? (
+                    <button onClick={handleStartFocus} className="auth-submit-button" disabled={focusBusy || !selectedDeviceId}>
+                      Start Focus
+                    </button>
+                  ) : (
+                    <button onClick={handleStopFocus} className="auth-cancel-button" disabled={focusBusy}>
+                      Stop Focus
+                    </button>
+                  )}
+                </div>
+                {activeFocusSession && (
+                  <div style={{ fontSize: 12, opacity: 0.8 }}>
+                    Focus active on device {activeFocusSession.deviceId.slice(0, 8)}...
+                  </div>
+                )}
+              </div>
+              <button onClick={handleSignOut} className="sign-out-button">Sign Out</button>
+            </div>
           </div>
         </div>
 
