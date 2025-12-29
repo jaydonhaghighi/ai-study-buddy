@@ -42,6 +42,26 @@ python -m studybuddy_pi run
 - Install OpenCV for camera capture if needed.
 - Use the provided systemd unit in `systemd/ai-study-buddy.service`.
 
+### Calibration preview (local demo)
+For the demo, the Pi agent can expose a **LAN-only live camera preview** (MJPEG) to help the student align the camera before eye tracking.
+
+- This preview is **not saved**.
+- The web UI will auto-stop the preview after alignment is “good” for ~3 seconds.
+- Only use this on a trusted local network during demos.
+
+Enable (defaults to on):
+
+```bash
+export STUDYBUDDY_ENABLE_PREVIEW_SERVER=1
+export STUDYBUDDY_PREVIEW_PORT=8080
+```
+
+Pi endpoints:
+- `POST /start` (begin preview capture)
+- `POST /stop` (stop preview capture)
+- `GET /status` (returns `{ faceDetected, aligned, ... }`)
+- `GET /stream.mjpg` (MJPEG stream)
+
 ### Backend endpoints expected (PRD-aligned)
 Firebase Cloud Functions expose endpoints using the **exported function name**:
 - `POST /deviceRegister` (claim code registration)
