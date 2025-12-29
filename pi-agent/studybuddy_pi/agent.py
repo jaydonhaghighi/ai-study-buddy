@@ -10,6 +10,7 @@ from .config import Config
 from .focus_state import FocusStateMachine
 from .inference import FocusInference
 from .camera import open_camera, read_frame
+from .preview_server import PreviewServer
 from .storage import StoredAuth, enqueue_summary, list_queued_summaries, load_auth, save_auth
 from .summary import compute_focus_summary, summary_to_payload
 
@@ -17,6 +18,7 @@ from .summary import compute_focus_summary, summary_to_payload
 class Agent:
     def __init__(self, config: Config):
         self.config = config
+        self._preview_server: PreviewServer | None = None
 
     def pair(self) -> StoredAuth:
         if not self.config.claim_code:
@@ -67,6 +69,21 @@ class Agent:
 
         inference = FocusInference(simulate=self.config.simulate)
 
+        if self.config.enable_preview_server:
+            try:
+                self._preview_server = PreviewServer(
+                    host=self.config.preview_host,
+                    port=self.config.preview_port,
+                    camera_index=0,
+                )
+                self._preview_server.start()
+                print(
+                    f"[ai-study-buddy] Calibration preview server listening on http://{self.config.preview_host}:{self.config.preview_port}"
+                )
+                print("[ai-study-buddy] Endpoints: POST /start, POST /stop, GET /status, GET /stream.mjpg")
+            except Exception as e:
+                print(f"[ai-study-buddy] Failed to start preview server: {e}")
+
         device_id = auth.device_id or self.config.device_id
         current_focus_session_id: str | None = None
         current_meta: dict[str, Any] = {}
@@ -81,6 +98,8 @@ class Agent:
         camera_ctx: Any | None = None
         video_writer: Any | None = None
         video_path: str | None = None
+        frames_captured = 0
+        last_heartbeat = 0.0
 
         while True:
             # Always try to flush any queued summaries
@@ -104,10 +123,14 @@ class Agent:
                             refocus_threshold_seconds=self.config.refocus_threshold_seconds,
                         )
                         session_start_ts = time.time()
+                        frames_captured = 0
+                        last_heartbeat = 0.0
+                        print(f"[ai-study-buddy] Focus session START: {current_focus_session_id}")
                         # Open camera on session start (even if inference is simulated)
                         if self.config.enable_camera:
                             camera_ctx = open_camera(index=0)
                             cap = camera_ctx.__enter__()
+                            print("[ai-study-buddy] Camera OPENED (cv2.VideoCapture)")
                             # Optional local recording to a file for verification/debug
                             if self.config.record_dir:
                                 try:
@@ -121,6 +144,7 @@ class Agent:
                                     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 640)
                                     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 480)
                                     video_writer = cv2.VideoWriter(video_path, fourcc, self.config.target_fps, (w, h))
+                                    print(f"[ai-study-buddy] Recording ENABLED: {video_path} ({w}x{h} @ {self.config.target_fps}fps)")
                                 except Exception:
                                     video_writer = None
                                     video_path = None
@@ -149,6 +173,8 @@ class Agent:
                             video_writer.write(frame)
                         except Exception:
                             pass
+                    if frame is not None:
+                        frames_captured += 1
 
                 res = inference.predict(frame=frame)
                 fsm.update(res.is_focused, now=tick_start)
@@ -158,6 +184,13 @@ class Agent:
             except Exception:
                 # Ignore transient capture/model issues; keep loop alive
                 pass
+
+            # Heartbeat while active (helps confirm camera is running)
+            if (tick_start - last_heartbeat) >= 5.0:
+                last_heartbeat = tick_start
+                cam_status = "ON" if cap is not None else "OFF"
+                rec_status = f"REC={video_path}" if video_path else "REC=off"
+                print(f"[ai-study-buddy] Active {current_focus_session_id} camera={cam_status} frames={frames_captured} {rec_status}")
 
             # Check session assignment (control) ~1Hz
             if (tick_start - last_control_check) >= 1.0:
@@ -171,6 +204,7 @@ class Agent:
                     if not resp.focusSessionId or resp.focusSessionId != current_focus_session_id:
                         # Session ended or switched
                         end_ts = time.time()
+                        print(f"[ai-study-buddy] Focus session STOP: {current_focus_session_id}")
                         computed = compute_focus_summary(
                             transitions=fsm.transitions,
                             distractions=fsm.distractions,
@@ -199,6 +233,8 @@ class Agent:
                         except Exception:
                             pass
                         video_writer = None
+                        if video_path:
+                            print(f"[ai-study-buddy] Recording CLOSED: {video_path}")
                         video_path = None
                         try:
                             if camera_ctx is not None:
@@ -207,6 +243,7 @@ class Agent:
                             pass
                         cap = None
                         camera_ctx = None
+                        print("[ai-study-buddy] Camera CLOSED")
 
                         # Reset local state
                         current_focus_session_id = None

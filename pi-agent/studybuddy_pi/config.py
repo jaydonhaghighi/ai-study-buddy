@@ -36,6 +36,9 @@ class Config:
     simulate: bool
     enable_camera: bool
     record_dir: str | None
+    enable_preview_server: bool
+    preview_host: str
+    preview_port: int
 
     # Optional device identity hints (depending on backend design)
     device_id: str | None
@@ -66,6 +69,9 @@ def load_config() -> Config:
         simulate=_env_bool("STUDYBUDDY_SIMULATE", False),
         enable_camera=_env_bool("STUDYBUDDY_ENABLE_CAMERA", True),
         record_dir=os.getenv("STUDYBUDDY_RECORD_DIR"),
+        enable_preview_server=_env_bool("STUDYBUDDY_ENABLE_PREVIEW_SERVER", True),
+        preview_host=os.getenv("STUDYBUDDY_PREVIEW_HOST", "0.0.0.0"),
+        preview_port=int(os.getenv("STUDYBUDDY_PREVIEW_PORT", "8080")),
         device_id=os.getenv("STUDYBUDDY_DEVICE_ID"),
     )
 
