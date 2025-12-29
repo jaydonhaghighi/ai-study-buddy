@@ -77,6 +77,13 @@ class _SharedState:
 
         # Prefer V4L2 backend on Raspberry Pi, but fallback if needed.
         device_or_index: Any = self.camera_device if self.camera_device else self.camera_index
+        # If we were given "/dev/videoN", use N with CAP_V4L2 (more reliable than passing a path string).
+        if isinstance(device_or_index, str) and device_or_index.startswith("/dev/video"):
+            try:
+                device_or_index = int(device_or_index.replace("/dev/video", ""))
+            except Exception:
+                pass
+
         cap = cv2.VideoCapture(device_or_index, cv2.CAP_V4L2)
         if not cap.isOpened():
             cap.release()
@@ -87,6 +94,14 @@ class _SharedState:
         # Try to reduce buffering and improve responsiveness
         try:
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except Exception:
+            pass
+
+        # Try common formats/resolutions that tend to work on Raspberry Pi
+        try:
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
         except Exception:
             pass
 
