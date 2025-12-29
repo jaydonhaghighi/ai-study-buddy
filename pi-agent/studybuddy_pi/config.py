@@ -40,6 +40,7 @@ class Config:
     preview_host: str
     preview_port: int
     camera_index: int
+    camera_device: str | None
 
     # Optional device identity hints (depending on backend design)
     device_id: str | None
@@ -74,7 +75,6 @@ def load_config() -> Config:
         preview_host=os.getenv("STUDYBUDDY_PREVIEW_HOST", "0.0.0.0"),
         preview_port=int(os.getenv("STUDYBUDDY_PREVIEW_PORT", "8080")),
         camera_index=int(os.getenv("STUDYBUDDY_CAMERA_INDEX", "0")),
+        camera_device=os.getenv("STUDYBUDDY_CAMERA_DEVICE"),
         device_id=os.getenv("STUDYBUDDY_DEVICE_ID"),
     )
-
-
