@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from .opencv_tuning import apply_opencv_videoio_env
+from .camera import open_frame_source, read_frame
 
 class _SharedState:
     def __init__(self, camera_index: int = 0):
@@ -71,58 +71,14 @@ class _SharedState:
             self._close_camera()
 
     def _open_camera(self) -> None:
+        # Note: we require cv2 for encoding + face detection, but actual capture may be picamera2-backed.
         try:
-            apply_opencv_videoio_env()
             import cv2  # type: ignore
         except Exception as e:
-            raise RuntimeError("OpenCV (cv2) is required for calibration preview") from e
+            raise RuntimeError("OpenCV (cv2) is required for calibration preview encoding/face detection") from e
 
-        # Prefer V4L2 backend on Raspberry Pi, but fallback if needed.
-        device_or_index: Any = self.camera_device if self.camera_device else self.camera_index
-        # If we were given "/dev/videoN", use N with CAP_V4L2 (more reliable than passing a path string).
-        if isinstance(device_or_index, str) and device_or_index.startswith("/dev/video"):
-            try:
-                device_or_index = int(device_or_index.replace("/dev/video", ""))
-            except Exception:
-                pass
-
-        cap = cv2.VideoCapture(device_or_index, cv2.CAP_V4L2)
-        if not cap.isOpened():
-            cap.release()
-            cap = cv2.VideoCapture(device_or_index)
-        if not cap.isOpened():
-            raise RuntimeError(f"Failed to open camera ({device_or_index})")
-
-        # Try to reduce buffering and improve responsiveness
-        try:
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        except Exception:
-            pass
-
-        # Try common formats/resolutions that tend to work on Raspberry Pi
-        candidates = [
-            (640, 480, "MJPG"),
-            (640, 480, "YUYV"),
-            (1280, 720, "MJPG"),
-            (1280, 720, "YUYV"),
-        ]
-        for w, h, fourcc in candidates:
-            try:
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
-                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
-            except Exception:
-                continue
-            ok_any = False
-            for _ in range(10):
-                ok, frame = cap.read()
-                if ok and frame is not None:
-                    ok_any = True
-                    break
-            if ok_any:
-                break
-
-        self.cap = cap
+        # Use shared camera opener (OpenCV first, Picamera2 fallback)
+        self.cap = open_frame_source(index=self.camera_index, device=self.camera_device)
         self.last_error = None
 
         if self._face_cascade is None:
@@ -154,8 +110,8 @@ class _SharedState:
                     self.last_error = "cv2 import failed in capture thread"
                 continue
 
-            ok, frame = cap.read()
-            if not ok or frame is None:
+            frame = read_frame(cap)
+            if frame is None:
                 with self.lock:
                     self.last_error = "cap.read() returned no frame (camera busy? wrong index? permissions?)"
                 continue

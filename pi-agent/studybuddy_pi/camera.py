@@ -16,64 +16,165 @@ def _device_path_to_index(device: str) -> int | None:
     return None
 
 
-@contextmanager
-def open_camera(index: int = 0, device: str | None = None) -> Iterator[Any]:
+class FrameSource:
     """
-    Opens an OpenCV camera device if available.
-    In simulation mode you can skip calling this entirely.
+    Minimal interface used by the agent + preview server.
+    Must expose:
+    - read() -> (ok: bool, frame: ndarray | None)
+    - release() -> None
     """
+
+    def read(self) -> tuple[bool, Any | None]:  # pragma: no cover
+        raise NotImplementedError
+
+    def release(self) -> None:  # pragma: no cover
+        raise NotImplementedError
+
+
+class Cv2FrameSource(FrameSource):
+    def __init__(self, cap: Any):
+        self._cap = cap
+
+    def read(self) -> tuple[bool, Any | None]:
+        ok, frame = self._cap.read()
+        return ok, frame
+
+    def release(self) -> None:
+        self._cap.release()
+
+
+class Picamera2FrameSource(FrameSource):
+    def __init__(self, picam2: Any):
+        self._picam2 = picam2
+
+    def read(self) -> tuple[bool, Any | None]:
+        # Returns RGB; convert to BGR for OpenCV downstream
+        try:
+            import cv2  # type: ignore
+        except Exception:
+            cv2 = None
+        frame = self._picam2.capture_array()
+        if frame is None:
+            return False, None
+        if cv2 is not None:
+            try:
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            except Exception:
+                pass
+        return True, frame
+
+    def release(self) -> None:
+        try:
+            self._picam2.stop()
+        except Exception:
+            pass
+        try:
+            self._picam2.close()
+        except Exception:
+            pass
+
+
+def open_frame_source(index: int = 0, device: str | None = None) -> FrameSource:
+    """
+    Try OpenCV VideoCapture first (fast), then fallback to Picamera2/libcamera (reliable on PiCam).
+    """
+    apply_opencv_videoio_env()
+
     try:
-        apply_opencv_videoio_env()
         import cv2  # type: ignore
     except Exception as e:  # pragma: no cover
         raise RuntimeError("OpenCV (cv2) is not installed. Install opencv-python on the Pi.") from e
 
-    # Prefer V4L2 backend on Raspberry Pi. If a device path is provided, convert to an index.
     cam_index = index
     if device:
         idx = _device_path_to_index(device)
         if idx is not None:
             cam_index = idx
+
+    # OpenCV path
     cap = cv2.VideoCapture(cam_index, cv2.CAP_V4L2)
     if not cap.isOpened():
-        # Fallback to default backend
         cap.release()
         cap = cv2.VideoCapture(cam_index)
-    try:
-        if not cap.isOpened():
-            raise RuntimeError(f"Failed to open camera ({device or f'index={cam_index}'})")
 
-        # Try common formats/resolutions that tend to work on Pi
+    if cap.isOpened():
+        # Try common formats/resolutions; if we can get a frame, we accept it.
         candidates = [
-            (640, 480, "MJPG"),
             (640, 480, "YUYV"),
-            (1280, 720, "MJPG"),
+            (640, 480, "MJPG"),
             (1280, 720, "YUYV"),
+            (1280, 720, "MJPG"),
         ]
+        got_frame = False
         for w, h, fourcc in candidates:
             try:
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
                 cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
             except Exception:
-                continue
-            # Warm-up reads; if frames start coming in, keep this config
-            ok_any = False
-            for _ in range(10):
+                pass
+            for _ in range(20):
                 ok, frame = cap.read()
                 if ok and frame is not None:
-                    ok_any = True
+                    got_frame = True
                     break
-            if ok_any:
+            if got_frame:
                 break
 
-        yield cap
+        if got_frame:
+            return Cv2FrameSource(cap)
+
+    # If OpenCV couldn't produce frames, fallback to Picamera2
+    try:
+        from picamera2 import Picamera2  # type: ignore
+    except Exception as e:
+        # Provide a precise error so you know what to install
+        try:
+            cap.release()
+        except Exception:
+            pass
+        raise RuntimeError(
+            "OpenCV could not read frames from the camera. Install Picamera2 for a reliable fallback "
+            "(e.g., `sudo apt install -y python3-picamera2`)."
+        ) from e
+
+    picam2 = Picamera2()
+    # Keep it simple: preview-sized frames for calibration and stub inference
+    try:
+        config = picam2.create_preview_configuration(main={"size": (640, 480), "format": "RGB888"})
+        picam2.configure(config)
+    except Exception:
+        # fallback to defaults
+        pass
+    picam2.start()
+    # Warm-up
+    timeouts = 0
+    for _ in range(10):
+        try:
+            _ = picam2.capture_array()
+            break
+        except Exception:
+            timeouts += 1
+            if timeouts >= 3:
+                break
+    return Picamera2FrameSource(picam2)
+
+
+@contextmanager
+def open_camera(index: int = 0, device: str | None = None) -> Iterator[FrameSource]:
+    """
+    Opens an OpenCV camera device if available.
+    In simulation mode you can skip calling this entirely.
+    """
+    src = open_frame_source(index=index, device=device)
+    try:
+        yield src
     finally:
-        cap.release()
+        src.release()
 
 
-def read_frame(cap: Any) -> Any | None:
+def read_frame(cap: FrameSource) -> Any | None:
     ok, frame = cap.read()
-    return frame if ok else None
+    return frame if ok and frame is not None else None
 
 

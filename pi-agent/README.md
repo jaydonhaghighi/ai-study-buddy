@@ -39,8 +39,16 @@ python -m studybuddy_pi run
 
 ### Running on Raspberry Pi (production-like)
 - Prefer `tflite-runtime` rather than full TensorFlow.
-- Install OpenCV for camera capture if needed.
+- Install OpenCV for encoding/face detection.
 - Use the provided systemd unit in `systemd/ai-study-buddy.service`.
+
+### If OpenCV can't read frames (common on PiCam)
+If you see errors like `cap.read() returned no frame`, install **Picamera2** and the agent will automatically use it as a fallback:
+
+```bash
+sudo apt update
+sudo apt install -y python3-picamera2
+```
 
 ### Calibration preview (local demo)
 For the demo, the Pi agent can expose a **LAN-only live camera preview** (MJPEG) to help the student align the camera before eye tracking.
