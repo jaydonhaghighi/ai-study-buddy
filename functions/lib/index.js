@@ -237,17 +237,18 @@ export const createChat = onRequest(FUNCTION_CONFIG, async (req, res) => {
         }
         const session = ai.createSession({ store: sessionStore });
         const name = chatName || "New Chat";
-        await sessionStore.save(session.id, { id: session.id, state: {} });
-        // Create document in 'chats' collection
-        await db.collection("chats").doc(session.id).set({
-            id: session.id,
-            name,
-            userId,
-            courseId,
-            sessionId,
-            createdAt: new Date(),
-            lastMessageAt: new Date(),
-        });
+        await Promise.all([
+            sessionStore.save(session.id, { id: session.id, state: {} }),
+            db.collection("chats").doc(session.id).set({
+                id: session.id,
+                name,
+                userId,
+                courseId,
+                sessionId,
+                createdAt: new Date(),
+                lastMessageAt: new Date(),
+            })
+        ]);
         res.json({ chatId: session.id, name });
     }
     catch (error) {
