@@ -74,7 +74,7 @@ class Agent:
                 self._preview_server = PreviewServer(
                     host=self.config.preview_host,
                     port=self.config.preview_port,
-                    camera_index=0,
+                    camera_index=self.config.camera_index,
                 )
                 self._preview_server.start()
                 print(
@@ -128,7 +128,7 @@ class Agent:
                         print(f"[ai-study-buddy] Focus session START: {current_focus_session_id}")
                         # Open camera on session start (even if inference is simulated)
                         if self.config.enable_camera:
-                            camera_ctx = open_camera(index=0)
+                            camera_ctx = open_camera(index=self.config.camera_index)
                             cap = camera_ctx.__enter__()
                             print("[ai-study-buddy] Camera OPENED (cv2.VideoCapture)")
                             # Optional local recording to a file for verification/debug
