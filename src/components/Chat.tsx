@@ -17,6 +17,7 @@ import {
 import { ref, uploadBytes, getDownloadURL, listAll, deleteObject, getMetadata } from 'firebase/storage';
 import { getAIResponse, createGenkitChat } from '../services/genkit-service';
 import { claimDevice, startFocusSession, stopFocusSession } from '../services/focus-service';
+import PiCalibrationPreview from './PiCalibrationPreview';
 import './Chat.css';
 
 interface Message {
@@ -686,6 +687,7 @@ export default function Chat({ user }: ChatProps) {
 
   return (
     <div className="chat-container files-sidebar-open">
+      <PiCalibrationPreview />
       {/* Sidebar */}
       <div className="chat-sidebar">
         <div className="sidebar-header">
