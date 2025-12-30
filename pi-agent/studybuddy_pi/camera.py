@@ -48,19 +48,17 @@ class Picamera2FrameSource(FrameSource):
         self._picam2 = picam2
 
     def read(self) -> tuple[bool, Any | None]:
-        # Returns RGB; convert to BGR for OpenCV downstream
-        try:
-            import cv2  # type: ignore
-        except Exception:
-            cv2 = None
+        # Picamera2 returns RGB; convert to BGR for OpenCV (and JPEG encoding via OpenCV).
         frame = self._picam2.capture_array()
         if frame is None:
             return False, None
-        if cv2 is not None:
-            try:
-                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            except Exception:
-                pass
+        # Avoid relying on cv2 color conversion; just swap channels.
+        try:
+            import numpy as np  # type: ignore
+            frame = np.ascontiguousarray(frame[:, :, ::-1])
+        except Exception:
+            # Best-effort fallback (may still work if frame is already BGR)
+            pass
         return True, frame
 
     def release(self) -> None:

@@ -208,14 +208,15 @@ class PreviewServer:
                 if path == "/status":
                     with server.state.lock:
                         body = {
-                            "enabled": server.state.enabled,
-                            "lastFrameTs": server.state.last_frame_ts,
-                            "faceDetected": server.state.face_detected,
-                            "aligned": server.state.aligned,
-                            "faceBox": server.state.face_box,
-                            "lastError": server.state.last_error,
-                            "cameraIndex": server.state.camera_index,
-                            "cameraDevice": server.state.camera_device,
+                            # Cast everything to plain JSON-serializable primitives
+                            "enabled": bool(server.state.enabled),
+                            "lastFrameTs": float(server.state.last_frame_ts) if server.state.last_frame_ts is not None else None,
+                            "faceDetected": bool(server.state.face_detected),
+                            "aligned": bool(server.state.aligned),
+                            "faceBox": [int(x) for x in server.state.face_box] if server.state.face_box else None,
+                            "lastError": str(server.state.last_error) if server.state.last_error is not None else None,
+                            "cameraIndex": int(server.state.camera_index),
+                            "cameraDevice": str(server.state.camera_device) if server.state.camera_device is not None else None,
                         }
                     self.send_response(200)
                     self._cors()
