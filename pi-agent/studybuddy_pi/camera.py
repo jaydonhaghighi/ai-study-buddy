@@ -44,21 +44,23 @@ class Cv2FrameSource(FrameSource):
 
 
 class Picamera2FrameSource(FrameSource):
-    def __init__(self, picam2: Any):
+    def __init__(self, picam2: Any, *, swap_rgb_to_bgr: bool):
         self._picam2 = picam2
+        self._swap_rgb_to_bgr = swap_rgb_to_bgr
 
     def read(self) -> tuple[bool, Any | None]:
-        # Picamera2 returns RGB; convert to BGR for OpenCV (and JPEG encoding via OpenCV).
+        # Picamera2 returns whatever we configured (prefer BGR888).
         frame = self._picam2.capture_array()
         if frame is None:
             return False, None
-        # Avoid relying on cv2 color conversion; just swap channels.
-        try:
-            import numpy as np  # type: ignore
-            frame = np.ascontiguousarray(frame[:, :, ::-1])
-        except Exception:
-            # Best-effort fallback (may still work if frame is already BGR)
-            pass
+        if self._swap_rgb_to_bgr:
+            # Avoid relying on cv2 color conversion; just swap channels.
+            try:
+                import numpy as np  # type: ignore
+                frame = np.ascontiguousarray(frame[:, :, ::-1])
+            except Exception:
+                # Best-effort fallback (may still work if frame is already BGR)
+                pass
         return True, frame
 
     def release(self) -> None:
@@ -138,12 +140,20 @@ def open_frame_source(index: int = 0, device: str | None = None) -> FrameSource:
 
     picam2 = Picamera2()
     # Keep it simple: preview-sized frames for calibration and stub inference
+    swap_rgb_to_bgr = False
     try:
-        config = picam2.create_preview_configuration(main={"size": (640, 480), "format": "RGB888"})
+        # Prefer BGR888 so OpenCV/JPEG encoding has correct channel order.
+        config = picam2.create_preview_configuration(main={"size": (640, 480), "format": "BGR888"})
         picam2.configure(config)
     except Exception:
-        # fallback to defaults
-        pass
+        # If BGR888 isn't available, fall back to RGB888 and swap manually.
+        try:
+            config = picam2.create_preview_configuration(main={"size": (640, 480), "format": "RGB888"})
+            picam2.configure(config)
+            swap_rgb_to_bgr = True
+        except Exception:
+            # last-resort fallback to defaults
+            swap_rgb_to_bgr = False
     picam2.start()
     # Warm-up
     timeouts = 0
@@ -155,7 +165,7 @@ def open_frame_source(index: int = 0, device: str | None = None) -> FrameSource:
             timeouts += 1
             if timeouts >= 3:
                 break
-    return Picamera2FrameSource(picam2)
+    return Picamera2FrameSource(picam2, swap_rgb_to_bgr=swap_rgb_to_bgr)
 
 
 @contextmanager
