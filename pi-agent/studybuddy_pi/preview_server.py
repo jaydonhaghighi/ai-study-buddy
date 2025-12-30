@@ -133,9 +133,24 @@ class _SharedState:
                 swap_rb = self.swap_rb
             if swap_rb:
                 try:
+                    # IMPORTANT: slicing creates a view with negative stride; OpenCV drawing/encoding
+                    # requires a contiguous array layout.
                     frame = frame[:, :, ::-1]
+                    try:
+                        import numpy as np  # type: ignore
+                        frame = np.ascontiguousarray(frame)
+                    except Exception:
+                        frame = frame.copy()
                 except Exception:
                     pass
+
+            # Ensure frame is contiguous for OpenCV ops (rectangle/imencode)
+            try:
+                import numpy as np  # type: ignore
+                if not frame.flags["C_CONTIGUOUS"]:
+                    frame = np.ascontiguousarray(frame)
+            except Exception:
+                pass
 
             if self._face_cascade is not None:
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -152,7 +167,17 @@ class _SharedState:
                     aligned = (abs(cx - w / 2.0) <= 0.15 * w) and (abs(cy - h / 2.0) <= 0.15 * h)
 
                     # draw rectangle (visual feedback only, not saved)
-                    cv2.rectangle(frame, (x, y), (x + fw, y + fh), (0, 255, 0) if aligned else (0, 165, 255), 2)
+                    try:
+                        cv2.rectangle(
+                            frame,
+                            (x, y),
+                            (x + fw, y + fh),
+                            (0, 255, 0) if aligned else (0, 165, 255),
+                            2,
+                        )
+                    except Exception:
+                        # Don't crash the capture thread if drawing fails
+                        pass
 
             # Encode JPEG
             ok2, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
