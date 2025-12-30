@@ -24,6 +24,7 @@ class _SharedState:
         self.aligned: bool = False
         self.face_box: list[int] | None = None  # [x, y, w, h]
         self.last_error: str | None = None
+        self.swap_rb: bool = False
 
         self._stop = False
         self._thread: threading.Thread | None = None
@@ -58,6 +59,10 @@ class _SharedState:
                 self.camera_index = camera_index
             if camera_device is not None:
                 self.camera_device = camera_device
+
+    def set_swap_rb(self, swap: bool) -> None:
+        with self.lock:
+            self.swap_rb = bool(swap)
 
     def disable(self) -> None:
         with self.lock:
@@ -122,6 +127,15 @@ class _SharedState:
             face_detected = False
             aligned = False
             face_box = None
+
+            # Optional color swap (fix RGB/BGR mismatch in preview)
+            with self.lock:
+                swap_rb = self.swap_rb
+            if swap_rb:
+                try:
+                    frame = frame[:, :, ::-1]
+                except Exception:
+                    pass
 
             if self._face_cascade is not None:
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -217,6 +231,7 @@ class PreviewServer:
                             "lastError": str(server.state.last_error) if server.state.last_error is not None else None,
                             "cameraIndex": int(server.state.camera_index),
                             "cameraDevice": str(server.state.camera_device) if server.state.camera_device is not None else None,
+                            "swapRB": bool(server.state.swap_rb),
                         }
                     self.send_response(200)
                     self._cors()
@@ -279,13 +294,18 @@ class PreviewServer:
                             dev = qs["device"][0]
                             if isinstance(dev, str) and dev.startswith("/dev/video"):
                                 server.state.set_camera(camera_device=dev)
+                        if "swap" in qs:
+                            raw = qs["swap"][0]
+                            server.state.set_swap_rb(str(raw).strip().lower() in {"1", "true", "yes", "y", "on"})
 
                         server.state.enable()
                         self.send_response(200)
                         self._cors()
                         self.send_header("Content-Type", "application/json")
                         self.end_headers()
-                        self.wfile.write(json.dumps({"ok": True, "enabled": True}).encode("utf-8"))
+                        with server.state.lock:
+                            swap_rb = server.state.swap_rb
+                        self.wfile.write(json.dumps({"ok": True, "enabled": True, "swapRB": swap_rb}).encode("utf-8"))
                     except Exception as e:
                         try:
                             server.state.disable()
