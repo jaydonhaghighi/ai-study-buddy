@@ -87,6 +87,7 @@ def load_config() -> Config:
         ),
         camera_width=int(os.getenv("STUDYBUDDY_CAMERA_WIDTH", "640")),
         camera_height=int(os.getenv("STUDYBUDDY_CAMERA_HEIGHT", "480")),
-        camera_format=os.getenv("STUDYBUDDY_CAMERA_FORMAT", "RGB888"),
+        # Prefer BGR888 to match OpenCV's expected channel order.
+        camera_format=os.getenv("STUDYBUDDY_CAMERA_FORMAT", "BGR888"),
         device_id=os.getenv("STUDYBUDDY_DEVICE_ID"),
     )
