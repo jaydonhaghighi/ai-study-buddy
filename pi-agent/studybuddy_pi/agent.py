@@ -7,9 +7,9 @@ from typing import Any
 
 from .api import StudyBuddyApi
 from .config import Config
+from .camera_manager import CameraManager
 from .focus_state import FocusStateMachine
 from .inference import FocusInference
-from .camera import open_camera, read_frame
 from .preview_server import PreviewServer
 from .storage import StoredAuth, enqueue_summary, list_queued_summaries, load_auth, save_auth
 from .summary import compute_focus_summary, summary_to_payload
@@ -19,6 +19,12 @@ class Agent:
     def __init__(self, config: Config):
         self.config = config
         self._preview_server: PreviewServer | None = None
+        self._camera = CameraManager(
+            width=config.camera_width,
+            height=config.camera_height,
+            format=config.camera_format,
+            target_fps=max(config.target_fps, 10.0),
+        )
 
     def pair(self) -> StoredAuth:
         if not self.config.claim_code:
@@ -74,8 +80,7 @@ class Agent:
                 self._preview_server = PreviewServer(
                     host=self.config.preview_host,
                     port=self.config.preview_port,
-                    camera_index=self.config.camera_index,
-                    camera_device=self.config.camera_device,
+                    camera=self._camera,
                 )
                 self._preview_server.start()
                 print(
@@ -95,8 +100,6 @@ class Agent:
         # Active session state
         fsm: FocusStateMachine | None = None
         session_start_ts: float | None = None
-        cap: Any | None = None
-        camera_ctx: Any | None = None
         video_writer: Any | None = None
         video_path: str | None = None
         frames_captured = 0
@@ -106,7 +109,7 @@ class Agent:
             # Always try to flush any queued summaries
             self.flush_outbox(api)
 
-            now = time.time()
+        # now = time.time()  # reserved for future use (e.g., heartbeat)
 
             # If not currently running a focus session, use polling (or long-poll) to wait for one.
             if current_focus_session_id is None:
@@ -127,34 +130,24 @@ class Agent:
                         frames_captured = 0
                         last_heartbeat = 0.0
                         print(f"[ai-study-buddy] Focus session START: {current_focus_session_id}")
-                        # Avoid camera contention: stop calibration preview while a focus session is running.
+                        # Acquire the shared camera for tracking
                         try:
-                            if self._preview_server is not None:
-                                self._preview_server.state.disable()
-                        except Exception:
-                            pass
-                        # Open camera on session start (even if inference is simulated)
-                        if self.config.enable_camera:
-                            camera_ctx = open_camera(index=self.config.camera_index, device=self.config.camera_device)
-                            cap = camera_ctx.__enter__()
-                            print("[ai-study-buddy] Camera OPENED (cv2.VideoCapture)")
-                            # Optional local recording to a file for verification/debug
-                            if self.config.record_dir:
-                                try:
-                                    import cv2  # type: ignore
-                                    os.makedirs(self.config.record_dir, exist_ok=True)
-                                    video_path = os.path.join(
-                                        self.config.record_dir,
-                                        f"{current_focus_session_id}.avi",
-                                    )
-                                    fourcc = cv2.VideoWriter_fourcc(*"XVID")
-                                    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 640)
-                                    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 480)
-                                    video_writer = cv2.VideoWriter(video_path, fourcc, self.config.target_fps, (w, h))
-                                    print(f"[ai-study-buddy] Recording ENABLED: {video_path} ({w}x{h} @ {self.config.target_fps}fps)")
-                                except Exception:
-                                    video_writer = None
-                                    video_path = None
+                            self._camera.acquire("tracking")
+                        except Exception as e:
+                            print(f"[ai-study-buddy] Camera acquire failed: {e}")
+
+                        # Optional local recording to a file for verification/debug
+                        if self.config.record_dir:
+                            try:
+                                import cv2  # type: ignore
+                                os.makedirs(self.config.record_dir, exist_ok=True)
+                                video_path = os.path.join(self.config.record_dir, f"{current_focus_session_id}.avi")
+                                fourcc = cv2.VideoWriter_fourcc(*"XVID")
+                                video_writer = None  # created once we have the first frame (need size)
+                                print(f"[ai-study-buddy] Recording ARMED: {video_path}")
+                            except Exception:
+                                video_writer = None
+                                video_path = None
                         last_control_check = 0.0
                         poll_sleep = self.config.poll_interval_seconds
                     else:
@@ -172,18 +165,26 @@ class Agent:
 
             tick_start = time.time()
             try:
-                frame = None
-                if cap is not None:
-                    frame = read_frame(cap)
-                    if frame is not None and video_writer is not None:
-                        try:
-                            video_writer.write(frame)
-                        except Exception:
-                            pass
-                    if frame is not None:
-                        frames_captured += 1
-                    else:
-                        # help debug "opened but no frames" issues
+                latest = self._camera.get_latest()
+                frame = latest.frame if latest is not None else None
+                if frame is not None:
+                    frames_captured += 1
+
+                # Start writer once we know frame size
+                if frame is not None and video_path and video_writer is None:
+                    try:
+                        import cv2  # type: ignore
+                        h, w = frame.shape[:2]
+                        fourcc = cv2.VideoWriter_fourcc(*"XVID")
+                        video_writer = cv2.VideoWriter(video_path, fourcc, self.config.target_fps, (w, h))
+                        print(f"[ai-study-buddy] Recording ENABLED: {video_path} ({w}x{h} @ {self.config.target_fps}fps)")
+                    except Exception:
+                        video_writer = None
+
+                if frame is not None and video_writer is not None:
+                    try:
+                        video_writer.write(frame)
+                    except Exception:
                         pass
 
                 res = inference.predict(frame=frame)
@@ -198,7 +199,7 @@ class Agent:
             # Heartbeat while active (helps confirm camera is running)
             if (tick_start - last_heartbeat) >= 5.0:
                 last_heartbeat = tick_start
-                cam_status = "ON" if cap is not None else "OFF"
+                cam_status = "ON" if self._camera.get_latest() is not None else "OFF"
                 rec_status = f"REC={video_path}" if video_path else "REC=off"
                 print(f"[ai-study-buddy] Active {current_focus_session_id} camera={cam_status} frames={frames_captured} {rec_status}")
 
@@ -247,13 +248,10 @@ class Agent:
                             print(f"[ai-study-buddy] Recording CLOSED: {video_path}")
                         video_path = None
                         try:
-                            if camera_ctx is not None:
-                                camera_ctx.__exit__(None, None, None)
+                            self._camera.release("tracking")
                         except Exception:
                             pass
-                        cap = None
-                        camera_ctx = None
-                        print("[ai-study-buddy] Camera CLOSED")
+                        print("[ai-study-buddy] Camera RELEASED")
 
                         # Reset local state
                         current_focus_session_id = None

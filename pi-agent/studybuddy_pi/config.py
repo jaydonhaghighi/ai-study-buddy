@@ -34,13 +34,15 @@ class Config:
     # Capture/inference loop (when active)
     target_fps: float
     simulate: bool
-    enable_camera: bool
     record_dir: str | None
     enable_preview_server: bool
     preview_host: str
     preview_port: int
-    camera_index: int
-    camera_device: str | None
+
+    # Camera (Picamera2)
+    camera_width: int
+    camera_height: int
+    camera_format: str
 
     # Optional device identity hints (depending on backend design)
     device_id: str | None
@@ -69,12 +71,12 @@ def load_config() -> Config:
         refocus_threshold_seconds=float(os.getenv("STUDYBUDDY_REFOCUS_THRESHOLD_SECONDS", "3.0")),
         target_fps=float(os.getenv("STUDYBUDDY_TARGET_FPS", "10.0")),
         simulate=_env_bool("STUDYBUDDY_SIMULATE", False),
-        enable_camera=_env_bool("STUDYBUDDY_ENABLE_CAMERA", True),
         record_dir=os.getenv("STUDYBUDDY_RECORD_DIR"),
         enable_preview_server=_env_bool("STUDYBUDDY_ENABLE_PREVIEW_SERVER", True),
         preview_host=os.getenv("STUDYBUDDY_PREVIEW_HOST", "0.0.0.0"),
         preview_port=int(os.getenv("STUDYBUDDY_PREVIEW_PORT", "8080")),
-        camera_index=int(os.getenv("STUDYBUDDY_CAMERA_INDEX", "0")),
-        camera_device=os.getenv("STUDYBUDDY_CAMERA_DEVICE"),
+        camera_width=int(os.getenv("STUDYBUDDY_CAMERA_WIDTH", "640")),
+        camera_height=int(os.getenv("STUDYBUDDY_CAMERA_HEIGHT", "480")),
+        camera_format=os.getenv("STUDYBUDDY_CAMERA_FORMAT", "RGB888"),
         device_id=os.getenv("STUDYBUDDY_DEVICE_ID"),
     )
