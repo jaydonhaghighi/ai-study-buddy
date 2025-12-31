@@ -22,11 +22,6 @@ class _SharedState:
         self.aligned: bool = False
         self.face_box: list[int] | None = None  # [x, y, w, h]
         self.last_error: str | None = None
-        # Deterministic preview color handling:
-        # On this Pi setup, swapping R/B was producing incorrect colors.
-        # We keep a debug overlay (red/blue squares) to verify channel order visually.
-        self.last_swap_applied: bool = False
-        self.frame_count: int = 0
 
         self._stop = False
         self._thread: threading.Thread | None = None
@@ -138,20 +133,6 @@ class _SharedState:
                         # Don't crash the capture thread if drawing fails
                         pass
 
-            # Debug color reference overlay (small, bottom-left):
-            # - Red square (BGR: 0,0,255)
-            # - Blue square (BGR: 255,0,0)
-            # If these appear swapped, the pipeline is interpreting channels differently.
-            try:
-                size = 20
-                pad = 6
-                # Red
-                cv2.rectangle(frame, (pad, h - pad - size), (pad + size, h - pad), (0, 0, 255), -1)
-                # Blue
-                cv2.rectangle(frame, (pad + size + 6, h - pad - size), (pad + size + 6 + size, h - pad), (255, 0, 0), -1)
-            except Exception:
-                pass
-
             # Encode JPEG
             ok2, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
             if not ok2:
@@ -164,7 +145,6 @@ class _SharedState:
             with self.lock:
                 self.last_jpeg = jpeg
                 self.last_frame_ts = ts
-                self.frame_count += 1
                 self.face_detected = face_detected
                 self.aligned = aligned
                 self.face_box = face_box
@@ -227,10 +207,6 @@ class PreviewServer:
                             "aligned": bool(server.state.aligned),
                             "faceBox": [int(x) for x in server.state.face_box] if server.state.face_box else None,
                             "lastError": str(server.state.last_error) if server.state.last_error is not None else None,
-                            "swapApplied": bool(server.state.last_swap_applied),
-                            "frameCount": int(server.state.frame_count),
-                            "cameraRequestedFormat": str(server.state.camera.requested_format),
-                            "cameraActualFormat": str(server.state.camera.actual_format) if server.state.camera.actual_format is not None else None,
                         }
                     self.send_response(200)
                     self._cors()
