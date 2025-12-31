@@ -38,11 +38,6 @@ class Config:
     enable_preview_server: bool
     preview_host: str
     preview_port: int
-    # Preview color handling:
-    # - None: auto (based on camera output format)
-    # - True: force swap RB (treat input as RGB -> convert to BGR)
-    # - False: force no swap (treat input as already BGR)
-    preview_swap_rb: bool | None
 
     # Camera (Picamera2)
     camera_width: int
@@ -80,14 +75,9 @@ def load_config() -> Config:
         enable_preview_server=_env_bool("STUDYBUDDY_ENABLE_PREVIEW_SERVER", True),
         preview_host=os.getenv("STUDYBUDDY_PREVIEW_HOST", "0.0.0.0"),
         preview_port=int(os.getenv("STUDYBUDDY_PREVIEW_PORT", "8080")),
-        preview_swap_rb=(
-            None
-            if os.getenv("STUDYBUDDY_PREVIEW_SWAP_RB") is None
-            else _env_bool("STUDYBUDDY_PREVIEW_SWAP_RB", False)
-        ),
         camera_width=int(os.getenv("STUDYBUDDY_CAMERA_WIDTH", "640")),
         camera_height=int(os.getenv("STUDYBUDDY_CAMERA_HEIGHT", "480")),
-        # Prefer BGR888 to match OpenCV's expected channel order.
-        camera_format=os.getenv("STUDYBUDDY_CAMERA_FORMAT", "BGR888"),
+        # Default to RGB888; preview server performs a deterministic RGB->BGR swap before encoding.
+        camera_format=os.getenv("STUDYBUDDY_CAMERA_FORMAT", "RGB888"),
         device_id=os.getenv("STUDYBUDDY_DEVICE_ID"),
     )
