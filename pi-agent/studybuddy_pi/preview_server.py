@@ -26,7 +26,17 @@ class _SharedState:
         self._stop = False
         self._thread: threading.Thread | None = None
 
+        # Face detector (best-effort). If this fails, preview still works, just no face boxes.
         self._face_cascade = None
+        try:
+            import cv2  # type: ignore
+            self._face_cascade = cv2.CascadeClassifier(
+                cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+            )
+            if self._face_cascade is None or self._face_cascade.empty():
+                self._face_cascade = None
+        except Exception:
+            self._face_cascade = None
 
     def start(self) -> None:
         if self._thread is not None:
@@ -108,7 +118,12 @@ class _SharedState:
 
             if self._face_cascade is not None:
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                faces = self._face_cascade.detectMultiScale(gray, 1.1, 5)
+                faces = self._face_cascade.detectMultiScale(
+                    gray,
+                    scaleFactor=1.1,
+                    minNeighbors=5,
+                    minSize=(60, 60),
+                )
                 if len(faces) > 0:
                     # pick largest face
                     x, y, fw, fh = max(faces, key=lambda b: b[2] * b[3])
