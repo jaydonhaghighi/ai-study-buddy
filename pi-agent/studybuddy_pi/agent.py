@@ -81,6 +81,7 @@ class Agent:
                     host=self.config.preview_host,
                     port=self.config.preview_port,
                     camera=self._camera,
+                    preview_swap_rb=self.config.preview_swap_rb,
                 )
                 self._preview_server.start()
                 print(
