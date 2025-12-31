@@ -10,7 +10,7 @@ from urllib.parse import parse_qs, urlparse
 from .camera_manager import CameraManager
 
 class _SharedState:
-    def __init__(self, camera: CameraManager):
+    def __init__(self, camera: CameraManager, preview_swap_rb: bool | None):
         self.camera = camera
         self.enabled = False
         self.lock = threading.Lock()
@@ -22,9 +22,10 @@ class _SharedState:
         self.aligned: bool = False
         self.face_box: list[int] | None = None  # [x, y, w, h]
         self.last_error: str | None = None
-        # Default to swapping R/B so the preview shows correct colors on typical PiCam setups.
-        # (This is purely for preview rendering; no frames are persisted.)
-        self.swap_rb: bool = True
+        # Preview color policy:
+        # - If preview_swap_rb is provided, honor it.
+        # - Else auto-select based on actual configured camera format.
+        self.swap_rb: bool | None = preview_swap_rb
 
         self._stop = False
         self._thread: threading.Thread | None = None
@@ -50,10 +51,6 @@ class _SharedState:
         with self.lock:
             self.enabled = True
 
-    def set_swap_rb(self, swap: bool) -> None:
-        with self.lock:
-            self.swap_rb = bool(swap)
-
     def disable(self) -> None:
         with self.lock:
             self.enabled = False
@@ -75,7 +72,7 @@ class _SharedState:
             with self.lock:
                 if not self.enabled:
                     continue
-                swap_rb = self.swap_rb
+                configured_swap = self.swap_rb
 
             try:
                 import cv2  # type: ignore
@@ -103,7 +100,14 @@ class _SharedState:
             aligned = False
             face_box = None
 
-            # Optional color swap (fix RGB/BGR mismatch in preview)
+            # Determine whether we need to swap R/B for OpenCV/JPEG.
+            # OpenCV expects BGR ordering.
+            if configured_swap is None:
+                fmt = (self.camera.actual_format or self.camera.requested_format or "").upper()
+                swap_rb = fmt.startswith("RGB")
+            else:
+                swap_rb = configured_swap
+
             if swap_rb:
                 try:
                     # IMPORTANT: slicing creates a view with negative stride; OpenCV drawing/encoding
@@ -182,10 +186,10 @@ class PreviewServer:
     - GET /stream.mjpg (multipart MJPEG stream)
     """
 
-    def __init__(self, *, host: str = "0.0.0.0", port: int = 8080, camera: CameraManager):
+    def __init__(self, *, host: str = "0.0.0.0", port: int = 8080, camera: CameraManager, preview_swap_rb: bool | None = None):
         self.host = host
         self.port = port
-        self.state = _SharedState(camera=camera)
+        self.state = _SharedState(camera=camera, preview_swap_rb=preview_swap_rb)
         self.httpd: ThreadingHTTPServer | None = None
         self.thread: threading.Thread | None = None
 
@@ -226,7 +230,9 @@ class PreviewServer:
                             "aligned": bool(server.state.aligned),
                             "faceBox": [int(x) for x in server.state.face_box] if server.state.face_box else None,
                             "lastError": str(server.state.last_error) if server.state.last_error is not None else None,
-                            "swapRB": bool(server.state.swap_rb),
+                            "swapRB": None if server.state.swap_rb is None else bool(server.state.swap_rb),
+                            "cameraRequestedFormat": str(server.state.camera.requested_format),
+                            "cameraActualFormat": str(server.state.camera.actual_format) if server.state.camera.actual_format is not None else None,
                         }
                     self.send_response(200)
                     self._cors()
@@ -277,20 +283,12 @@ class PreviewServer:
 
                 if path == "/start":
                     try:
-                        # Optional override (debug):
-                        # /start?swap=0 to disable swapping if your pipeline is already correct.
-                        if "swap" in qs:
-                            raw = qs["swap"][0]
-                            server.state.set_swap_rb(str(raw).strip().lower() in {"1", "true", "yes", "y", "on"})
-
                         server.state.enable()
                         self.send_response(200)
                         self._cors()
                         self.send_header("Content-Type", "application/json")
                         self.end_headers()
-                        with server.state.lock:
-                            swap_rb = server.state.swap_rb
-                        self.wfile.write(json.dumps({"ok": True, "enabled": True, "swapRB": swap_rb}).encode("utf-8"))
+                        self.wfile.write(json.dumps({"ok": True, "enabled": True}).encode("utf-8"))
                     except Exception as e:
                         try:
                             server.state.disable()

@@ -24,7 +24,8 @@ class CameraManager:
     def __init__(self, *, width: int = 640, height: int = 480, format: str = "RGB888", target_fps: float = 15.0):
         self.width = width
         self.height = height
-        self.format = format  # Picamera2 format string (e.g. "RGB888")
+        self.requested_format = format  # requested Picamera2 format string (e.g. "RGB888" or "BGR888")
+        self.actual_format: str | None = None
         self.target_fps = target_fps
 
         self._lock = threading.Lock()
@@ -75,11 +76,19 @@ class CameraManager:
         self._stop_event.clear()
         self._picam2 = Picamera2()
         try:
-            config = self._picam2.create_preview_configuration(main={"size": (self.width, self.height), "format": self.format})
+            config = self._picam2.create_preview_configuration(
+                main={"size": (self.width, self.height), "format": self.requested_format}
+            )
             self._picam2.configure(config)
+            # Best-effort: remember actual configured format
+            try:
+                cfg = self._picam2.camera_configuration()
+                self.actual_format = str(cfg.get("main", {}).get("format")) if isinstance(cfg, dict) else None
+            except Exception:
+                self.actual_format = self.requested_format
         except Exception:
             # fallback to defaults if configuration fails
-            pass
+            self.actual_format = None
         self._picam2.start()
 
         # Warm up a few frames
