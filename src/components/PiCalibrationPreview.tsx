@@ -17,7 +17,6 @@ export default function PiCalibrationPreview() {
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [swapRB, setSwapRB] = useState(true);
 
   const alignedSinceRef = useRef<number | null>(null);
   const [alignedSeconds, setAlignedSeconds] = useState(0);
@@ -47,7 +46,7 @@ export default function PiCalibrationPreview() {
     localStorage.setItem('piPreviewBaseUrl', base);
     setError(null);
     try {
-      const res = await fetch(`${base}/start?swap=${swapRB ? '1' : '0'}`, { method: 'POST' });
+      const res = await fetch(`${base}/start`, { method: 'POST' });
       const json = await res.json().catch(() => ({}));
       if (!res.ok || json.ok === false) {
         throw new Error(json.error || `Failed to start preview (${res.status})`);
@@ -123,15 +122,6 @@ export default function PiCalibrationPreview() {
             style={{ width: '100%', padding: 8, borderRadius: 8, border: '1px solid rgba(255,255,255,0.25)' }}
             disabled={open}
           />
-          <label style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, fontSize: 12, opacity: 0.9 }}>
-            <input
-              type="checkbox"
-              checked={swapRB}
-              onChange={(e) => setSwapRB(e.target.checked)}
-              disabled={open}
-            />
-            Fix colors (swap red/blue)
-          </label>
           <div style={{ fontSize: 12, opacity: 0.8, marginTop: 6 }}>
             Local demo only (HTTP). Video is not saved; stream auto-stops when aligned.
           </div>

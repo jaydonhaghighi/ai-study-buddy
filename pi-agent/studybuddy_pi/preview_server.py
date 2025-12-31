@@ -7,16 +7,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from .camera import open_frame_source, read_frame
+from .camera_manager import CameraManager
 
 class _SharedState:
-    def __init__(self, camera_index: int = 0):
-        self.camera_index = camera_index
-        self.camera_device: str | None = None
+    def __init__(self, camera: CameraManager):
+        self.camera = camera
         self.enabled = False
         self.lock = threading.Lock()
 
-        self.cap: Any | None = None
         self.last_jpeg: bytes | None = None
         self.last_frame_ts: float | None = None
 
@@ -24,7 +22,9 @@ class _SharedState:
         self.aligned: bool = False
         self.face_box: list[int] | None = None  # [x, y, w, h]
         self.last_error: str | None = None
-        self.swap_rb: bool = False
+        # Default to swapping R/B so the preview shows correct colors on typical PiCam setups.
+        # (This is purely for preview rendering; no frames are persisted.)
+        self.swap_rb: bool = True
 
         self._stop = False
         self._thread: threading.Thread | None = None
@@ -39,26 +39,16 @@ class _SharedState:
 
     def stop_all(self) -> None:
         self._stop = True
-        with self.lock:
-            self._close_camera()
+        try:
+            self.camera.release("preview")
+        except Exception:
+            pass
 
     def enable(self) -> None:
-        # Only mark enabled if camera successfully opens
+        # Acquire the shared camera (refcounted)
+        self.camera.acquire("preview")
         with self.lock:
-            if self.cap is None:
-                try:
-                    self._open_camera()
-                except Exception:
-                    self.enabled = False
-                    raise
             self.enabled = True
-
-    def set_camera(self, *, camera_index: int | None = None, camera_device: str | None = None) -> None:
-        with self.lock:
-            if camera_index is not None:
-                self.camera_index = camera_index
-            if camera_device is not None:
-                self.camera_device = camera_device
 
     def set_swap_rb(self, swap: bool) -> None:
         with self.lock:
@@ -73,40 +63,19 @@ class _SharedState:
             self.aligned = False
             self.face_box = None
             self.last_error = None
-            self._close_camera()
-
-    def _open_camera(self) -> None:
-        # Note: we require cv2 for encoding + face detection, but actual capture may be picamera2-backed.
         try:
-            import cv2  # type: ignore
-        except Exception as e:
-            raise RuntimeError("OpenCV (cv2) is required for calibration preview encoding/face detection") from e
-
-        # Use shared camera opener (OpenCV first, Picamera2 fallback)
-        self.cap = open_frame_source(index=self.camera_index, device=self.camera_device)
-        self.last_error = None
-
-        if self._face_cascade is None:
-            try:
-                self._face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-            except Exception:
-                self._face_cascade = None
-
-    def _close_camera(self) -> None:
-        try:
-            if self.cap is not None:
-                self.cap.release()
-        finally:
-            self.cap = None
+            self.camera.release("preview")
+        except Exception:
+            pass
 
     def _loop(self) -> None:
         # Background capture loop when enabled
         while not self._stop:
             time.sleep(0.05)  # ~20Hz cap; browser will pull what it needs
             with self.lock:
-                if not self.enabled or self.cap is None:
+                if not self.enabled:
                     continue
-                cap = self.cap
+                swap_rb = self.swap_rb
 
             try:
                 import cv2  # type: ignore
@@ -115,10 +84,16 @@ class _SharedState:
                     self.last_error = "cv2 import failed in capture thread"
                 continue
 
-            frame = read_frame(cap)
+            latest = self.camera.get_latest()
+            if latest is None:
+                with self.lock:
+                    self.last_error = self.camera.last_error or "No frames yet"
+                continue
+
+            frame = latest.frame
             if frame is None:
                 with self.lock:
-                    self.last_error = "cap.read() returned no frame (camera busy? wrong index? permissions?)"
+                    self.last_error = "Camera returned null frame"
                 continue
 
             h, w = frame.shape[:2]
@@ -129,8 +104,6 @@ class _SharedState:
             face_box = None
 
             # Optional color swap (fix RGB/BGR mismatch in preview)
-            with self.lock:
-                swap_rb = self.swap_rb
             if swap_rb:
                 try:
                     # IMPORTANT: slicing creates a view with negative stride; OpenCV drawing/encoding
@@ -187,7 +160,7 @@ class _SharedState:
                 continue
 
             jpeg = buf.tobytes()
-            ts = time.time()
+            ts = latest.ts
             with self.lock:
                 self.last_jpeg = jpeg
                 self.last_frame_ts = ts
@@ -209,11 +182,10 @@ class PreviewServer:
     - GET /stream.mjpg (multipart MJPEG stream)
     """
 
-    def __init__(self, host: str = "0.0.0.0", port: int = 8080, camera_index: int = 0, camera_device: str | None = None):
+    def __init__(self, *, host: str = "0.0.0.0", port: int = 8080, camera: CameraManager):
         self.host = host
         self.port = port
-        self.state = _SharedState(camera_index=camera_index)
-        self.state.camera_device = camera_device
+        self.state = _SharedState(camera=camera)
         self.httpd: ThreadingHTTPServer | None = None
         self.thread: threading.Thread | None = None
 
@@ -254,8 +226,6 @@ class PreviewServer:
                             "aligned": bool(server.state.aligned),
                             "faceBox": [int(x) for x in server.state.face_box] if server.state.face_box else None,
                             "lastError": str(server.state.last_error) if server.state.last_error is not None else None,
-                            "cameraIndex": int(server.state.camera_index),
-                            "cameraDevice": str(server.state.camera_device) if server.state.camera_device is not None else None,
                             "swapRB": bool(server.state.swap_rb),
                         }
                     self.send_response(200)
@@ -307,18 +277,8 @@ class PreviewServer:
 
                 if path == "/start":
                     try:
-                        # Allow overriding camera for debugging:
-                        # /start?index=0  or /start?device=/dev/video0
-                        if "index" in qs:
-                            try:
-                                idx = int(qs["index"][0])
-                                server.state.set_camera(camera_index=idx)
-                            except Exception:
-                                pass
-                        if "device" in qs:
-                            dev = qs["device"][0]
-                            if isinstance(dev, str) and dev.startswith("/dev/video"):
-                                server.state.set_camera(camera_device=dev)
+                        # Optional override (debug):
+                        # /start?swap=0 to disable swapping if your pipeline is already correct.
                         if "swap" in qs:
                             raw = qs["swap"][0]
                             server.state.set_swap_rb(str(raw).strip().lower() in {"1", "true", "yes", "y", "on"})
