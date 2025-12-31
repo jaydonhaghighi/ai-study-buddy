@@ -62,6 +62,7 @@ Enable (defaults to on):
 ```bash
 export STUDYBUDDY_ENABLE_PREVIEW_SERVER=1
 export STUDYBUDDY_PREVIEW_PORT=8080
+export STUDYBUDDY_CAMERA_FORMAT=BGR888
 ```
 
 Pi endpoints:

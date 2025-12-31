@@ -26,6 +26,7 @@ class _SharedState:
         # - If preview_swap_rb is provided, honor it.
         # - Else auto-select based on actual configured camera format.
         self.swap_rb: bool | None = preview_swap_rb
+        self.last_swap_applied: bool | None = None
 
         self._stop = False
         self._thread: threading.Thread | None = None
@@ -107,6 +108,8 @@ class _SharedState:
                 swap_rb = fmt.startswith("RGB")
             else:
                 swap_rb = configured_swap
+            with self.lock:
+                self.last_swap_applied = bool(swap_rb)
 
             if swap_rb:
                 try:
@@ -231,6 +234,7 @@ class PreviewServer:
                             "faceBox": [int(x) for x in server.state.face_box] if server.state.face_box else None,
                             "lastError": str(server.state.last_error) if server.state.last_error is not None else None,
                             "swapRB": None if server.state.swap_rb is None else bool(server.state.swap_rb),
+                            "swapApplied": None if server.state.last_swap_applied is None else bool(server.state.last_swap_applied),
                             "cameraRequestedFormat": str(server.state.camera.requested_format),
                             "cameraActualFormat": str(server.state.camera.actual_format) if server.state.camera.actual_format is not None else None,
                         }
