@@ -56,11 +56,17 @@ def save_auth(state_dir: str, auth: StoredAuth) -> None:
 
 def enqueue_summary(state_dir: str, summary: dict[str, Any]) -> Path:
     out = queue_dir(state_dir)
+    # Be extra defensive: ensure the outbox exists right before writing.
+    out.mkdir(parents=True, exist_ok=True)
     ts = int(time.time() * 1000)
     focus_session_id = summary.get("focusSessionId") or "unknown"
     name = f"{ts}-{focus_session_id}.json"
     p = out / name
-    p.write_text(json.dumps(summary, indent=2, sort_keys=True))
+    # Atomic write to temp file then rename.
+    tmp = out / f".{name}.tmp"
+    payload = json.dumps(summary, indent=2, sort_keys=True)
+    tmp.write_text(payload)
+    tmp.replace(p)
     return p
 
 
