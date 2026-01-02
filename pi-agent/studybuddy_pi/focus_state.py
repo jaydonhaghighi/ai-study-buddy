@@ -61,5 +61,3 @@ class FocusStateMachine:
             self._unfocused_since = None
             self.transitions.append(Transition(ts=ts, state=self.state))
         return self.state
-
-

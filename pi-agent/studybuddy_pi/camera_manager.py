@@ -145,5 +145,3 @@ class CameraManager:
             elapsed = time.time() - start
             sleep_for = max(0.0, (1.0 / max(self.target_fps, 0.1)) - elapsed)
             time.sleep(sleep_for)
-
-

@@ -78,5 +78,3 @@ class StudyBuddyApi:
         )
         r.raise_for_status()
         return r.json() if r.content else {"ok": True, "uploadedAt": time.time()}
-
-

@@ -316,5 +316,3 @@ class PreviewServer:
             self.httpd.shutdown()
             self.httpd.server_close()
         self.state.stop_all()
-
-
