@@ -114,5 +114,3 @@ def summary_to_payload(
         "avgFocusBeforeDistractMs": computed.avg_focus_before_distract_ms,
         "focusPercent": computed.focus_percent,
     }
-
-

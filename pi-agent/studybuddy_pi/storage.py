@@ -77,5 +77,3 @@ def delete_queued(path: Path) -> None:
     except TypeError:
         if path.exists():
             path.unlink()
-
-
