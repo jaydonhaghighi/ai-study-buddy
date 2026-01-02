@@ -62,7 +62,7 @@ def enqueue_summary(state_dir: str, summary: dict[str, Any]) -> Path:
     focus_session_id = summary.get("focusSessionId") or "unknown"
     name = f"{ts}-{focus_session_id}.json"
     p = out / name
-    # Atomic-ish write: write to temp file then rename.
+    # Atomic write to temp file then rename.
     tmp = out / f".{name}.tmp"
     payload = json.dumps(summary, indent=2, sort_keys=True)
     tmp.write_text(payload)
