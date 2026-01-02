@@ -42,5 +42,3 @@ class FocusInference:
         # - run invoke()
         # - map output to is_focused + confidence
         raise NotImplementedError("Real inference not wired yet. Set STUDYBUDDY_SIMULATE=1 for now.")
-
-

@@ -267,5 +267,3 @@ class Agent:
             elapsed = time.time() - tick_start
             sleep_for = max(0.0, (1.0 / max(self.config.target_fps, 0.1)) - elapsed)
             time.sleep(sleep_for)
-
-
