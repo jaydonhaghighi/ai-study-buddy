@@ -104,6 +104,7 @@ class Agent:
         video_path: str | None = None
         frames_captured = 0
         last_heartbeat = 0.0
+        stopping_focus_session = False
 
         while True:
             # Always try to flush any queued summaries
@@ -212,53 +213,63 @@ class Agent:
                         wait_seconds=None,
                         since_epoch_ms=None,
                     )
-                    if not resp.focusSessionId or resp.focusSessionId != current_focus_session_id:
+                    if (not resp.focusSessionId or resp.focusSessionId != current_focus_session_id) and not stopping_focus_session:
                         # Session ended or switched
+                        stopping_focus_session = True
+                        ended_focus_session_id = current_focus_session_id
                         end_ts = time.time()
-                        print(f"[ai-study-buddy] Focus session STOP: {current_focus_session_id}")
-                        computed = compute_focus_summary(
-                            transitions=fsm.transitions,
-                            distractions=fsm.distractions,
-                            start_ts=session_start_ts,
-                            end_ts=end_ts,
-                        )
-                        payload = summary_to_payload(
-                            focus_session_id=current_focus_session_id,
-                            device_id=device_id,
-                            course_id=current_meta.get("courseId"),
-                            course_session_id=current_meta.get("courseSessionId"),
-                            start_ts=session_start_ts,
-                            end_ts=end_ts,
-                            distractions=fsm.distractions,
-                            computed=computed,
-                        )
+                        print(f"[ai-study-buddy] Focus session STOP: {ended_focus_session_id}")
 
-                        # Always enqueue first (reliability), then try upload
-                        enqueue_summary(self.config.state_dir, payload)
-                        self.flush_outbox(api)
-
-                        # Close camera/recording
                         try:
-                            if video_writer is not None:
-                                video_writer.release()
-                        except Exception:
-                            pass
-                        video_writer = None
-                        if video_path:
-                            print(f"[ai-study-buddy] Recording CLOSED: {video_path}")
-                        video_path = None
-                        try:
-                            self._camera.release("tracking")
-                        except Exception:
-                            pass
-                        print("[ai-study-buddy] Camera RELEASED")
+                            computed = compute_focus_summary(
+                                transitions=fsm.transitions,
+                                distractions=fsm.distractions,
+                                start_ts=session_start_ts,
+                                end_ts=end_ts,
+                            )
+                            payload = summary_to_payload(
+                                focus_session_id=ended_focus_session_id,
+                                device_id=device_id,
+                                course_id=current_meta.get("courseId"),
+                                course_session_id=current_meta.get("courseSessionId"),
+                                start_ts=session_start_ts,
+                                end_ts=end_ts,
+                                distractions=fsm.distractions,
+                                computed=computed,
+                            )
 
-                        # Reset local state
-                        current_focus_session_id = None
-                        current_meta = {}
-                        fsm = None
-                        session_start_ts = None
-                        poll_sleep = self.config.poll_interval_seconds
+                            # Always enqueue first (reliability), then try upload
+                            enqueue_summary(self.config.state_dir, payload)
+                            self.flush_outbox(api)
+                        except Exception as e:
+                            # Never let summary/upload failures prevent cleanup/reset
+                            print(f"[ai-study-buddy] Stop handling error (will retry outbox later): {e}")
+                        finally:
+                            # Close recording writer if present
+                            try:
+                                if video_writer is not None:
+                                    video_writer.release()
+                            except Exception:
+                                pass
+                            video_writer = None
+                            if video_path:
+                                print(f"[ai-study-buddy] Recording CLOSED: {video_path}")
+                            video_path = None
+
+                            # Release camera ownership for tracking
+                            try:
+                                self._camera.release("tracking")
+                            except Exception:
+                                pass
+                            print("[ai-study-buddy] Camera RELEASED")
+
+                            # Reset local state so frames stop counting up for the ended session
+                            current_focus_session_id = None
+                            current_meta = {}
+                            fsm = None
+                            session_start_ts = None
+                            poll_sleep = self.config.poll_interval_seconds
+                            stopping_focus_session = False
                 except Exception:
                     # Keep running; control checks will retry
                     pass
