@@ -100,8 +100,6 @@ class Agent:
         # Active session state
         fsm: FocusStateMachine | None = None
         session_start_ts: float | None = None
-        video_writer: Any | None = None
-        video_path: str | None = None
         frames_captured = 0
         last_heartbeat = 0.0
         stopping_focus_session = False
@@ -136,19 +134,6 @@ class Agent:
                             self._camera.acquire("tracking")
                         except Exception as e:
                             print(f"[ai-study-buddy] Camera acquire failed: {e}")
-
-                        # Optional local recording to a file for verification/debug
-                        if self.config.record_dir:
-                            try:
-                                import cv2  # type: ignore
-                                os.makedirs(self.config.record_dir, exist_ok=True)
-                                video_path = os.path.join(self.config.record_dir, f"{current_focus_session_id}.avi")
-                                fourcc = cv2.VideoWriter_fourcc(*"XVID")
-                                video_writer = None  # created once we have the first frame (need size)
-                                print(f"[ai-study-buddy] Recording ARMED: {video_path}")
-                            except Exception:
-                                video_writer = None
-                                video_path = None
                         last_control_check = 0.0
                         poll_sleep = self.config.poll_interval_seconds
                     else:
@@ -171,23 +156,6 @@ class Agent:
                 if frame is not None:
                     frames_captured += 1
 
-                # Start writer once we know frame size
-                if frame is not None and video_path and video_writer is None:
-                    try:
-                        import cv2  # type: ignore
-                        h, w = frame.shape[:2]
-                        fourcc = cv2.VideoWriter_fourcc(*"XVID")
-                        video_writer = cv2.VideoWriter(video_path, fourcc, self.config.target_fps, (w, h))
-                        print(f"[ai-study-buddy] Recording ENABLED: {video_path} ({w}x{h} @ {self.config.target_fps}fps)")
-                    except Exception:
-                        video_writer = None
-
-                if frame is not None and video_writer is not None:
-                    try:
-                        video_writer.write(frame)
-                    except Exception:
-                        pass
-
                 res = inference.predict(frame=frame)
                 fsm.update(res.is_focused, now=tick_start)
             except NotImplementedError:
@@ -201,8 +169,7 @@ class Agent:
             if (tick_start - last_heartbeat) >= 5.0:
                 last_heartbeat = tick_start
                 cam_status = "ON" if self._camera.get_latest() is not None else "OFF"
-                rec_status = f"REC={video_path}" if video_path else "REC=off"
-                print(f"[ai-study-buddy] Active {current_focus_session_id} camera={cam_status} frames={frames_captured} {rec_status}")
+                print(f"[ai-study-buddy] Active {current_focus_session_id} camera={cam_status} frames={frames_captured}")
 
             # Check session assignment (control) ~1Hz
             if (tick_start - last_control_check) >= 1.0:
@@ -245,17 +212,6 @@ class Agent:
                             # Never let summary/upload failures prevent cleanup/reset
                             print(f"[ai-study-buddy] Stop handling error (will retry outbox later): {e}")
                         finally:
-                            # Close recording writer if present
-                            try:
-                                if video_writer is not None:
-                                    video_writer.release()
-                            except Exception:
-                                pass
-                            video_writer = None
-                            if video_path:
-                                print(f"[ai-study-buddy] Recording CLOSED: {video_path}")
-                            video_path = None
-
                             # Release camera ownership for tracking
                             try:
                                 self._camera.release("tracking")

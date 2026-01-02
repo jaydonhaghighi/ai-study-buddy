@@ -34,7 +34,6 @@ class Config:
     # Capture/inference loop (when active)
     target_fps: float
     simulate: bool
-    record_dir: str | None
     enable_preview_server: bool
     preview_host: str
     preview_port: int
@@ -71,7 +70,6 @@ def load_config() -> Config:
         refocus_threshold_seconds=float(os.getenv("STUDYBUDDY_REFOCUS_THRESHOLD_SECONDS", "3.0")),
         target_fps=float(os.getenv("STUDYBUDDY_TARGET_FPS", "10.0")),
         simulate=_env_bool("STUDYBUDDY_SIMULATE", False),
-        record_dir=os.getenv("STUDYBUDDY_RECORD_DIR"),
         enable_preview_server=_env_bool("STUDYBUDDY_ENABLE_PREVIEW_SERVER", True),
         preview_host=os.getenv("STUDYBUDDY_PREVIEW_HOST", "0.0.0.0"),
         preview_port=int(os.getenv("STUDYBUDDY_PREVIEW_PORT", "8080")),
