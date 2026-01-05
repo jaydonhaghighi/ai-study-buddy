@@ -79,7 +79,7 @@ def list_queued_summaries(state_dir: str) -> list[Path]:
 
 def delete_queued(path: Path) -> None:
     try:
-        path.unlink(missing_ok=True)  # py3.8+: supported; on older, ignore
+        path.unlink(missing_ok=True)
     except TypeError:
         if path.exists():
             path.unlink()
