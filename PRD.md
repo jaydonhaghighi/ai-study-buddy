@@ -186,6 +186,51 @@ Students often struggle to sustain focus and to manage study time in a data‑in
 - **FR-P14**: Run as a system service (e.g., systemd) with auto-restart on crash.
 - **FR-P15**: Avoid storing or transmitting raw frames; keep sensitive data in-memory only.
 
+### Deep learning focus model (attention direction: screen vs notebook vs away)
+This prototype will use an off-the-shelf **face detector** only for ROI cropping. The project’s deep learning contribution is a trained, deployable model that estimates **attention direction** from face/eye crops and maps it to study-relevant focus states.
+
+#### Definitions (operational)
+- **SCREEN**: user attention is oriented toward the monitor (roughly “forward cone”).
+- **NOTEBOOK**: user attention is oriented downward (roughly “down cone”), even if the notebook is not visible in frame.
+- **AWAY/OFF-TASK**: user attention is oriented away (left/right/back), face not detected, or model confidence is low.
+- **Focused** (boolean for summary/state machine): `SCREEN` OR `NOTEBOOK`.
+
+#### FR-P16: ROI + preprocessing
+- Use a face detector to crop a stable ROI from the camera stream (face + eye regions if available).
+- Normalize crops (size, aspect, color space) consistently between training and on-device inference.
+- Support common conditions: normal indoor lighting; with/without glasses.
+
+#### FR-P17: Trainable model (multi-task)
+- Train a custom deep learning model (using public datasets) to predict:
+  - **Gaze direction** (e.g., yaw/pitch) as regression
+  - **Head pose** (yaw/pitch/roll) as regression
+  - **Confidence / validity** (e.g., “reliable estimate”) as classification
+- Use a unified label representation across datasets and support missing-label training (masked losses).
+- Produce a derived discrete state per frame: `SCREEN | NOTEBOOK | AWAY` and a boolean `is_focused`.
+
+#### FR-P18: Public datasets + harmonization
+- Use existing public datasets for gaze estimation and head pose (multi-source).
+- Implement dataset harmonization:
+  - unify coordinate conventions (angles/vectors)
+  - unify crop definitions (face/eyes)
+  - split train/val/test **by subject identity** (subject-independent evaluation)
+- Derive `SCREEN/NOTEBOOK/AWAY` labels from continuous gaze/pose angles using fixed thresholds for evaluation.
+
+#### FR-P19: On-device deployment (Hailo)
+- Export the trained model to an on-device format compatible with **Hailo**.
+- Use **INT8 quantization** (preferably quantization-aware training) and report accuracy vs performance tradeoffs.
+- Measure and document on-device metrics: latency, FPS/throughput, CPU usage, and thermals (if feasible).
+
+#### FR-P20: Evaluation & reporting
+- Report model-level metrics:
+  - gaze angular error (or equivalent)
+  - head pose error
+  - confidence calibration / reliability
+- Report state-level metrics:
+  - `SCREEN/NOTEBOOK/AWAY` accuracy + confusion matrix
+  - downstream `Focused` accuracy after temporal smoothing
+- Document failure modes and mitigations (glasses glare, low light, occlusion, extreme head pose).
+
 ---
 
 ### Focus summary schema (focus-session-level, aggregated)
@@ -272,7 +317,7 @@ Exact paths may vary; must remain consistent across web/backend/device.
 - **M3**: Pairing flow end-to-end (web + backend + Pi token).
 - **M4**: Current-focus-session coordination end-to-end.
 - **M5**: Summary ingestion + dashboard final metrics.
-- **M6**: Replace inference stub with trained TFLite model; validate performance.
+- **M6**: Replace inference stub with trained, deployable attention-direction model; validate performance on-device (Hailo + INT8).
 
 ---
 
@@ -281,5 +326,6 @@ Exact paths may vary; must remain consistent across web/backend/device.
 - **Pi performance/stability**: reduce resolution/model size; implement watchdog + restart; tune capture loop.
 - **Integration mismatches**: define schema/API early; add validation + versioning fields if needed.
 - **Privacy/security misconfig**: strict rules, minimal data storage, token hashing and rotation strategy.
+- **Dataset mismatch to deployment geometry**: use multi-source datasets + subject-independent splits; calibrate thresholds; clearly scope the model as “attention direction” (screen/down/away) rather than claiming it can see the notebook.
 
 

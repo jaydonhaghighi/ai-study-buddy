@@ -127,9 +127,18 @@ export default function Chat({ user }: ChatProps) {
   // Device + Focus Tracking State
   const [claimCode, setClaimCode] = useState('');
   const [devices, setDevices] = useState<Device[]>([]);
+  const [devicesLoaded, setDevicesLoaded] = useState(false);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
   const [activeFocusSession, setActiveFocusSession] = useState<FocusSession | null>(null);
   const [focusBusy, setFocusBusy] = useState(false);
+  const [showPairModal, setShowPairModal] = useState(false);
+  const [showCalibrationModal, setShowCalibrationModal] = useState(false);
+  const hasAutoOpenedPairModal = useRef(false);
+  const [pendingFocusStart, setPendingFocusStart] = useState<{
+    deviceId: string;
+    courseId?: string;
+    sessionId?: string;
+  } | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -174,10 +183,12 @@ export default function Chat({ user }: ChatProps) {
   useEffect(() => {
     if (!user) {
       setDevices([]);
+      setDevicesLoaded(false);
       setSelectedDeviceId('');
       return;
     }
 
+    setDevicesLoaded(false);
     const q = query(
       collection(db, 'devices'),
       where('pairedUserId', '==', user.uid)
@@ -186,6 +197,7 @@ export default function Chat({ user }: ChatProps) {
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const ds = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Device));
       setDevices(ds);
+      setDevicesLoaded(true);
       if (!selectedDeviceId && ds.length > 0) {
         setSelectedDeviceId(ds[0].id);
       }
@@ -193,6 +205,21 @@ export default function Chat({ user }: ChatProps) {
 
     return () => unsubscribe();
   }, [user, selectedDeviceId]);
+
+  // Prompt pairing via modal if user has no paired devices
+  useEffect(() => {
+    if (!user) {
+      hasAutoOpenedPairModal.current = false;
+      setShowPairModal(false);
+      return;
+    }
+    if (!devicesLoaded) return;
+    if (hasAutoOpenedPairModal.current) return;
+    if (devices.length === 0) {
+      setShowPairModal(true);
+      hasAutoOpenedPairModal.current = true;
+    }
+  }, [user, devicesLoaded, devices.length]);
 
   // Active focus session (assume at most 1 active per user for MVP)
   useEffect(() => {
@@ -598,13 +625,15 @@ export default function Chat({ user }: ChatProps) {
     }
   };
 
-  const handleClaimDevice = async () => {
+  const handleClaimDeviceFromModal = async () => {
     if (!user || !claimCode.trim()) return;
+    const submittedCode = claimCode.trim();
     setFocusBusy(true);
     try {
-      await claimDevice(claimCode.trim(), user.uid);
+      await claimDevice(submittedCode, user.uid);
       setToastMessage("Device paired. Turn on your Pi agent to complete pairing.");
       setClaimCode('');
+      setShowPairModal(false);
     } catch (error) {
       console.error('Error claiming device:', error);
       setToastMessage("Error pairing device");
@@ -623,15 +652,30 @@ export default function Chat({ user }: ChatProps) {
     const courseId = expandedCourseId || undefined;
     const sessionId = expandedSessionId || undefined;
 
+    // Calibration gate: do not start focus until calibration completes
+    setPendingFocusStart({ deviceId: selectedDeviceId, courseId, sessionId });
+    setShowCalibrationModal(true);
+  };
+
+  const startFocusAfterCalibration = async () => {
+    if (!user) return;
+    if (!pendingFocusStart) return;
+
     setFocusBusy(true);
     try {
-      const res = await startFocusSession({ userId: user.uid, deviceId: selectedDeviceId, courseId, sessionId });
+      const res = await startFocusSession({
+        userId: user.uid,
+        deviceId: pendingFocusStart.deviceId,
+        courseId: pendingFocusStart.courseId,
+        sessionId: pendingFocusStart.sessionId,
+      });
       setToastMessage(`Focus tracking started (${res.focusSessionId.slice(0, 6)}...)`);
     } catch (error) {
       console.error('Error starting focus session:', error);
       setToastMessage("Error starting focus tracking");
     } finally {
       setFocusBusy(false);
+      setPendingFocusStart(null);
     }
   };
 
@@ -652,15 +696,20 @@ export default function Chat({ user }: ChatProps) {
   if (!user) {
     // Auth View
     return (
-      <div className="chat-container">
-        <div className="chat-header">
-           <h2>AI Study Buddy</h2>
-           <p>Sign in to start learning!</p>
+      <div className="chat-container chat-container-auth">
+        <div className="chat-header chat-header-auth">
+          <div className="chat-header-inner">
+            <div className="chat-header-left">
+              <h2 className="chat-header-title">AI Study Buddy</h2>
+              <p className="chat-header-subtitle">Sign in to start learning.</p>
+            </div>
+          </div>
         </div>
         {!showAuth ? (
           <div className="chat-placeholder">
             <div className="auth-prompt">
-              <p>🚀 Organize your learning with Courses & Sessions</p>
+              <p className="auth-prompt-title">Organize your learning with Courses & Sessions</p>
+              <p className="auth-prompt-subtitle">Create a focused workspace for every subject, and keep your study chats in context.</p>
               <button className="auth-toggle-button" onClick={() => setShowAuth(true)}>Sign In / Sign Up</button>
             </div>
           </div>
@@ -687,7 +736,6 @@ export default function Chat({ user }: ChatProps) {
 
   return (
     <div className="chat-container files-sidebar-open">
-      <PiCalibrationPreview />
       {/* Sidebar */}
       <div className="chat-sidebar">
         <div className="sidebar-header">
@@ -817,33 +865,21 @@ export default function Chat({ user }: ChatProps) {
       {/* Main Area */}
       <div className="chat-main">
         <div className="chat-header">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div>
-              <h2>{currentChat?.name || 'Select a Chat'}</h2>
-              <p>{currentChat ? 'AI Study Buddy' : 'Choose an existing chat or create a new one to get started'}</p>
+          <div className="chat-header-inner">
+            <div className="chat-header-left">
+              <h2 className="chat-header-title">{currentChat?.name || 'Select a Chat'}</h2>
+              <p className="chat-header-subtitle">
+                {currentChat ? 'AI Study Buddy' : 'Choose an existing chat or create a new one to get started'}
+              </p>
             </div>
-            <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <input
-                    value={claimCode}
-                    onChange={(e) => setClaimCode(e.target.value)}
-                    placeholder="Enter Pi claim code"
-                    className="auth-input"
-                    style={{ width: 180 }}
-                    disabled={focusBusy}
-                  />
-                  <button onClick={handleClaimDevice} className="auth-submit-button" disabled={focusBusy || !claimCode.trim()}>
-                    Pair
-                  </button>
-                </div>
 
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <div className="chat-header-right">
+              <div className="chat-header-controls">
+                <div className="chat-header-row">
                   <select
                     value={selectedDeviceId}
                     onChange={(e) => setSelectedDeviceId(e.target.value)}
-                    className="auth-input"
-                    style={{ width: 180 }}
+                    className="chat-header-field"
                     disabled={focusBusy || devices.length === 0}
                   >
                     {devices.length === 0 ? (
@@ -854,22 +890,41 @@ export default function Chat({ user }: ChatProps) {
                   </select>
 
                   {!activeFocusSession ? (
-                    <button onClick={handleStartFocus} className="auth-submit-button" disabled={focusBusy || !selectedDeviceId}>
+                    <button
+                      onClick={handleStartFocus}
+                      className="chat-header-btn chat-header-btn-primary"
+                      disabled={focusBusy || !selectedDeviceId}
+                    >
                       Start Focus
                     </button>
                   ) : (
-                    <button onClick={handleStopFocus} className="auth-cancel-button" disabled={focusBusy}>
+                    <button
+                      onClick={handleStopFocus}
+                      className="chat-header-btn chat-header-btn-danger"
+                      disabled={focusBusy}
+                    >
                       Stop Focus
                     </button>
                   )}
+
+                  <button
+                    onClick={() => setShowPairModal(true)}
+                    className="chat-header-btn"
+                    disabled={focusBusy}
+                  >
+                    Pair device
+                  </button>
                 </div>
+
                 {activeFocusSession && (
-                  <div style={{ fontSize: 12, opacity: 0.8 }}>
-                    Focus active on device {activeFocusSession.deviceId.slice(0, 8)}...
+                  <div className="chat-header-meta">
+                    <span className="chat-header-pill">Focus active</span>
+                    <span>Device {activeFocusSession.deviceId.slice(0, 8)}…</span>
                   </div>
                 )}
               </div>
-              <button onClick={handleSignOut} className="sign-out-button">Sign Out</button>
+
+              <button onClick={handleSignOut} className="chat-header-btn chat-header-btn-ghost">Sign Out</button>
             </div>
           </div>
         </div>
@@ -1006,6 +1061,111 @@ export default function Chat({ user }: ChatProps) {
       {toastMessage && (
         <div className="toast-notification">
           {toastMessage}
+        </div>
+      )}
+
+      {showPairModal && (
+        <div
+          className="modal-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Pair a device"
+          onMouseDown={(e) => {
+            // Close when clicking the backdrop (but not when interacting with the modal)
+            if (e.target === e.currentTarget) setShowPairModal(false);
+          }}
+        >
+          <div className="modal">
+            <div className="modal-header">
+              <div>
+                <h3 className="modal-title">Pair your Raspberry Pi</h3>
+                <p className="modal-subtitle">Enter the claim code shown by the Pi agent.</p>
+              </div>
+              <button
+                className="modal-close"
+                onClick={() => setShowPairModal(false)}
+                aria-label="Close"
+                type="button"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="modal-body">
+              <div className="modal-row">
+                <input
+                  value={claimCode}
+                  onChange={(e) => setClaimCode(e.target.value)}
+                  placeholder="e.g. ABCD-1234"
+                  className="modal-field"
+                  disabled={focusBusy}
+                  autoFocus
+                />
+                <button
+                  onClick={handleClaimDeviceFromModal}
+                  className="modal-btn modal-btn-primary"
+                  disabled={focusBusy || !claimCode.trim()}
+                  type="button"
+                >
+                  Pair
+                </button>
+              </div>
+
+              <div className="modal-hint">
+                After pairing, keep the Pi agent running so it can complete pairing and start receiving focus sessions.
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCalibrationModal && (
+        <div
+          className="modal-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Camera calibration"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowCalibrationModal(false);
+              setPendingFocusStart(null);
+            }
+          }}
+        >
+          <div className="modal modal--wide">
+            <div className="modal-header">
+              <div>
+                <h3 className="modal-title">Camera calibration</h3>
+                <p className="modal-subtitle">Align your camera before tracking. This preview runs on your local network.</p>
+              </div>
+              <button
+                className="modal-close"
+                onClick={() => {
+                  setShowCalibrationModal(false);
+                  setPendingFocusStart(null);
+                }}
+                aria-label="Close"
+                type="button"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="modal-body">
+              <PiCalibrationPreview
+                variant="embedded"
+                autoStart
+                onRequestClose={() => {
+                  setShowCalibrationModal(false);
+                  setPendingFocusStart(null);
+                }}
+                onAlignedStable={() => {
+                  setShowCalibrationModal(false);
+                  startFocusAfterCalibration();
+                }}
+              />
+            </div>
+          </div>
         </div>
       )}
     </div>
