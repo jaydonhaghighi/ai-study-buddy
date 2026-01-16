@@ -450,6 +450,76 @@
   background: transparent;
 }
 
+.chat-settings {
+  position: relative;
+  display: inline-flex;
+}
+
+.chat-settings-btn {
+  padding: 10px;
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chat-settings-icon {
+  width: 18px;
+  height: 18px;
+  display: block;
+  filter: grayscale(1);
+  opacity: 0.9;
+}
+
+.chat-settings-btn:hover:not(:disabled) .chat-settings-icon {
+  opacity: 1;
+}
+
+.chat-settings-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  min-width: 180px;
+  background: #FFFFFF;
+  border: 1px solid var(--color-stone);
+  border-radius: 12px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.12);
+  padding: 6px;
+  z-index: 50;
+}
+
+.chat-settings-item {
+  width: 100%;
+  text-align: left;
+  padding: 10px 10px;
+  border-radius: 10px;
+  border: none;
+  background: transparent;
+  color: var(--color-charcoal);
+  font-family: var(--font-sans);
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.chat-settings-item:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.chat-settings-item:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.chat-settings-item-danger {
+  color: #111827;
+}
+
+.chat-settings-item-danger:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.06);
+}
+
 .chat-header-meta {
   display: flex;
   gap: 8px;
