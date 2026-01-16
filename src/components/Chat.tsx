@@ -18,6 +18,8 @@ import { ref, uploadBytes, getDownloadURL, listAll, deleteObject, getMetadata } 
 import { getAIResponse, createGenkitChat } from '../services/genkit-service';
 import { claimDevice, startFocusSession, stopFocusSession } from '../services/focus-service';
 import PiCalibrationPreview from './PiCalibrationPreview';
+import FocusDashboard from './FocusDashboard';
+import settingsIcon from '../public/settings.svg';
 import './Chat.css';
 
 interface Message {
@@ -90,6 +92,7 @@ export default function Chat({ user }: ChatProps) {
   const [courses, setCourses] = useState<Course[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [chats, setChats] = useState<ChatSession[]>([]);
+  const [mainView, setMainView] = useState<'chat' | 'dashboard'>('chat');
   
   const [expandedCourseId, setExpandedCourseId] = useState<string | null>(null);
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null);
@@ -118,6 +121,8 @@ export default function Chat({ user }: ChatProps) {
   const [editChatName, setEditChatName] = useState('');
   
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsRef = useRef<HTMLDivElement>(null);
 
   // Files Sidebar State
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
@@ -134,6 +139,7 @@ export default function Chat({ user }: ChatProps) {
   const [showPairModal, setShowPairModal] = useState(false);
   const [showCalibrationModal, setShowCalibrationModal] = useState(false);
   const hasAutoOpenedPairModal = useRef(false);
+  const userOverrodeDeviceSelectionRef = useRef(false);
   const [pendingFocusStart, setPendingFocusStart] = useState<{
     deviceId: string;
     courseId?: string;
@@ -143,6 +149,26 @@ export default function Chat({ user }: ChatProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const onMouseDown = (e: MouseEvent) => {
+      const el = settingsRef.current;
+      if (!el) return;
+      if (e.target instanceof Node && !el.contains(e.target)) {
+        setSettingsOpen(false);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setSettingsOpen(false);
+    };
+    document.addEventListener('mousedown', onMouseDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [settingsOpen]);
 
   useEffect(() => {
     if (toastMessage) {
@@ -185,6 +211,7 @@ export default function Chat({ user }: ChatProps) {
       setDevices([]);
       setDevicesLoaded(false);
       setSelectedDeviceId('');
+      userOverrodeDeviceSelectionRef.current = false;
       return;
     }
 
@@ -195,11 +222,41 @@ export default function Chat({ user }: ChatProps) {
     );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const ds = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Device));
-      setDevices(ds);
+      const ds = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as any));
+      // Sort newest-first by pairedAt (fallback updatedAt, then createdAt).
+      const sorted = ds
+        .slice()
+        .sort((a: any, b: any) => {
+          const ta =
+            (a?.pairedAt?.toDate?.() ? a.pairedAt.toDate().getTime() : null) ??
+            (a?.updatedAt?.toDate?.() ? a.updatedAt.toDate().getTime() : null) ??
+            (a?.createdAt?.toDate?.() ? a.createdAt.toDate().getTime() : 0);
+          const tb =
+            (b?.pairedAt?.toDate?.() ? b.pairedAt.toDate().getTime() : null) ??
+            (b?.updatedAt?.toDate?.() ? b.updatedAt.toDate().getTime() : null) ??
+            (b?.createdAt?.toDate?.() ? b.createdAt.toDate().getTime() : 0);
+          return tb - ta;
+        })
+        .map((d: any) => d as Device);
+
+      setDevices(sorted);
       setDevicesLoaded(true);
-      if (!selectedDeviceId && ds.length > 0) {
-        setSelectedDeviceId(ds[0].id);
+
+      if (sorted.length === 0) {
+        setSelectedDeviceId('');
+        userOverrodeDeviceSelectionRef.current = false;
+        return;
+      }
+
+      const newestId = sorted[0].id;
+      const selectedStillExists = !!selectedDeviceId && sorted.some((d) => d.id === selectedDeviceId);
+
+      // Auto-select the newest device if:
+      // - nothing selected yet, or selected device disappeared, or user never manually chose a device.
+      if (!selectedDeviceId || !selectedStillExists || !userOverrodeDeviceSelectionRef.current) {
+        if (newestId && newestId !== selectedDeviceId) {
+          setSelectedDeviceId(newestId);
+        }
       }
     });
 
@@ -305,6 +362,10 @@ export default function Chat({ user }: ChatProps) {
 
   // 4. Fetch Messages (when a chat is selected)
   useEffect(() => {
+    if (mainView !== 'chat') {
+      setMessages([]);
+      return;
+    }
     if (!user || !selectedChatId) {
       setMessages([]);
       return;
@@ -340,7 +401,7 @@ export default function Chat({ user }: ChatProps) {
     });
 
     return () => unsubscribe();
-  }, [user, selectedChatId]);
+  }, [user, selectedChatId, mainView]);
 
   // Actions
   const handleCreateCourse = async (e: React.FormEvent) => {
@@ -611,6 +672,7 @@ export default function Chat({ user }: ChatProps) {
 
   const handleSignOut = async () => {
     try {
+      setSettingsOpen(false);
       await signOut(auth);
       setCourses([]);
       setSessions([]);
@@ -619,6 +681,7 @@ export default function Chat({ user }: ChatProps) {
       setSelectedChatId(null);
       setDevices([]);
       setSelectedDeviceId('');
+      userOverrodeDeviceSelectionRef.current = false;
       setActiveFocusSession(null);
     } catch (error) {
       console.error("Sign out error:", error);
@@ -642,10 +705,16 @@ export default function Chat({ user }: ChatProps) {
     }
   };
 
+  const openPairModalFromSettings = () => {
+    setSettingsOpen(false);
+    setShowPairModal(true);
+  };
+
   const handleStartFocus = async () => {
     if (!user) return;
     if (!selectedDeviceId) {
-      setToastMessage("Select a device first");
+      setToastMessage("No paired device. Pair a device first.");
+      setShowPairModal(true);
       return;
     }
     // Optional: link focus session to the currently expanded course/session (chapter)
@@ -867,33 +936,33 @@ export default function Chat({ user }: ChatProps) {
         <div className="chat-header">
           <div className="chat-header-inner">
             <div className="chat-header-left">
-              <h2 className="chat-header-title">{currentChat?.name || 'Select a Chat'}</h2>
+              <h2 className="chat-header-title">
+                {mainView === 'dashboard' ? 'Focus dashboard' : (currentChat?.name || 'Select a Chat')}
+              </h2>
               <p className="chat-header-subtitle">
-                {currentChat ? 'AI Study Buddy' : 'Choose an existing chat or create a new one to get started'}
+                {mainView === 'dashboard'
+                  ? 'Visualize your focus sessions uploaded from the Pi.'
+                  : (currentChat ? 'AI Study Buddy' : 'Choose an existing chat or create a new one to get started')}
               </p>
             </div>
 
             <div className="chat-header-right">
               <div className="chat-header-controls">
                 <div className="chat-header-row">
-                  <select
-                    value={selectedDeviceId}
-                    onChange={(e) => setSelectedDeviceId(e.target.value)}
-                    className="chat-header-field"
-                    disabled={focusBusy || devices.length === 0}
+                  <button
+                    onClick={() => setMainView(mainView === 'dashboard' ? 'chat' : 'dashboard')}
+                    className="chat-header-btn"
+                    disabled={focusBusy}
+                    type="button"
                   >
-                    {devices.length === 0 ? (
-                      <option value="">No paired devices</option>
-                    ) : (
-                      devices.map(d => <option key={d.id} value={d.id}>{d.id.slice(0, 8)}...</option>)
-                    )}
-                  </select>
+                    {mainView === 'dashboard' ? 'Back to chat' : 'Dashboard'}
+                  </button>
 
                   {!activeFocusSession ? (
                     <button
                       onClick={handleStartFocus}
                       className="chat-header-btn chat-header-btn-primary"
-                      disabled={focusBusy || !selectedDeviceId}
+                      disabled={focusBusy}
                     >
                       Start Focus
                     </button>
@@ -907,13 +976,42 @@ export default function Chat({ user }: ChatProps) {
                     </button>
                   )}
 
-                  <button
-                    onClick={() => setShowPairModal(true)}
-                    className="chat-header-btn"
-                    disabled={focusBusy}
-                  >
-                    Pair device
-                  </button>
+                  <div className="chat-settings" ref={settingsRef}>
+                    <button
+                      className="chat-header-btn chat-settings-btn"
+                      type="button"
+                      aria-label="Settings"
+                      aria-haspopup="menu"
+                      aria-expanded={settingsOpen}
+                      onClick={() => setSettingsOpen((v) => !v)}
+                      disabled={focusBusy}
+                      title="Settings"
+                    >
+                      <img src={settingsIcon} alt="" className="chat-settings-icon" />
+                    </button>
+
+                    {settingsOpen && (
+                      <div className="chat-settings-menu" role="menu" aria-label="Settings menu">
+                        <button
+                          type="button"
+                          className="chat-settings-item"
+                          role="menuitem"
+                          onClick={openPairModalFromSettings}
+                          disabled={focusBusy}
+                        >
+                          Pair device
+                        </button>
+                        <button
+                          type="button"
+                          className="chat-settings-item chat-settings-item-danger"
+                          role="menuitem"
+                          onClick={handleSignOut}
+                        >
+                          Sign out
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 {activeFocusSession && (
@@ -923,54 +1021,58 @@ export default function Chat({ user }: ChatProps) {
                   </div>
                 )}
               </div>
-
-              <button onClick={handleSignOut} className="chat-header-btn chat-header-btn-ghost">Sign Out</button>
             </div>
           </div>
         </div>
 
-        <div className="chat-messages" ref={messagesContainerRef}>
-          {!selectedChatId ? (
-             <div className="chat-welcome">
-               <div className="welcome-icon">💬</div>
-               <h3 className="welcome-title">Welcome to AI Study Buddy</h3>
-               <p className="welcome-message">To get started, choose an existing chat or create a new one from the sidebar</p>
-             </div>
-          ) : (
-            <>
-              {messages.map((message) => (
-                <div key={message.id} className={`message ${!message.isAI ? 'message-user' : 'message-ai'}`}>
-                  <div className="message-content">
-                    <div className="message-header">
-                      <span className="message-name">{!message.isAI ? 'You' : (message.userName || 'AI Study Buddy')}</span>
-                      {message.model && message.isAI && <span className="message-model">{message.model}</span>}
-                    </div>
-                    <div className="message-text"><div className="plain-text">{message.text}</div></div>
-                  </div>
+        {mainView === 'dashboard' ? (
+          <FocusDashboard userId={user.uid} />
+        ) : (
+          <>
+            <div className="chat-messages" ref={messagesContainerRef}>
+              {!selectedChatId ? (
+                <div className="chat-welcome">
+                  <div className="welcome-icon">💬</div>
+                  <h3 className="welcome-title">Welcome to AI Study Buddy</h3>
+                  <p className="welcome-message">To get started, choose an existing chat or create a new one from the sidebar</p>
                 </div>
-              ))}
-              {loading && <div className="message message-ai"><div className="message-content"><div className="typing-indicator"><span></span><span></span><span></span></div></div></div>}
-              <div ref={messagesEndRef} />
-            </>
-          )}
-        </div>
-
-        {selectedChatId && (
-          <form className="chat-input-form" onSubmit={handleSend}>
-            <div className="chat-input-wrapper">
-              <input
-                type="text"
-                className="chat-input"
-                placeholder="Type your message..."
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                disabled={loading}
-              />
-              <button type="submit" className="chat-send-button" disabled={!input.trim() || loading}>
-                Send
-              </button>
+              ) : (
+                <>
+                  {messages.map((message) => (
+                    <div key={message.id} className={`message ${!message.isAI ? 'message-user' : 'message-ai'}`}>
+                      <div className="message-content">
+                        <div className="message-header">
+                          <span className="message-name">{!message.isAI ? 'You' : (message.userName || 'AI Study Buddy')}</span>
+                          {message.model && message.isAI && <span className="message-model">{message.model}</span>}
+                        </div>
+                        <div className="message-text"><div className="plain-text">{message.text}</div></div>
+                      </div>
+                    </div>
+                  ))}
+                  {loading && <div className="message message-ai"><div className="message-content"><div className="typing-indicator"><span></span><span></span><span></span></div></div></div>}
+                  <div ref={messagesEndRef} />
+                </>
+              )}
             </div>
-          </form>
+
+            {selectedChatId && (
+              <form className="chat-input-form" onSubmit={handleSend}>
+                <div className="chat-input-wrapper">
+                  <input
+                    type="text"
+                    className="chat-input"
+                    placeholder="Type your message..."
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    disabled={loading}
+                  />
+                  <button type="submit" className="chat-send-button" disabled={!input.trim() || loading}>
+                    Send
+                  </button>
+                </div>
+              </form>
+            )}
+          </>
         )}
       </div>
 
