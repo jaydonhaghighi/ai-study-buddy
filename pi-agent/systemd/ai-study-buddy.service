@@ -1,0 +1,21 @@
+[Unit]
+Description=AI Study Buddy Raspberry Pi Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ai-study-buddy/pi-agent
+EnvironmentFile=-/etc/ai-study-buddy.env
+ExecStart=/usr/bin/python3 -m studybuddy_pi run
+Restart=always
+RestartSec=3
+
+# Security hardening (adjust if you need camera device access, file paths, etc.)
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+
+

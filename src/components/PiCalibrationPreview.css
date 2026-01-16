@@ -1,0 +1,120 @@
+.pi-calibration {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pi-calibration-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.pi-calibration-title {
+  font-family: var(--font-serif);
+  font-size: 1.15rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--color-charcoal);
+  margin: 0;
+}
+
+.pi-calibration-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.pi-calibration-btn {
+  padding: 10px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--color-stone);
+  background: transparent;
+  color: var(--color-charcoal);
+  font-family: var(--font-sans);
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s ease, background 0.15s ease;
+  white-space: nowrap;
+}
+
+.pi-calibration-btn:hover:not(:disabled) {
+  background: var(--color-mist);
+}
+
+.pi-calibration-btn-primary {
+  background: var(--color-charcoal);
+  border-color: var(--color-charcoal);
+  color: #FFFFFF;
+}
+
+.pi-calibration-btn-primary:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.pi-calibration-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.pi-calibration-field {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--color-stone);
+  background: #FFFFFF;
+  color: var(--color-charcoal);
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  outline: none;
+}
+
+.pi-calibration-field:focus {
+  border-color: var(--color-charcoal);
+  border-width: 2px;
+  padding: 11px;
+}
+
+.pi-calibration-help {
+  margin: 0;
+  color: var(--color-graphite);
+  font-family: var(--font-sans);
+  font-size: 0.95rem;
+  line-height: 1.45;
+}
+
+.pi-calibration-error {
+  margin: 0;
+  padding: 10px 12px;
+  border-left: 3px solid #000000;
+  background: rgba(0, 0, 0, 0.03);
+  color: var(--color-charcoal);
+  font-family: var(--font-sans);
+  font-size: 0.95rem;
+  line-height: 1.4;
+}
+
+.pi-calibration-stream {
+  border: 1px solid var(--color-stone);
+  background: #FFFFFF;
+}
+
+.pi-calibration-stream img {
+  width: 100%;
+  display: block;
+}
+
+.pi-calibration-metrics {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  color: var(--color-graphite);
+  font-family: var(--font-sans);
+  font-size: 0.9rem;
+}
+
+.pi-calibration-metric b {
+  color: var(--color-charcoal);
+  font-weight: 700;
+}
+
