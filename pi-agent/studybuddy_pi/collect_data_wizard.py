@@ -47,6 +47,36 @@ def _load_numpy():
     return np
 
 
+def _haarcascade_path(cv2, filename: str) -> str:
+    # Prefer cv2.data if available (opencv-python), fallback to common system locations.
+    try:
+        base = getattr(getattr(cv2, "data", None), "haarcascades", None)
+        if base:
+            return str(base) + filename
+    except Exception:
+        pass
+
+    env = os.getenv("OPENCV_HAAR_PATH")
+    if env:
+        p = Path(env) / filename
+        if p.exists():
+            return str(p)
+
+    # Common linux paths
+    candidates = [
+        Path("/usr/share/opencv4/haarcascades") / filename,
+        Path("/usr/share/opencv/haarcascades") / filename,
+    ]
+    for p in candidates:
+        if p.exists():
+            return str(p)
+
+    raise RuntimeError(
+        f"Could not locate OpenCV haarcascade file: {filename}. "
+        "If you're using system OpenCV, install haarcascades or set OPENCV_HAAR_PATH."
+    )
+
+
 def _detect_face(gray, face_cascade) -> tuple[int, int, int, int] | None:
     faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60))
     if len(faces) == 0:
@@ -166,7 +196,7 @@ def run_guided_collection(
     run_dir = out_dir / f"run_{int(time.time())}"
     meta_file = run_dir / "meta.jsonl"
 
-    face_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    face_path = _haarcascade_path(cv2, "haarcascade_frontalface_default.xml")
     face_cascade = cv2.CascadeClassifier(face_path)
     if face_cascade is None or face_cascade.empty():
         raise RuntimeError(f"Failed to load Haar cascade from {face_path}")

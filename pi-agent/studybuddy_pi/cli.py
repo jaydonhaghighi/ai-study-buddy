@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
 from .collect_data_wizard import main as collect_data_main
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw = argv if argv is not None else sys.argv[1:]
+    # Make collect-data a "first-class" passthrough command so it can own its flags
+    # (and show its own --help) without being constrained by the agent CLI parser.
+    if len(raw) > 0 and raw[0] == "collect-data":
+        return collect_data_main(raw[1:])
+
     parser = argparse.ArgumentParser(prog="studybuddy-pi", description="AI Study Buddy Raspberry Pi agent")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -13,10 +20,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("run", help="Run the long-running agent loop")
     sub.add_parser("collect-data", help="Guided laptop webcam data collection (looking vs not looking)")
 
-    args = parser.parse_args(argv)
-    if args.cmd == "collect-data":
-        # This subcommand is meant to run on a laptop webcam and does not require STUDYBUDDY_BASE_URL.
-        return collect_data_main(argv[1:] if argv else None)
+    args = parser.parse_args(raw)
 
     # Lazy import so laptop-only participants don't need Pi agent deps (e.g., requests).
     from .agent import Agent
