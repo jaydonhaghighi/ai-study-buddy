@@ -42,6 +42,14 @@ python -m studybuddy_pi run
 - Install OpenCV for encoding/face detection (`opencv-python`).
 - Use the provided systemd unit in `systemd/ai-study-buddy.service`.
 
+### Training a simple "looking at screen" model (fine-tune)
+If you need a **deep-learning model** (fine-tuned) instead of heuristics, use the scripts in `train/`:
+
+- `train/collect_data.py` collects labeled face crops on the Pi.
+- `train/train_tf.py` fine-tunes MobileNetV2 and exports TFLite.
+
+See `train/README.md` for step-by-step instructions.
+
 ### If OpenCV can't read frames (common on PiCam)
 This agent uses **Picamera2/libcamera** as the camera capture stack (recommended on Raspberry Pi).
 

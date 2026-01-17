@@ -30,6 +30,9 @@ class FocusInference:
         inference_interval_seconds: float = 0.25,
         center_tolerance_ratio: float = 0.22,
         require_eyes: bool = False,
+        model_path: str | None = None,
+        model_input_size: int = 224,
+        model_threshold: float = 0.5,
     ):
         self.simulate = simulate
         self._sim_counter = 0
@@ -37,6 +40,9 @@ class FocusInference:
         self.inference_interval_seconds = max(0.05, float(inference_interval_seconds))
         self.center_tolerance_ratio = max(0.05, float(center_tolerance_ratio))
         self.require_eyes = require_eyes
+        self.model_path = model_path
+        self.model_input_size = int(model_input_size)
+        self.model_threshold = float(model_threshold)
 
         # Cached outputs (to avoid running detection every frame).
         self._last_ts: float = 0.0
@@ -46,6 +52,12 @@ class FocusInference:
         self._cv2 = None
         self._face_cascade = None
         self._eye_cascade = None
+
+        # Lazy-loaded TFLite model
+        self._tflite_interpreter = None
+        self._tflite_input = None
+        self._tflite_output = None
+        self._np = None
 
     def _ensure_detectors(self) -> None:
         if self._cv2 is not None:
@@ -69,6 +81,124 @@ class FocusInference:
         if self._eye_cascade is None or self._eye_cascade.empty():
             # Eye cascade isn't strictly required; keep running without it.
             self._eye_cascade = None
+
+    def _ensure_tflite(self) -> None:
+        if self._tflite_interpreter is not None:
+            return
+        if not self.model_path:
+            raise RuntimeError("Model path not configured")
+        try:
+            from tflite_runtime.interpreter import Interpreter  # type: ignore
+        except Exception:
+            try:
+                from tensorflow.lite.python.interpreter import Interpreter  # type: ignore
+            except Exception as e:
+                raise RuntimeError(
+                    "TFLite runtime not found. Install `tflite-runtime` (recommended on Pi) or TensorFlow."
+                ) from e
+
+        try:
+            import numpy as np  # type: ignore
+        except Exception as e:
+            raise RuntimeError("NumPy is required for TFLite inference.") from e
+
+        self._np = np
+        self._tflite_interpreter = Interpreter(model_path=self.model_path)
+        self._tflite_interpreter.allocate_tensors()
+        self._tflite_input = self._tflite_interpreter.get_input_details()[0]
+        self._tflite_output = self._tflite_interpreter.get_output_details()[0]
+
+    def _preprocess_face(self, frame: Any, box: tuple[int, int, int, int]):
+        cv2 = self._cv2
+        np = self._np
+        assert cv2 is not None
+        assert np is not None
+
+        x, y, fw, fh = box
+        h, w = frame.shape[:2]
+
+        # Add a bit of padding around the face
+        pad = 0.2
+        px = int(fw * pad)
+        py = int(fh * pad)
+        x1 = max(0, x - px)
+        y1 = max(0, y - py)
+        x2 = min(w, x + fw + px)
+        y2 = min(h, y + fh + py)
+
+        face = frame[y1:y2, x1:x2]
+        if face.size == 0:
+            return None
+
+        # Convert to RGB if needed
+        fmt = (self.frame_format or "").upper()
+        if "BGR" in fmt or ("RGB" not in fmt):
+            try:
+                face = cv2.cvtColor(face, cv2.COLOR_BGR2RGB)
+            except Exception:
+                pass
+
+        face = cv2.resize(face, (self.model_input_size, self.model_input_size), interpolation=cv2.INTER_AREA)
+        face = face.astype(np.float32)
+        # MobileNetV2-style preprocess: scale to [-1, 1]
+        face = (face / 127.5) - 1.0
+        face = np.expand_dims(face, axis=0)  # [1, H, W, 3]
+        return face
+
+    def _tflite_predict(self, frame: Any | None) -> InferenceResult:
+        self._ensure_detectors()
+        self._ensure_tflite()
+
+        cv2 = self._cv2
+        np = self._np
+        assert cv2 is not None
+        assert np is not None
+        assert self._face_cascade is not None
+        assert self._tflite_interpreter is not None
+        assert self._tflite_input is not None
+        assert self._tflite_output is not None
+
+        if frame is None:
+            return InferenceResult(is_focused=False, confidence=0.0)
+
+        try:
+            h, w = frame.shape[:2]
+        except Exception:
+            return InferenceResult(is_focused=False, confidence=0.0)
+
+        gray = self._to_gray(frame)
+        scale = 0.5
+        try:
+            small = cv2.resize(gray, (int(w * scale), int(h * scale)))
+        except Exception:
+            small = gray
+            scale = 1.0
+
+        faces = self._face_cascade.detectMultiScale(
+            small,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(int(60 * scale), int(60 * scale)),
+        )
+        if len(faces) == 0:
+            return InferenceResult(is_focused=False, confidence=0.1)
+
+        x, y, fw, fh = max(faces, key=lambda b: b[2] * b[3])
+        x = int(x / scale)
+        y = int(y / scale)
+        fw = int(fw / scale)
+        fh = int(fh / scale)
+
+        face = self._preprocess_face(frame, (x, y, fw, fh))
+        if face is None:
+            return InferenceResult(is_focused=False, confidence=0.0)
+
+        self._tflite_interpreter.set_tensor(self._tflite_input["index"], face)
+        self._tflite_interpreter.invoke()
+        out = self._tflite_interpreter.get_tensor(self._tflite_output["index"])
+        score = float(out.reshape(-1)[0])
+        is_focused = score >= self.model_threshold
+        return InferenceResult(is_focused=is_focused, confidence=score)
 
     def _to_gray(self, frame: Any):
         cv2 = self._cv2
@@ -168,12 +298,16 @@ class FocusInference:
                 is_focused = not is_focused
             return InferenceResult(is_focused=is_focused, confidence=None)
 
-        # Real (heuristic) inference: rate-limit detection and reuse last output for stability/perf.
+        # TFLite model inference (preferred when model_path is set).
         now = time.time()
         if (now - self._last_ts) < self.inference_interval_seconds:
             return self._last_result
 
-        res = self._heuristic_predict(frame)
+        if self.model_path:
+            res = self._tflite_predict(frame)
+        else:
+            # Heuristic fallback
+            res = self._heuristic_predict(frame)
         self._last_ts = now
         self._last_result = res
         return res

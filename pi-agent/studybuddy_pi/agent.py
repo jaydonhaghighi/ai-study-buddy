@@ -73,7 +73,13 @@ class Agent:
         auth = self._load_auth_or_error()
         api = StudyBuddyApi(self.config.base_url, device_token=auth.device_token)
 
-        inference = FocusInference(simulate=self.config.simulate, frame_format=self.config.camera_format)
+        inference = FocusInference(
+            simulate=self.config.simulate,
+            frame_format=self.config.camera_format,
+            model_path=self.config.model_path,
+            model_input_size=self.config.model_input_size,
+            model_threshold=self.config.model_threshold,
+        )
 
         if self.config.enable_preview_server:
             try:
