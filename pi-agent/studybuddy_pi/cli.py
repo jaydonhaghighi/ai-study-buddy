@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import argparse
 
-from .agent import Agent
 from .collect_data_wizard import main as collect_data_main
-from .config import load_config
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -19,6 +17,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "collect-data":
         # This subcommand is meant to run on a laptop webcam and does not require STUDYBUDDY_BASE_URL.
         return collect_data_main(argv[1:] if argv else None)
+
+    # Lazy import so laptop-only participants don't need Pi agent deps (e.g., requests).
+    from .agent import Agent
+    from .config import load_config
 
     cfg = load_config()
     agent = Agent(cfg)
