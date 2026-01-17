@@ -24,6 +24,11 @@ def _beep():
         pass
 
 
+def _has_display() -> bool:
+    # Linux/Unix GUI presence check
+    return bool(os.getenv("DISPLAY") or os.getenv("WAYLAND_DISPLAY"))
+
+
 def _slug(s: str) -> str:
     return "".join([c.lower() if c.isalnum() else "_" for c in s]).strip("_")
 
@@ -172,6 +177,21 @@ def _wait_for_key(cv2, win: str, allowed: set[str]) -> str:
             return ch
 
 
+def _probe_webcams(cv2, max_index: int = 6) -> list[int]:
+    ok: list[int] = []
+    for i in range(max_index):
+        cap = cv2.VideoCapture(i)
+        try:
+            if cap is not None and cap.isOpened():
+                ok.append(i)
+        finally:
+            try:
+                cap.release()
+            except Exception:
+                pass
+    return ok
+
+
 def run_guided_collection(
     *,
     out_dir: Path,
@@ -188,6 +208,7 @@ def run_guided_collection(
     require_face: bool,
     save_full: bool,
     save_face: bool,
+    preview: bool,
 ):
     cv2 = _load_cv2()
     np = _load_numpy()
@@ -201,17 +222,39 @@ def run_guided_collection(
     if face_cascade is None or face_cascade.empty():
         raise RuntimeError(f"Failed to load Haar cascade from {face_path}")
 
+    # Auto-disable preview if there's no display (common on headless Linux).
+    if preview and not _has_display() and os.name != "nt":
+        print("[collect-data] No DISPLAY found; running without preview window.")
+        preview = False
+
     cap = cv2.VideoCapture(webcam_index)
     if not cap.isOpened():
-        raise RuntimeError(f"Could not open webcam index {webcam_index}")
+        # Provide actionable hints.
+        try:
+            avail = _probe_webcams(cv2, max_index=8)
+        except Exception:
+            avail = []
+        hint = ""
+        if avail:
+            hint = f" Available indices: {avail}. Try: --webcam {avail[0]}"
+        raise RuntimeError(
+            f"Could not open webcam index {webcam_index}.{hint}\n"
+            "If you're on macOS, also ensure your Terminal/Python has Camera permission "
+            "(System Settings → Privacy & Security → Camera)."
+        )
 
     # Best-effort set size
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(width))
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(height))
 
     win = "AI Study Buddy - Data Collection"
-    cv2.namedWindow(win, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(win, width, height)
+    if preview:
+        try:
+            cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+            cv2.resizeWindow(win, width, height)
+        except Exception as e:
+            print(f"[collect-data] Preview window failed to initialize ({e}); running without preview.")
+            preview = False
 
     def read_frame():
         ok, frame = cap.read()
@@ -220,6 +263,8 @@ def run_guided_collection(
         return frame
 
     def show_screen(title: str, subtitle: str, progress: str, face_box=None, face_ok=False):
+        if not preview:
+            return
         frame = read_frame()
         if frame is None:
             return
@@ -232,13 +277,14 @@ def run_guided_collection(
             t0 = time.time()
             while time.time() - t0 < 1.0:
                 show_screen(title, f"{subtitle}  Starting in {i}…", progress)
-                k = cv2.waitKey(20) & 0xFF
-                if k != 255:
-                    ch = chr(k).lower()
-                    if ch == "q":
-                        raise KeyboardInterrupt()
-                    if ch == "s":
-                        return "skip"
+                if preview:
+                    k = cv2.waitKey(20) & 0xFF
+                    if k != 255:
+                        ch = chr(k).lower()
+                        if ch == "q":
+                            raise KeyboardInterrupt()
+                        if ch == "s":
+                            return "skip"
             # next second
         _beep()
         return "ok"
@@ -261,23 +307,24 @@ def run_guided_collection(
 
             if require_face and not face_ok:
                 skipped += 1
-                _draw_overlay(
-                    frame,
-                    cv2,
-                    title=("LOOK AT SCREEN" if label == "looking" else "LOOK AWAY"),
-                    subtitle="No face detected — adjust position/lighting",
-                    face_box=None,
-                    face_ok=False,
-                    progress=f"{condition_tag}  cycle {cycle_idx+1}/{cycles}  saved={saved}  skipped={skipped}  (Q quit / S skip)",
-                )
-                cv2.imshow(win, frame)
-                k = cv2.waitKey(1) & 0xFF
-                if k != 255:
-                    ch = chr(k).lower()
-                    if ch == "q":
-                        raise KeyboardInterrupt()
-                    if ch == "s":
-                        return "skip"
+                if preview:
+                    _draw_overlay(
+                        frame,
+                        cv2,
+                        title=("LOOK AT SCREEN" if label == "looking" else "LOOK AWAY"),
+                        subtitle="No face detected — adjust position/lighting",
+                        face_box=None,
+                        face_ok=False,
+                        progress=f"{condition_tag}  cycle {cycle_idx+1}/{cycles}  saved={saved}  skipped={skipped}  (Q quit / S skip)",
+                    )
+                    cv2.imshow(win, frame)
+                    k = cv2.waitKey(1) & 0xFF
+                    if k != 255:
+                        ch = chr(k).lower()
+                        if ch == "q":
+                            raise KeyboardInterrupt()
+                        if ch == "s":
+                            return "skip"
                 time.sleep(max(0.0, (1.0 / max(fps, 1.0)) - 0.001))
                 continue
 
@@ -310,23 +357,24 @@ def run_guided_collection(
             with meta_file.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(sample) + "\n")
 
-            _draw_overlay(
-                frame,
-                cv2,
-                title=("LOOK AT SCREEN" if label == "looking" else "LOOK AWAY"),
-                subtitle=f"Keep still. ({label})",
-                face_box=face_box,
-                face_ok=face_ok,
-                progress=f"{condition_tag}  cycle {cycle_idx+1}/{cycles}  saved={saved}  skipped={skipped}  (Q quit / S skip)",
-            )
-            cv2.imshow(win, frame)
-            k = cv2.waitKey(1) & 0xFF
-            if k != 255:
-                ch = chr(k).lower()
-                if ch == "q":
-                    raise KeyboardInterrupt()
-                if ch == "s":
-                    return "skip"
+            if preview:
+                _draw_overlay(
+                    frame,
+                    cv2,
+                    title=("LOOK AT SCREEN" if label == "looking" else "LOOK AWAY"),
+                    subtitle=f"Keep still. ({label})",
+                    face_box=face_box,
+                    face_ok=face_ok,
+                    progress=f"{condition_tag}  cycle {cycle_idx+1}/{cycles}  saved={saved}  skipped={skipped}  (Q quit / S skip)",
+                )
+                cv2.imshow(win, frame)
+                k = cv2.waitKey(1) & 0xFF
+                if k != 255:
+                    ch = chr(k).lower()
+                    if ch == "q":
+                        raise KeyboardInterrupt()
+                    if ch == "s":
+                        return "skip"
 
             frame_idx += 1
             time.sleep(max(0.0, (1.0 / max(fps, 1.0)) - 0.001))
@@ -337,23 +385,27 @@ def run_guided_collection(
     # Intro screen
     print("\n=== Guided Data Collection (Laptop Webcam) ===")
     print(f"participant={participant} session={session} placement={placement}")
-    print("Keys: [Enter] start, Q quit, S skip condition/segment")
+    print("Keys: [Enter] start, Q quit, S skip condition/segment (preview mode)")
     print(f"Saving to: {run_dir}\n")
 
     # Wait for Enter in window
-    while True:
-        show_screen(
-            "Ready to collect data",
-            "Position laptop so your face is clearly visible. Press ENTER to begin.",
-            "Q quit",
-        )
-        k = cv2.waitKey(50) & 0xFF
-        if k == 13 or k == 10:  # Enter
-            break
-        if k != 255 and chr(k).lower() == "q":
-            cap.release()
-            cv2.destroyAllWindows()
-            return
+    if preview:
+        while True:
+            show_screen(
+                "Ready to collect data",
+                "Position laptop so your face is clearly visible. Press ENTER to begin.",
+                "Q quit",
+            )
+            k = cv2.waitKey(50) & 0xFF
+            if k == 13 or k == 10:  # Enter
+                break
+            if k != 255 and chr(k).lower() == "q":
+                cap.release()
+                cv2.destroyAllWindows()
+                return
+    else:
+        print("Preview disabled. Starting in 3 seconds...")
+        time.sleep(3.0)
 
     try:
         for cond in DEFAULT_CONDITIONS:
@@ -399,7 +451,8 @@ def run_guided_collection(
         pass
     finally:
         cap.release()
-        cv2.destroyAllWindows()
+        if preview:
+            cv2.destroyAllWindows()
 
     print("\nDone.")
     print("Send this folder back to the project owner:")
@@ -424,6 +477,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--require-face", action="store_true", default=True)
     parser.add_argument("--save-full", action="store_true", help="Also save full frames (bigger dataset)")
     parser.add_argument("--no-save-face", action="store_true", help="Do not save face crops")
+    parser.add_argument("--no-preview", action="store_true", help="Run without a GUI preview window (headless)")
     args = parser.parse_args(argv)
 
     out_dir = Path(args.out_dir).expanduser().resolve()
@@ -442,6 +496,7 @@ def main(argv: list[str] | None = None) -> int:
         require_face=bool(args.require_face),
         save_full=bool(args.save_full),
         save_face=not bool(args.no_save_face),
+        preview=not bool(args.no_preview),
     )
     return 0
 
