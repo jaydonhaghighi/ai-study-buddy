@@ -46,6 +46,11 @@ class Config:
     # Optional device identity hints (depending on backend design)
     device_id: str | None
 
+    # Optional TFLite focus model (fine-tuned)
+    model_path: str | None
+    model_input_size: int
+    model_threshold: float
+
 
 def load_config() -> Config:
     base_url = os.getenv("STUDYBUDDY_BASE_URL", "").rstrip("/")
@@ -78,4 +83,7 @@ def load_config() -> Config:
         # Default to RGB888; preview server performs a deterministic RGB->BGR swap before encoding.
         camera_format=os.getenv("STUDYBUDDY_CAMERA_FORMAT", "RGB888"),
         device_id=os.getenv("STUDYBUDDY_DEVICE_ID"),
+        model_path=os.getenv("STUDYBUDDY_MODEL_PATH"),
+        model_input_size=int(os.getenv("STUDYBUDDY_MODEL_INPUT_SIZE", "224")),
+        model_threshold=float(os.getenv("STUDYBUDDY_MODEL_THRESHOLD", "0.5")),
     )
