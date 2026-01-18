@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,11 @@ def _beep():
 
 
 def _has_display() -> bool:
+    # On macOS/Windows, OpenCV windows do not depend on DISPLAY/WAYLAND env vars.
+    if sys.platform == "darwin":
+        return True
+    if os.name == "nt":
+        return True
     # Linux/Unix GUI presence check
     return bool(os.getenv("DISPLAY") or os.getenv("WAYLAND_DISPLAY"))
 
@@ -222,8 +228,8 @@ def run_guided_collection(
     if face_cascade is None or face_cascade.empty():
         raise RuntimeError(f"Failed to load Haar cascade from {face_path}")
 
-    # Auto-disable preview if there's no display (common on headless Linux).
-    if preview and not _has_display() and os.name != "nt":
+    # Auto-disable preview only when we're truly headless (common on Linux servers).
+    if preview and not _has_display():
         print("[collect-data] No DISPLAY found; running without preview window.")
         preview = False
 
