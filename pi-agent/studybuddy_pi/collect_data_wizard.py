@@ -233,7 +233,16 @@ def run_guided_collection(
         print("[collect-data] No DISPLAY found; running without preview window.")
         preview = False
 
-    cap = cv2.VideoCapture(webcam_index)
+    # Use platform-appropriate backend for more reliable webcam capture.
+    # - macOS: AVFoundation
+    # - Windows: DirectShow
+    # - Linux: default
+    if sys.platform == "darwin" and hasattr(cv2, "CAP_AVFOUNDATION"):
+        cap = cv2.VideoCapture(webcam_index, cv2.CAP_AVFOUNDATION)
+    elif os.name == "nt" and hasattr(cv2, "CAP_DSHOW"):
+        cap = cv2.VideoCapture(webcam_index, cv2.CAP_DSHOW)
+    else:
+        cap = cv2.VideoCapture(webcam_index)
     if not cap.isOpened():
         # Provide actionable hints.
         try:
@@ -252,6 +261,11 @@ def run_guided_collection(
     # Best-effort set size
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(width))
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(height))
+    # Best-effort hint to reduce latency
+    try:
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    except Exception:
+        pass
 
     win = "AI Study Buddy - Data Collection"
     if preview:
@@ -268,12 +282,29 @@ def run_guided_collection(
             return None
         return frame
 
+    # Warm up camera (some systems need a few frames before delivering).
+    warm_deadline = time.time() + 2.5
+    warm_ok = False
+    while time.time() < warm_deadline:
+        f = read_frame()
+        if f is not None:
+            warm_ok = True
+            break
+        time.sleep(0.05)
+    if not warm_ok:
+        # Keep going (some webcams wake up later), but warn loudly.
+        print("[collect-data] Webcam opened but no frames yet. If this persists:")
+        print("- macOS: confirm camera permission for Terminal/Python")
+        print("- try another index: --webcam 0 / 1 / 2")
+
     def show_screen(title: str, subtitle: str, progress: str, face_box=None, face_ok=False):
         if not preview:
             return
         frame = read_frame()
         if frame is None:
-            return
+            # Render an overlay on a blank canvas so the user sees guidance.
+            frame = np.zeros((height, width, 3), dtype=np.uint8)
+            subtitle = f"{subtitle}  (no camera frames)"
         _draw_overlay(frame, cv2, title=title, subtitle=subtitle, face_box=face_box, face_ok=face_ok, progress=progress)
         cv2.imshow(win, frame)
 
@@ -300,10 +331,27 @@ def run_guided_collection(
         saved = 0
         skipped = 0
         frame_idx = 0
+        no_frame = 0
         while time.time() - start < duration:
             frame = read_frame()
             if frame is None:
-                time.sleep(0.01)
+                no_frame += 1
+                if preview:
+                    blank = np.zeros((height, width, 3), dtype=np.uint8)
+                    _draw_overlay(
+                        blank,
+                        cv2,
+                        title="Waiting for camera…",
+                        subtitle="No frames from webcam. Check permissions or try --webcam 0/1/2.",
+                        face_box=None,
+                        face_ok=False,
+                        progress=f"{condition_tag}  cycle {cycle_idx+1}/{cycles}  saved={saved}  skipped={skipped}  no_frame={no_frame}  (Q quit)",
+                    )
+                    cv2.imshow(win, blank)
+                    k = cv2.waitKey(50) & 0xFF
+                    if k != 255 and chr(k).lower() == "q":
+                        raise KeyboardInterrupt()
+                time.sleep(0.05)
                 continue
 
             ts = time.time()
