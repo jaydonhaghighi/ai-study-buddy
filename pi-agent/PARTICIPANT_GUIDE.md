@@ -89,4 +89,3 @@ It contains labeled face crops in:
 ```
 face/<participant>/<session>/<placement_condition>/{looking,not_looking}/*.jpg
 ```
-
