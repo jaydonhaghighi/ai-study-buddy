@@ -3,15 +3,18 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+import random
 
 
 def _beep():
     # Cross-platform "best effort" beep.
+    # Terminal bells are often disabled; prefer OS-native sounds when possible.
     try:
         import winsound  # type: ignore
 
@@ -19,6 +22,40 @@ def _beep():
         return
     except Exception:
         pass
+
+    # macOS: prefer built-in system sound (non-blocking)
+    if sys.platform == "darwin":
+        try:
+            # Fast, usually available; plays default alert sound.
+            subprocess.Popen(
+                ["osascript", "-e", "beep 1"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return
+        except Exception:
+            pass
+        try:
+            # Fallback to a system audio file if AppleScript isn't available.
+            subprocess.Popen(
+                ["afplay", "/System/Library/Sounds/Pop.aiff"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return
+        except Exception:
+            pass
+
+    # Linux (best effort): paplay/aplay if present
+    if os.name != "nt":
+        for cmd in (["paplay", "/usr/share/sounds/freedesktop/stereo/message.oga"],
+                    ["aplay", "/usr/share/sounds/alsa/Front_Center.wav"]):
+            try:
+                subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return
+            except Exception:
+                pass
+
     try:
         print("\a", end="", flush=True)
     except Exception:
@@ -142,6 +179,15 @@ DEFAULT_CONDITIONS: list[Condition] = [
         instructions="Dim the room a bit (if possible). If not possible, press 'S' to skip.",
     ),
 ]
+
+AWAY_TARGETS = [
+    ("left", "Look OFF-SCREEN to your LEFT (turn head slightly)."),
+    ("right", "Look OFF-SCREEN to your RIGHT (turn head slightly)."),
+    ("up", "Look OFF-SCREEN UP (above your screen)."),
+    ("down", "Look DOWN (keyboard/desk)."),
+]
+
+LOOKING_INSTRUCTION = "Look at the CENTER of your screen (like reading). Keep your face in frame."
 
 
 def _draw_overlay(
@@ -382,6 +428,10 @@ def run_guided_collection(
                 time.sleep(max(0.0, (1.0 / max(fps, 1.0)) - 0.001))
                 continue
 
+            # Per-segment metadata (set right before calling capture_segment)
+            instruction = getattr(capture_segment, "_instruction", None)  # type: ignore[attr-defined]
+            away_direction = getattr(capture_segment, "_away_direction", None)  # type: ignore[attr-defined]
+
             sample: dict[str, Any] = {
                 "label": label,
                 "timestamp": ts,
@@ -391,6 +441,8 @@ def run_guided_collection(
                 "placement": condition_tag,  # keeps compatibility with prepare_dataset.py
                 "basePlacement": placement,
                 "condition": condition_tag,
+                "instruction": instruction,
+                "awayDirection": away_direction,
             }
 
             file_stem = f"{int(ts * 1000)}_{frame_idx:05d}"
@@ -416,7 +468,7 @@ def run_guided_collection(
                     frame,
                     cv2,
                     title=("LOOK AT SCREEN" if label == "looking" else "LOOK AWAY"),
-                    subtitle=f"Keep still. ({label})",
+                    subtitle=f"{sample.get('instruction','Keep still.')}",
                     face_box=face_box,
                     face_ok=face_ok,
                     progress=f"{condition_tag}  cycle {cycle_idx+1}/{cycles}  saved={saved}  skipped={skipped}  (Q quit / S skip)",
@@ -487,16 +539,45 @@ def run_guided_collection(
                 continue
 
             for cycle_idx in range(cycles):
-                r = countdown(3, "LOOK AT SCREEN", "Get ready to look at the screen.", f"{condition_tag}  cycle {cycle_idx+1}/{cycles}")
+                # LOOKING: always center of screen
+                r = countdown(
+                    3,
+                    "LOOK AT SCREEN",
+                    LOOKING_INSTRUCTION,
+                    f"{condition_tag}  cycle {cycle_idx+1}/{cycles}",
+                )
                 if r == "skip":
                     break
+                # Attach instruction to every saved sample during this segment
+                # (implemented via a simple module-level variable on the closure)
+                capture_instruction = LOOKING_INSTRUCTION
+                def _capture_with_instruction(lbl: str, secs: float):
+                    # Inner helper to set per-segment instruction/direction
+                    nonlocal capture_instruction
+                    orig_open = meta_file.open
+                    # We don't monkeypatch writing; instead we pass instruction via closure:
+                    # store it in a local var and add to sample below by rewriting in-place.
+                    return capture_segment(lbl, secs, condition_tag, cycle_idx)
+
+                # Slight hack: set a per-segment instruction on the function attribute for use below.
+                capture_segment._instruction = capture_instruction  # type: ignore[attr-defined]
+                capture_segment._away_direction = None  # type: ignore[attr-defined]
                 r = capture_segment("looking", look_seconds, condition_tag, cycle_idx)
                 if r == "skip":
                     break
 
-                r = countdown(3, "LOOK AWAY", "Get ready to look away (off-screen).", f"{condition_tag}  cycle {cycle_idx+1}/{cycles}")
+                # NOT LOOKING: rotate through explicit off-screen targets
+                away_dir, away_text = AWAY_TARGETS[cycle_idx % len(AWAY_TARGETS)]
+                r = countdown(
+                    3,
+                    "LOOK AWAY",
+                    away_text,
+                    f"{condition_tag}  cycle {cycle_idx+1}/{cycles}",
+                )
                 if r == "skip":
                     break
+                capture_segment._instruction = away_text  # type: ignore[attr-defined]
+                capture_segment._away_direction = away_dir  # type: ignore[attr-defined]
                 r = capture_segment("not_looking", away_seconds, condition_tag, cycle_idx)
                 if r == "skip":
                     break
