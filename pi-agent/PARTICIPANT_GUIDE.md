@@ -67,7 +67,9 @@ python -m studybuddy_pi collect-data --no-preview --participant pXX --session s0
 
 When the preview window opens:
 - **Press Enter** to begin.
-- Follow the on-screen prompts (“LOOK AT SCREEN”, “LOOK AWAY”, etc.).
+- Follow the on-screen prompts. The program will tell you *exactly* where to look:
+  - **LOOK AT SCREEN**: look at the **center of your screen** (as if reading).
+  - **LOOK AWAY**: it will specify a direction (LEFT / RIGHT / UP / DOWN). Look fully away from the screen in that direction.
 - Keys:
   - `Q` quit
   - `S` skip the current condition (e.g., glasses/dim light if not applicable)
