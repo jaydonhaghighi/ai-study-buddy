@@ -194,7 +194,8 @@ export default function DataCollector() {
     const faceCanvas = faceCanvasRef.current!;
     const ctx = faceCanvas.getContext('2d')!;
 
-    const pad = 0.3;
+    // Larger padding keeps more forehead/chin/cheeks for extreme head poses.
+    const pad = 0.5;
     const px = box.w * pad;
     const py = box.h * pad;
     const x1 = Math.max(0, box.x - px);
