@@ -109,6 +109,7 @@ class Agent:
         frames_captured = 0
         last_heartbeat = 0.0
         stopping_focus_session = False
+        attention_counts: dict[str, int] = {}
 
         while True:
             # Always try to flush any queued summaries
@@ -133,6 +134,7 @@ class Agent:
                         )
                         session_start_ts = time.time()
                         frames_captured = 0
+                        attention_counts = {}
                         last_heartbeat = 0.0
                         print(f"[ai-study-buddy] Focus session START: {current_focus_session_id}")
                         # Acquire the shared camera for tracking
@@ -164,6 +166,8 @@ class Agent:
 
                 res = inference.predict(frame=frame)
                 fsm.update(res.is_focused, now=tick_start)
+                if res.label:
+                    attention_counts[res.label] = attention_counts.get(res.label, 0) + 1
             except NotImplementedError:
                 # If real inference isn't wired, require simulate
                 raise
@@ -209,6 +213,7 @@ class Agent:
                                 end_ts=end_ts,
                                 distractions=fsm.distractions,
                                 computed=computed,
+                                attention_label_counts=attention_counts,
                             )
 
                             # Always enqueue first (reliability), then try upload

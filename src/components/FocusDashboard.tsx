@@ -7,9 +7,9 @@ import {
   YAxis,
   Tooltip,
   CartesianGrid,
-  BarChart,
-  Bar,
-  Legend,
+  PieChart,
+  Pie,
+  Cell,
 } from 'recharts';
 import { collection, onSnapshot, query, Timestamp, where } from 'firebase/firestore';
 import { db } from '../firebase-config';
@@ -30,6 +30,7 @@ type FocusSummaryDoc = {
   distractedMs?: number | null;
   distractions?: number | null;
   focusPercent?: number | null;
+  attentionLabelCounts?: Record<string, number> | null;
 };
 
 type Course = { id: string; name: string; userId: string };
@@ -53,6 +54,22 @@ function formatDateTime(d: Date) {
 function msToMinutes(ms: number | null | undefined): number {
   if (ms == null) return 0;
   return Math.max(0, ms) / 60000;
+}
+
+function msToHours(ms: number | null | undefined): number {
+  if (ms == null) return 0;
+  return Math.max(0, ms) / 3600000;
+}
+
+function fmtAwayLabel(k: string): string {
+  switch (k) {
+    case 'away_left': return 'Left';
+    case 'away_right': return 'Right';
+    case 'away_up': return 'Up';
+    case 'away_down': return 'Down';
+    default:
+      return k.replace(/^away_/, '').replace(/_/g, ' ');
+  }
 }
 
 export default function FocusDashboard({ userId }: { userId: string }) {
@@ -89,6 +106,7 @@ export default function FocusDashboard({ userId }: { userId: string }) {
             distractedMs: typeof data.distractedMs === 'number' ? data.distractedMs : null,
             distractions: typeof data.distractions === 'number' ? data.distractions : 0,
             focusPercent: typeof data.focusPercent === 'number' ? data.focusPercent : null,
+            attentionLabelCounts: (data.attentionLabelCounts && typeof data.attentionLabelCounts === 'object') ? data.attentionLabelCounts : null,
           };
         });
 
@@ -159,6 +177,44 @@ export default function FocusDashboard({ userId }: { userId: string }) {
   }, [filtered]);
 
   const latestRows = useMemo(() => filtered.slice(0, 25), [filtered]);
+  const latest = filtered[0] || null;
+
+  const topAwayLabel = (counts: Record<string, number> | null | undefined): string | null => {
+    if (!counts) return null;
+    const entries = Object.entries(counts)
+      .filter(([k]) => k !== 'screen')
+      .sort((a, b) => b[1] - a[1]);
+    if (entries.length === 0) return null;
+    return entries[0][0];
+  };
+
+  const lastSessionDurationMin = useMemo(() => {
+    if (!latest) return 0;
+    const totalMs = (latest.focusedMs ?? 0) + (latest.distractedMs ?? 0);
+    return Math.round(msToMinutes(totalMs));
+  }, [latest]);
+
+  const lastTopAwayPretty = useMemo(() => {
+    const k = topAwayLabel(latest?.attentionLabelCounts);
+    return k ? fmtAwayLabel(k) : '—';
+  }, [latest]);
+
+  const lastAttentionPie = useMemo(() => {
+    const counts = latest?.attentionLabelCounts || null;
+    if (!counts) return [];
+    const total = Object.values(counts).reduce((a, b) => a + (Number.isFinite(b) ? b : 0), 0);
+    if (total <= 0) return [];
+    const order = ['screen', 'away_left', 'away_right', 'away_up', 'away_down'];
+    return order
+      .filter((k) => (counts as any)[k] != null)
+      .map((k) => ({
+        key: k,
+        name: k === 'screen' ? 'Screen' : fmtAwayLabel(k),
+        value: (counts as any)[k] as number,
+        pct: Math.round((((counts as any)[k] as number) / total) * 100),
+      }))
+      .filter((x) => x.value > 0);
+  }, [latest]);
 
   const totals = useMemo(() => {
     const focusedMs = filtered.reduce((acc, s) => acc + (s.focusedMs ?? 0), 0);
@@ -177,6 +233,10 @@ export default function FocusDashboard({ userId }: { userId: string }) {
   return (
     <div className="focusdash">
       <div className="focusdash-header">
+        <div>
+          <h3 className="focusdash-title">Focus dashboard</h3>
+          <p className="focusdash-subtitle">Session summaries and attention direction (screen/away).</p>
+        </div>
         <div className="focusdash-controls">
           <label className="focusdash-label">
             Course
@@ -209,12 +269,13 @@ export default function FocusDashboard({ userId }: { userId: string }) {
           <div className="focusdash-metric-value">{totals.avgFocusPercent}%</div>
         </div>
         <div className="focusdash-metric">
-          <div className="focusdash-metric-label">Focused (min)</div>
-          <div className="focusdash-metric-value">{Math.round(msToMinutes(totals.focusedMs))}</div>
+          <div className="focusdash-metric-label">Focused (hrs)</div>
+          <div className="focusdash-metric-value">{msToHours(totals.focusedMs).toFixed(1)}</div>
         </div>
         <div className="focusdash-metric">
-          <div className="focusdash-metric-label">Distracted (min)</div>
-          <div className="focusdash-metric-value">{Math.round(msToMinutes(totals.distractedMs))}</div>
+          <div className="focusdash-metric-label">Last session</div>
+          <div className="focusdash-metric-value">{lastSessionDurationMin ? `${lastSessionDurationMin}m` : '—'}</div>
+          <div className="focusdash-metric-sub">Top away: {lastTopAwayPretty}</div>
         </div>
       </div>
 
@@ -257,69 +318,72 @@ export default function FocusDashboard({ userId }: { userId: string }) {
             </div>
 
             <div className="focusdash-card">
-              <div className="focusdash-card-title">Focused vs distracted (minutes)</div>
-              <div className="focusdash-chart">
-                <ResponsiveContainer width="100%" height={260}>
-                  <BarChart data={series.slice(Math.max(0, series.length - 12))}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#D1D5DB" />
-                    <XAxis dataKey="label" tick={{ fontSize: 12, fill: '#111827' }} />
-                    <YAxis tick={{ fontSize: 12, fill: '#111827' }} />
-                    <Tooltip
-                      contentStyle={{
-                        background: '#FFFFFF',
-                        border: '1px solid #111827',
-                        borderRadius: 10,
-                        color: '#111827',
-                      }}
-                      labelStyle={{ color: '#111827', fontWeight: 700 }}
-                    />
-                    {/* Custom Legend: both labels have the same sharp, black look and box border */}
-                    <Legend
-                      content={({ payload }) => (
-                        <div style={{ display: 'flex', gap: 18, padding: 0, margin: 0 }}>
-                          {payload &&
-                            payload.map((entry: any, idx: number) => (
-                              <div key={`legend-${idx}`} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                <div
-                                  style={{
-                                    width: 15,
-                                    height: 15,
-                                    borderRadius: 4,
-                                    background: entry.color,
-                                    border: '2px solid #111827',
-                                    marginRight: 6,
-                                    boxSizing: 'border-box',
-                                    display: 'inline-block',
-                                  }}
-                                />
-                                <span
-                                  style={{
-                                    color: '#111827',
-                                    fontWeight: 400,
-                                    fontSize: 13,
-                                    fontFamily: 'inherit',
-                                    WebkitFontSmoothing: 'auto',
-                                    MozOsxFontSmoothing: 'auto',
-                                  }}
-                                >
-                                  {entry.value}
-                                </span>
-                              </div>
-                            ))}
-                        </div>
-                      )}
-                    />
-                    <Bar dataKey="focusedMin" stackId="a" fill="#111827" stroke="#111827" name="Focused (min)" />
-                    <Bar dataKey="distractedMin" stackId="a" fill="#FFFFFF" stroke="#111827" name="Distracted (min)" />
-                  </BarChart>
-                </ResponsiveContainer>
+              <div className="focusdash-card-title">Last session attention breakdown</div>
+              <div className="focusdash-split">
+                <div className="focusdash-split-left">
+                  {lastAttentionPie.length === 0 ? (
+                    <div className="focusdash-card-hint">No attention direction data yet.</div>
+                  ) : (
+                    <ResponsiveContainer width="100%" height={220}>
+                      <PieChart>
+                        <Pie
+                          data={lastAttentionPie}
+                          dataKey="value"
+                          nameKey="name"
+                          cx="50%"
+                          cy="50%"
+                          outerRadius={80}
+                          innerRadius={42}
+                          stroke="#111827"
+                          strokeWidth={1}
+                        >
+                          {lastAttentionPie.map((entry) => (
+                            <Cell
+                              key={entry.key}
+                              fill={entry.key === 'screen' ? '#111827' : '#FFFFFF'}
+                              stroke="#111827"
+                              strokeWidth={1}
+                            />
+                          ))}
+                        </Pie>
+                        <Tooltip
+                          formatter={(value: any, _name: any, props: any) => {
+                            const pct = props?.payload?.pct;
+                            return [`${value} (${pct ?? 0}%)`, 'Frames'];
+                          }}
+                          contentStyle={{
+                            background: '#FFFFFF',
+                            border: '1px solid #111827',
+                            borderRadius: 10,
+                            color: '#111827',
+                          }}
+                          labelStyle={{ color: '#111827', fontWeight: 700 }}
+                        />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  )}
+                </div>
+                <div className="focusdash-split-right">
+                  <div className="focusdash-stat">
+                    <div className="focusdash-stat-label">Top away direction</div>
+                    <div className="focusdash-stat-value">{lastTopAwayPretty}</div>
+                  </div>
+                  <div className="focusdash-stat">
+                    <div className="focusdash-stat-label">Focus %</div>
+                    <div className="focusdash-stat-value">{latest?.focusPercent == null ? '—' : `${Math.round(latest.focusPercent)}%`}</div>
+                  </div>
+                  <div className="focusdash-stat">
+                    <div className="focusdash-stat-label">Distractions</div>
+                    <div className="focusdash-stat-value">{latest?.distractions ?? 0}</div>
+                  </div>
+                  <div className="focusdash-card-hint">Pie shows model’s predicted attention direction distribution.</div>
+                </div>
               </div>
-              <div className="focusdash-card-hint">Showing the last 12 sessions.</div>
             </div>
           </div>
 
           <div className="focusdash-card focusdash-tablecard">
-            <div className="focusdash-card-title">Recent sessions</div>
+            <div className="focusdash-card-title">Recent sessions (clean view)</div>
             <div className="focusdash-tablewrap">
               <table className="focusdash-table">
                 <thead>
@@ -327,11 +391,10 @@ export default function FocusDashboard({ userId }: { userId: string }) {
                     <th>Date</th>
                     <th>Course</th>
                     <th>Session</th>
-                    <th>Focused</th>
-                    <th>Distracted</th>
+                    <th>Duration</th>
                     <th>Focus %</th>
                     <th>Distractions</th>
-                    <th>Device</th>
+                    <th>Top away</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -340,20 +403,19 @@ export default function FocusDashboard({ userId }: { userId: string }) {
                     const courseName = s.courseId ? (courseNameById.get(s.courseId) ?? s.courseId.slice(0, 8) + '…') : '—';
                     const linkedSessionId = s.sessionId ?? s.courseSessionId ?? null;
                     const sessionName = linkedSessionId ? (sessionNameById.get(linkedSessionId) ?? linkedSessionId.slice(0, 8) + '…') : '—';
-                    const focusedMin = Math.round(msToMinutes(s.focusedMs));
-                    const distractedMin = Math.round(msToMinutes(s.distractedMs));
+                    const durationMin = Math.round(msToMinutes((s.focusedMs ?? 0) + (s.distractedMs ?? 0)));
                     const focusPct = s.focusPercent == null ? '—' : `${Math.round(s.focusPercent)}%`;
-                    const deviceShort = s.deviceId ? s.deviceId.slice(0, 8) + '…' : '—';
+                    const topAwayRaw = topAwayLabel(s.attentionLabelCounts);
+                    const topAway = topAwayRaw ? fmtAwayLabel(topAwayRaw) : '—';
                     return (
                       <tr key={s.id}>
                         <td>{end ? formatDateTime(end) : '—'}</td>
                         <td>{courseName}</td>
                         <td>{sessionName}</td>
-                        <td>{focusedMin}m</td>
-                        <td>{distractedMin}m</td>
+                        <td>{durationMin}m</td>
                         <td>{focusPct}</td>
                         <td>{s.distractions ?? 0}</td>
-                        <td>{deviceShort}</td>
+                        <td>{topAway}</td>
                       </tr>
                     );
                   })}
@@ -361,7 +423,7 @@ export default function FocusDashboard({ userId }: { userId: string }) {
               </table>
             </div>
             <div className="focusdash-card-hint">
-              Tip: focus values come from the Pi agent’s smoothed focused/distracted state.
+              Tip: focus is computed from the Pi agent’s smoothed state; direction comes from the model’s predicted labels.
             </div>
           </div>
         </>

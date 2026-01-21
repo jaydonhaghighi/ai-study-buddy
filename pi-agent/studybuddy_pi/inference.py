@@ -10,6 +10,7 @@ from typing import Any
 class InferenceResult:
     is_focused: bool
     confidence: float | None = None
+    label: str | None = None
 
 
 class FocusInference:
@@ -43,10 +44,12 @@ class FocusInference:
         self.model_path = model_path
         self.model_input_size = int(model_input_size)
         self.model_threshold = float(model_threshold)
+        # Must match training label order in pi-agent/train/train_tf.py
+        self.labels = ["screen", "away_left", "away_right", "away_up", "away_down"]
 
         # Cached outputs (to avoid running detection every frame).
         self._last_ts: float = 0.0
-        self._last_result: InferenceResult = InferenceResult(is_focused=False, confidence=None)
+        self._last_result: InferenceResult = InferenceResult(is_focused=False, confidence=None, label=None)
 
         # Lazy-loaded OpenCV detectors
         self._cv2 = None
@@ -196,9 +199,19 @@ class FocusInference:
         self._tflite_interpreter.set_tensor(self._tflite_input["index"], face)
         self._tflite_interpreter.invoke()
         out = self._tflite_interpreter.get_tensor(self._tflite_output["index"])
-        score = float(out.reshape(-1)[0])
-        is_focused = score >= self.model_threshold
-        return InferenceResult(is_focused=is_focused, confidence=score)
+        vec = out.reshape(-1).astype(float)
+        if vec.size == 1:
+            # Backwards-compatible binary model
+            score = float(vec[0])
+            is_focused = score >= self.model_threshold
+            return InferenceResult(is_focused=is_focused, confidence=score, label=("screen" if is_focused else "away_down"))
+
+        # Multi-class softmax: pick argmax label.
+        idx = int(vec.argmax())
+        prob = float(vec[idx])
+        label = self.labels[idx] if idx < len(self.labels) else None
+        is_focused = (label == "screen") and (prob >= self.model_threshold)
+        return InferenceResult(is_focused=is_focused, confidence=prob, label=label)
 
     def _to_gray(self, frame: Any):
         cv2 = self._cv2
@@ -215,12 +228,12 @@ class FocusInference:
         assert self._face_cascade is not None
 
         if frame is None:
-            return InferenceResult(is_focused=False, confidence=0.0)
+            return InferenceResult(is_focused=False, confidence=0.0, label=None)
 
         try:
             h, w = frame.shape[:2]
         except Exception:
-            return InferenceResult(is_focused=False, confidence=0.0)
+            return InferenceResult(is_focused=False, confidence=0.0, label=None)
 
         gray = self._to_gray(frame)
         # Downsample for speed; detection doesn't need full-res
@@ -238,7 +251,7 @@ class FocusInference:
             minSize=(int(60 * scale), int(60 * scale)),
         )
         if len(faces) == 0:
-            return InferenceResult(is_focused=False, confidence=0.1)
+            return InferenceResult(is_focused=False, confidence=0.1, label="away_down")
 
         # Choose largest face (by area)
         x, y, fw, fh = max(faces, key=lambda b: b[2] * b[3])
@@ -284,7 +297,7 @@ class FocusInference:
             is_focused = centered and eyes_found
         else:
             is_focused = score >= 0.6
-        return InferenceResult(is_focused=bool(is_focused), confidence=score)
+        return InferenceResult(is_focused=bool(is_focused), confidence=score, label=("screen" if is_focused else "away_down"))
 
     def predict(self, frame: Any | None = None) -> InferenceResult:
         if self.simulate:
@@ -296,7 +309,7 @@ class FocusInference:
             # Add tiny noise
             if random.random() < 0.02:
                 is_focused = not is_focused
-            return InferenceResult(is_focused=is_focused, confidence=None)
+            return InferenceResult(is_focused=is_focused, confidence=None, label=("screen" if is_focused else "away_down"))
 
         # TFLite model inference (preferred when model_path is set).
         now = time.time()
