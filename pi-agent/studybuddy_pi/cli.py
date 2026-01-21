@@ -2,9 +2,6 @@ from __future__ import annotations
 
 import argparse
 
-from .agent import Agent
-from .config import load_config
-
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="studybuddy-pi", description="AI Study Buddy Raspberry Pi agent")
@@ -14,6 +11,10 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("run", help="Run the long-running agent loop")
 
     args = parser.parse_args(argv)
+
+    from .agent import Agent
+    from .config import load_config
+
     cfg = load_config()
     agent = Agent(cfg)
 
