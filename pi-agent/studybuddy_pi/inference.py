@@ -10,6 +10,7 @@ from typing import Any
 class InferenceResult:
     is_focused: bool
     confidence: float | None = None
+    label: str | None = None
 
 
 class FocusInference:
@@ -30,6 +31,9 @@ class FocusInference:
         inference_interval_seconds: float = 0.25,
         center_tolerance_ratio: float = 0.22,
         require_eyes: bool = False,
+        model_path: str | None = None,
+        model_input_size: int = 224,
+        model_threshold: float = 0.5,
     ):
         self.simulate = simulate
         self._sim_counter = 0
@@ -37,15 +41,26 @@ class FocusInference:
         self.inference_interval_seconds = max(0.05, float(inference_interval_seconds))
         self.center_tolerance_ratio = max(0.05, float(center_tolerance_ratio))
         self.require_eyes = require_eyes
+        self.model_path = model_path
+        self.model_input_size = int(model_input_size)
+        self.model_threshold = float(model_threshold)
+        # Must match training label order in pi-agent/train/train_tf.py
+        self.labels = ["screen", "away_left", "away_right", "away_up", "away_down"]
 
         # Cached outputs (to avoid running detection every frame).
         self._last_ts: float = 0.0
-        self._last_result: InferenceResult = InferenceResult(is_focused=False, confidence=None)
+        self._last_result: InferenceResult = InferenceResult(is_focused=False, confidence=None, label=None)
 
         # Lazy-loaded OpenCV detectors
         self._cv2 = None
         self._face_cascade = None
         self._eye_cascade = None
+
+        # Lazy-loaded TFLite model
+        self._tflite_interpreter = None
+        self._tflite_input = None
+        self._tflite_output = None
+        self._np = None
 
     def _ensure_detectors(self) -> None:
         if self._cv2 is not None:
@@ -70,6 +85,134 @@ class FocusInference:
             # Eye cascade isn't strictly required; keep running without it.
             self._eye_cascade = None
 
+    def _ensure_tflite(self) -> None:
+        if self._tflite_interpreter is not None:
+            return
+        if not self.model_path:
+            raise RuntimeError("Model path not configured")
+        try:
+            from tflite_runtime.interpreter import Interpreter  # type: ignore
+        except Exception:
+            try:
+                from tensorflow.lite.python.interpreter import Interpreter  # type: ignore
+            except Exception as e:
+                raise RuntimeError(
+                    "TFLite runtime not found. Install `tflite-runtime` (recommended on Pi) or TensorFlow."
+                ) from e
+
+        try:
+            import numpy as np  # type: ignore
+        except Exception as e:
+            raise RuntimeError("NumPy is required for TFLite inference.") from e
+
+        self._np = np
+        self._tflite_interpreter = Interpreter(model_path=self.model_path)
+        self._tflite_interpreter.allocate_tensors()
+        self._tflite_input = self._tflite_interpreter.get_input_details()[0]
+        self._tflite_output = self._tflite_interpreter.get_output_details()[0]
+
+    def _preprocess_face(self, frame: Any, box: tuple[int, int, int, int]):
+        cv2 = self._cv2
+        np = self._np
+        assert cv2 is not None
+        assert np is not None
+
+        x, y, fw, fh = box
+        h, w = frame.shape[:2]
+
+        # Add a bit of padding around the face
+        pad = 0.2
+        px = int(fw * pad)
+        py = int(fh * pad)
+        x1 = max(0, x - px)
+        y1 = max(0, y - py)
+        x2 = min(w, x + fw + px)
+        y2 = min(h, y + fh + py)
+
+        face = frame[y1:y2, x1:x2]
+        if face.size == 0:
+            return None
+
+        # Convert to RGB if needed
+        fmt = (self.frame_format or "").upper()
+        if "BGR" in fmt or ("RGB" not in fmt):
+            try:
+                face = cv2.cvtColor(face, cv2.COLOR_BGR2RGB)
+            except Exception:
+                pass
+
+        face = cv2.resize(face, (self.model_input_size, self.model_input_size), interpolation=cv2.INTER_AREA)
+        face = face.astype(np.float32)
+        # MobileNetV2-style preprocess: scale to [-1, 1]
+        face = (face / 127.5) - 1.0
+        face = np.expand_dims(face, axis=0)  # [1, H, W, 3]
+        return face
+
+    def _tflite_predict(self, frame: Any | None) -> InferenceResult:
+        self._ensure_detectors()
+        self._ensure_tflite()
+
+        cv2 = self._cv2
+        np = self._np
+        assert cv2 is not None
+        assert np is not None
+        assert self._face_cascade is not None
+        assert self._tflite_interpreter is not None
+        assert self._tflite_input is not None
+        assert self._tflite_output is not None
+
+        if frame is None:
+            return InferenceResult(is_focused=False, confidence=0.0)
+
+        try:
+            h, w = frame.shape[:2]
+        except Exception:
+            return InferenceResult(is_focused=False, confidence=0.0)
+
+        gray = self._to_gray(frame)
+        scale = 0.5
+        try:
+            small = cv2.resize(gray, (int(w * scale), int(h * scale)))
+        except Exception:
+            small = gray
+            scale = 1.0
+
+        faces = self._face_cascade.detectMultiScale(
+            small,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(int(60 * scale), int(60 * scale)),
+        )
+        if len(faces) == 0:
+            return InferenceResult(is_focused=False, confidence=0.1)
+
+        x, y, fw, fh = max(faces, key=lambda b: b[2] * b[3])
+        x = int(x / scale)
+        y = int(y / scale)
+        fw = int(fw / scale)
+        fh = int(fh / scale)
+
+        face = self._preprocess_face(frame, (x, y, fw, fh))
+        if face is None:
+            return InferenceResult(is_focused=False, confidence=0.0)
+
+        self._tflite_interpreter.set_tensor(self._tflite_input["index"], face)
+        self._tflite_interpreter.invoke()
+        out = self._tflite_interpreter.get_tensor(self._tflite_output["index"])
+        vec = out.reshape(-1).astype(float)
+        if vec.size == 1:
+            # Backwards-compatible binary model
+            score = float(vec[0])
+            is_focused = score >= self.model_threshold
+            return InferenceResult(is_focused=is_focused, confidence=score, label=("screen" if is_focused else "away_down"))
+
+        # Multi-class softmax: pick argmax label.
+        idx = int(vec.argmax())
+        prob = float(vec[idx])
+        label = self.labels[idx] if idx < len(self.labels) else None
+        is_focused = (label == "screen") and (prob >= self.model_threshold)
+        return InferenceResult(is_focused=is_focused, confidence=prob, label=label)
+
     def _to_gray(self, frame: Any):
         cv2 = self._cv2
         # Picamera2 usually provides RGB when configured with "RGB888".
@@ -85,12 +228,12 @@ class FocusInference:
         assert self._face_cascade is not None
 
         if frame is None:
-            return InferenceResult(is_focused=False, confidence=0.0)
+            return InferenceResult(is_focused=False, confidence=0.0, label=None)
 
         try:
             h, w = frame.shape[:2]
         except Exception:
-            return InferenceResult(is_focused=False, confidence=0.0)
+            return InferenceResult(is_focused=False, confidence=0.0, label=None)
 
         gray = self._to_gray(frame)
         # Downsample for speed; detection doesn't need full-res
@@ -108,7 +251,7 @@ class FocusInference:
             minSize=(int(60 * scale), int(60 * scale)),
         )
         if len(faces) == 0:
-            return InferenceResult(is_focused=False, confidence=0.1)
+            return InferenceResult(is_focused=False, confidence=0.1, label="away_down")
 
         # Choose largest face (by area)
         x, y, fw, fh = max(faces, key=lambda b: b[2] * b[3])
@@ -154,7 +297,7 @@ class FocusInference:
             is_focused = centered and eyes_found
         else:
             is_focused = score >= 0.6
-        return InferenceResult(is_focused=bool(is_focused), confidence=score)
+        return InferenceResult(is_focused=bool(is_focused), confidence=score, label=("screen" if is_focused else "away_down"))
 
     def predict(self, frame: Any | None = None) -> InferenceResult:
         if self.simulate:
@@ -166,14 +309,18 @@ class FocusInference:
             # Add tiny noise
             if random.random() < 0.02:
                 is_focused = not is_focused
-            return InferenceResult(is_focused=is_focused, confidence=None)
+            return InferenceResult(is_focused=is_focused, confidence=None, label=("screen" if is_focused else "away_down"))
 
-        # Real (heuristic) inference: rate-limit detection and reuse last output for stability/perf.
+        # TFLite model inference (preferred when model_path is set).
         now = time.time()
         if (now - self._last_ts) < self.inference_interval_seconds:
             return self._last_result
 
-        res = self._heuristic_predict(frame)
+        if self.model_path:
+            res = self._tflite_predict(frame)
+        else:
+            # Heuristic fallback
+            res = self._heuristic_predict(frame)
         self._last_ts = now
         self._last_result = res
         return res

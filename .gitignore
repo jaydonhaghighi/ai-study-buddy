@@ -36,21 +36,22 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-pi-agent/studybuddy_pi/__pycache__/__main__.cpython-313.pyc
-pi-agent/studybuddy_pi/__pycache__/__init__.cpython-313.pyc
-pi-agent/studybuddy_pi/__pycache__/agent.cpython-313.pyc
-pi-agent/studybuddy_pi/__pycache__/camera_manager.cpython-313.pyc
-pi-agent/studybuddy_pi/__pycache__/api.cpython-313.pyc
-pi-agent/studybuddy_pi/__pycache__/camera.cpython-313.pyc
-pi-agent/studybuddy_pi/__pycache__/cli.cpython-313.pyc
-pi-agent/studybuddy_pi/__pycache__/config.cpython-313.pyc
-pi-agent/studybuddy_pi/__pycache__/focus_state.cpython-313.pyc
-pi-agent/studybuddy_pi/__pycache__/inference.cpython-313.pyc
-pi-agent/studybuddy_pi/__pycache__/opencv_tuning.cpython-313.pyc
-pi-agent/studybuddy_pi/__pycache__/models.cpython-313.pyc
-pi-agent/studybuddy_pi/__pycache__/preview_server.cpython-313.pyc
-pi-agent/studybuddy_pi/__pycache__/storage.cpython-313.pyc
-pi-agent/studybuddy_pi/__pycache__/summary.cpython-313.pyc
+# Python
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyd
+
+# Python virtualenvs
+.venv/
+venv/
+
+# Local datasets / generated data
+data/
+pi-agent/data/
+
+# Project-specific (kept explicit for clarity)
+pi-agent/.venv/
 .specstory/.what-is-this.md
 .specstory/history/2025-12-29_02-12Z-prd-document-review.md
 PRD.md
