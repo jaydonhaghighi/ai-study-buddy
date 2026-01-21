@@ -45,7 +45,6 @@ python -m studybuddy_pi run
 ### Training a simple "looking at screen" model (fine-tune)
 If you need a **deep-learning model** (fine-tuned) instead of heuristics, use the scripts in `train/`:
 
-- `train/collect_data.py` collects labeled face crops on the Pi.
 - `train/train_tf.py` fine-tunes MobileNetV2 and exports TFLite.
 
 See `train/README.md` for step-by-step instructions.

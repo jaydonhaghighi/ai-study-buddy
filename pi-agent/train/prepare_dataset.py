@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-LABELS = ["looking", "not_looking"]
+# 5-way attention direction labels (used by the JS collector + MobileNetV2 softmax training)
+LABELS = ["screen", "away_left", "away_right", "away_up", "away_down"]
 
 
 @dataclass(frozen=True)
@@ -21,7 +22,7 @@ class SampleGroup:
 
 def iter_face_groups(root: Path) -> list[SampleGroup]:
     """
-    Expects structure produced by collect_data.py:
+    Expects structure produced by the JS collector zip:
       face/<participant>/<session>/<placement>/<label>/*.jpg
     """
     groups: list[SampleGroup] = []
@@ -131,7 +132,7 @@ def main():
                 pass
         shutil.copy2(src, dst)
 
-    counts = {("train", "looking"): 0, ("train", "not_looking"): 0, ("val", "looking"): 0, ("val", "not_looking"): 0, ("test", "looking"): 0, ("test", "not_looking"): 0}
+    counts = {(split, lab): 0 for split in ["train", "val", "test"] for lab in LABELS}
 
     for g in groups:
         split = split_for(g)
@@ -152,9 +153,8 @@ def main():
     print("Split keys:", args.split_by)
     print("Counts:")
     for split in ["train", "val", "test"]:
-        print(
-            f"  {split:5s}  looking={counts[(split,'looking')]:6d}  not_looking={counts[(split,'not_looking')]:6d}"
-        )
+        parts = "  ".join([f"{lab}={counts[(split, lab)]:6d}" for lab in LABELS])
+        print(f"  {split:5s}  {parts}")
     print("\nTrain your model with:")
     print(f"  python train/train_tf.py --train-dir \"{out_dir / 'train'}\" --val-dir \"{out_dir / 'val'}\" --test-dir \"{out_dir / 'test'}\"")
 

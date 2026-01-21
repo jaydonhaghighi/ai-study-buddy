@@ -8,16 +8,25 @@ This folder provides a **simple fine-tuning pipeline** for a binary classifier:
 
 ### 1) Collect data (on the Pi)
 
-```bash
-cd pi-agent
-python train/collect_data.py --out-dir data --participant p01 --session s01 --placement monitor_top --cycles 6 --looking-seconds 10 --away-seconds 10 --save-face --require-face
+Data collection is now done via the **web-based JS collector** (more reliable on macOS/Windows).
+
+1) Run the web app and open the collector page at:
+- `http://localhost:5173/collect` (dev), or
+- your deployed site at `/collect`
+
+2) Fill in `participant` / `session` / `placement` and run the guided flow.
+
+3) It downloads a zip like `run_<timestamp>.zip`. Unzip it and copy the `run_<timestamp>/` folder into:
+
+```
+pi-agent/data/
 ```
 
-This will save face crops to:
+So you end up with:
 
 ```
-data/run_<timestamp>/face/<participant>/<session>/<placement>/looking/*
-data/run_<timestamp>/face/<participant>/<session>/<placement>/not_looking/*
+data/run_<timestamp>/face/<participant>/<session>/<placement_condition>/looking/*
+data/run_<timestamp>/face/<participant>/<session>/<placement_condition>/not_looking/*
 ```
 
 ### 2) Prepare train/val/test splits (recommended)
@@ -67,14 +76,3 @@ python -m studybuddy_pi run
 - The model expects **face crops** (from the same collection script).
 - If no face is detected at runtime, it counts as **not looking**.
 - You can tune `STUDYBUDDY_MODEL_THRESHOLD` to trade off false positives vs false negatives.
-
-### Collecting from participants on their own laptops (recommended for scaling)
-For a guided webcam session with preview + face box + beeps:
-
-```bash
-cd pi-agent
-pip install -r requirements-collect.txt
-python -m studybuddy_pi collect-data --participant p02 --session s01 --placement laptop_webcam
-```
-
-See `pi-agent/PARTICIPANT_GUIDE.md` for the “send this to anyone” instructions.

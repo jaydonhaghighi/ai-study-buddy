@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import tensorflow as tf
 
+# Keep label order fixed across training + TFLite inference.
+LABELS = ["screen", "away_left", "away_right", "away_up", "away_down"]
 
-def build_model(input_size: int) -> tf.keras.Model:
+
+def build_model(input_size: int, num_classes: int) -> tf.keras.Model:
     base = tf.keras.applications.MobileNetV2(
         input_shape=(input_size, input_size, 3),
         include_top=False,
@@ -19,7 +23,7 @@ def build_model(input_size: int) -> tf.keras.Model:
     x = base(x, training=False)
     x = tf.keras.layers.GlobalAveragePooling2D()(x)
     x = tf.keras.layers.Dropout(0.2)(x)
-    outputs = tf.keras.layers.Dense(1, activation="sigmoid")(x)
+    outputs = tf.keras.layers.Dense(num_classes, activation="softmax")(x)
     model = tf.keras.Model(inputs, outputs)
     return model
 
@@ -28,17 +32,18 @@ def load_dir_dataset(data_dir: Path, input_size: int, batch_size: int, shuffle: 
     return tf.keras.utils.image_dataset_from_directory(
         str(data_dir),
         labels="inferred",
-        label_mode="binary",
+        label_mode="categorical",
         image_size=(input_size, input_size),
         batch_size=batch_size,
         shuffle=shuffle,
         seed=seed,
+        class_names=LABELS,
     )
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Fine-tune a MobileNetV2 focus classifier.")
-    parser.add_argument("--data-dir", help="Directory with class subfolders (looking/, not_looking/) for quick experiments")
+    parser = argparse.ArgumentParser(description="Fine-tune a MobileNetV2 attention direction classifier (5-way softmax).")
+    parser.add_argument("--data-dir", help="Directory with class subfolders (quick experiments)")
     parser.add_argument("--train-dir", help="Directory with class subfolders for training (preferred)")
     parser.add_argument("--val-dir", help="Directory with class subfolders for validation (preferred)")
     parser.add_argument("--test-dir", help="Directory with class subfolders for test (recommended)")
@@ -81,10 +86,10 @@ def main():
     if test_ds is not None:
         test_ds = test_ds.prefetch(autotune)
 
-    model = build_model(args.input_size)
+    model = build_model(args.input_size, num_classes=len(LABELS))
     model.compile(
         optimizer=tf.keras.optimizers.Adam(1e-3),
-        loss=tf.keras.losses.BinaryCrossentropy(),
+        loss=tf.keras.losses.CategoricalCrossentropy(),
         metrics=["accuracy"],
     )
 
@@ -99,7 +104,7 @@ def main():
 
     model.compile(
         optimizer=tf.keras.optimizers.Adam(1e-5),
-        loss=tf.keras.losses.BinaryCrossentropy(),
+        loss=tf.keras.losses.CategoricalCrossentropy(),
         metrics=["accuracy"],
     )
     print("Fine-tuning...")
@@ -112,6 +117,9 @@ def main():
 
     saved_model_dir = out_dir / "focus_model_saved"
     model.save(saved_model_dir)
+
+    # Persist label order for inference.
+    (out_dir / "focus_model_labels.json").write_text(json.dumps(LABELS, indent=2) + "\n", encoding="utf-8")
 
     print("Exporting TFLite...")
     converter = tf.lite.TFLiteConverter.from_saved_model(str(saved_model_dir))

@@ -96,6 +96,7 @@ def summary_to_payload(
     end_ts: float,
     distractions: int,
     computed: ComputedSummary,
+    attention_label_counts: dict[str, int] | None = None,
     course_id: str | None = None,
     course_session_id: str | None = None,
 ) -> dict[str, Any]:
@@ -113,4 +114,5 @@ def summary_to_payload(
         "distractions": distractions,
         "avgFocusBeforeDistractMs": computed.avg_focus_before_distract_ms,
         "focusPercent": computed.focus_percent,
+        "attentionLabelCounts": attention_label_counts or {},
     }
