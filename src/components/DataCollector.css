@@ -30,6 +30,11 @@
   height: calc(100vh - 80px);
 }
 
+.dc-right {
+  padding-bottom: 24px;
+  box-sizing: border-box;
+}
+
 .dc-card {
   border: 1px solid rgba(17, 24, 39, 0.10);
   background: #ffffff;
@@ -142,25 +147,11 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
+  border-radius: 12px;
 }
 
 .dc-overlay {
   pointer-events: none;
-}
-
-.dc-prompt {
-  position: absolute;
-  left: 12px;
-  bottom: 12px;
-  right: 12px;
-  background: rgba(255, 255, 255, 0.90);
-  color: #111827;
-  border: 1px solid rgba(17, 24, 39, 0.12);
-  border-radius: 12px;
-  padding: 10px 12px;
-  font-size: 13px;
-  font-weight: 700;
-  white-space: pre-line;
 }
 
 @media (max-width: 980px) {
