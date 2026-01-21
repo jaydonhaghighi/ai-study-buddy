@@ -65,6 +65,11 @@ type Phase =
   | { kind: 'capture'; title: string; subtitle: string; label: AttentionLabel; awayDirection: string | null; secondsLeft: number }
   | { kind: 'done' };
 
+function intParam(v: string | null, fallback: number): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 export default function DataCollector() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
@@ -78,11 +83,11 @@ export default function DataCollector() {
   const [status, setStatus] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
 
-  const [participant, setParticipant] = useState('p01');
-  const [session, setSession] = useState('day');
+  const [participant, setParticipant] = useState('');
+  const [session, setSession] = useState<'day' | 'night' | ''>('');
   const [placement, setPlacement] = useState('laptop_webcam');
   const [fps, setFps] = useState(6);
-  const [cycles, setCycles] = useState(6);
+  const [cycles, setCycles] = useState(3);
   const [lookSeconds, setLookSeconds] = useState(6);
   const [awaySeconds, setAwaySeconds] = useState(6);
   // Always-on: we only save frames when a face is detected.
@@ -92,9 +97,31 @@ export default function DataCollector() {
   const [zipProgress, setZipProgress] = useState<{ saved: number; skipped: number } | null>(null);
 
   const runId = useMemo(() => `run_${Math.floor(Date.now() / 1000)}`, []);
+  const participantMode = useMemo(() => {
+    if (typeof window === 'undefined') return false;
+    const sp = new URLSearchParams(window.location.search);
+    return sp.get('mode') === 'participant' || sp.get('participantMode') === '1';
+  }, []);
 
   const [detector, setDetector] = useState<FaceDetector | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+
+  // Participant mode: allow pre-filling via URL params and lock UI down.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const sp = new URLSearchParams(window.location.search);
+    const p = sp.get('participant');
+    const s = sp.get('session');
+    const pl = sp.get('placement');
+    if (p) setParticipant(p);
+    if (s === 'day' || s === 'night') setSession(s);
+    if (pl) setPlacement(pl);
+    if (sp.get('fps')) setFps(Math.max(1, intParam(sp.get('fps'), 6)));
+    if (sp.get('cycles')) setCycles(Math.max(1, intParam(sp.get('cycles'), 3)));
+    if (sp.get('lookSeconds')) setLookSeconds(Math.max(1, intParam(sp.get('lookSeconds'), 6)));
+    if (sp.get('awaySeconds')) setAwaySeconds(Math.max(1, intParam(sp.get('awaySeconds'), 6)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -112,6 +139,20 @@ export default function DataCollector() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Participant mode: try to auto-start the camera on page load.
+  useEffect(() => {
+    if (!participantMode) return;
+    if (running) return;
+    if (phase.kind !== 'idle') return;
+    if (!deviceId) return;
+    // Try once; if the browser blocks it, the manual button still works.
+    startCamera().catch((e: any) => {
+      setStatus('Click “Start camera” to allow camera access.');
+      setError(e?.message || 'Failed to start camera');
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [participantMode, deviceId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -221,6 +262,14 @@ export default function DataCollector() {
   };
 
   const runWizard = async () => {
+    if (!participant.trim()) {
+      setError('Please enter a participant id (e.g. p01).');
+      return;
+    }
+    if (session !== 'day' && session !== 'night') {
+      setError('Please select session: day or night.');
+      return;
+    }
     if (!detector) {
       setError('Face detector not ready yet. Please wait a second and try again.');
       return;
@@ -425,15 +474,6 @@ export default function DataCollector() {
     );
   };
 
-  const overlayText = () => {
-    if (phase.kind === 'countdown') return `${phase.title} — starting in ${phase.secondsLeft}s\n${phase.subtitle}`;
-    if (phase.kind === 'capture') return `${phase.title} — ${phase.secondsLeft}s left\n${phase.subtitle}`;
-    if (phase.kind === 'ready') return 'Ready. Click “Start guided session”.';
-    if (phase.kind === 'done') return 'Done. Download should have started.';
-    if (phase.kind === 'idle') return 'Start the camera to begin.';
-    return '';
-  };
-
   return (
     <div className="dc">
       <div className="dc-header">
@@ -443,7 +483,6 @@ export default function DataCollector() {
         </div>
       </div>
 
-      {error && <div className="dc-error">{error}</div>}
       <div className="dc-grid">
         <div className="dc-left">
           <div className="dc-card">
@@ -451,15 +490,32 @@ export default function DataCollector() {
             <div className="dc-form">
               <label>
                 Participant
-                <input value={participant} onChange={(e) => setParticipant(e.target.value)} disabled={running} />
+                <input
+                  value={participant}
+                  onChange={(e) => setParticipant(e.target.value)}
+                  disabled={running || participantMode}
+                  placeholder="e.g. p01"
+                />
               </label>
               <label>
                 Session
-                <input value={session} onChange={(e) => setSession(e.target.value)} disabled={running} />
+                <select
+                  value={session}
+                  onChange={(e) => setSession((e.target.value as any) || '')}
+                  disabled={running || participantMode}
+                >
+                  <option value="">Select…</option>
+                  <option value="day">day</option>
+                  <option value="night">night</option>
+                </select>
               </label>
               <label>
                 Placement
-                <input value={placement} onChange={(e) => setPlacement(e.target.value)} disabled={running} />
+                <input
+                  value={placement}
+                  onChange={(e) => setPlacement(e.target.value)}
+                  disabled={running || participantMode}
+                />
               </label>
               <div className="dc-row">
                 <label style={{ flex: 1 }}>
@@ -470,7 +526,7 @@ export default function DataCollector() {
                     max={15}
                     value={fps}
                     onChange={(e) => setFps(Math.max(1, Number(e.target.value || 1)))}
-                    disabled={running}
+                    disabled={running || participantMode}
                   />
                 </label>
                 <label style={{ flex: 1 }}>
@@ -481,7 +537,7 @@ export default function DataCollector() {
                     max={20}
                     value={cycles}
                     onChange={(e) => setCycles(Math.max(1, Number(e.target.value || 1)))}
-                    disabled={running}
+                    disabled={running || participantMode}
                   />
                 </label>
               </div>
@@ -494,7 +550,7 @@ export default function DataCollector() {
                     max={30}
                     value={lookSeconds}
                     onChange={(e) => setLookSeconds(Math.max(1, Number(e.target.value || 1)))}
-                    disabled={running}
+                    disabled={running || participantMode}
                   />
                 </label>
                 <label style={{ flex: 1 }}>
@@ -505,13 +561,13 @@ export default function DataCollector() {
                     max={30}
                     value={awaySeconds}
                     onChange={(e) => setAwaySeconds(Math.max(1, Number(e.target.value || 1)))}
-                    disabled={running}
+                    disabled={running || participantMode}
                   />
                 </label>
               </div>
               <label>
                 Camera
-                <select value={deviceId} onChange={(e) => setDeviceId(e.target.value)} disabled={running}>
+                <select value={deviceId} onChange={(e) => setDeviceId(e.target.value)} disabled={running || participantMode}>
                   {devices.map((d) => (
                     <option key={d.deviceId} value={d.deviceId}>
                       {d.label || `Camera ${d.deviceId.slice(0, 6)}…`}
@@ -563,6 +619,7 @@ export default function DataCollector() {
             </div>
           </div>
 
+          {error && <div className="dc-error">{error}</div>}
           {conditionUi()}
         </div>
 
@@ -570,7 +627,6 @@ export default function DataCollector() {
           <div className="dc-preview dc-preview-unmirror">
             <video ref={videoRef} className="dc-video" playsInline muted />
             <canvas ref={overlayRef} className="dc-overlay" />
-            <div className="dc-prompt">{overlayText()}</div>
           </div>
         </div>
       </div>
