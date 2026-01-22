@@ -16,7 +16,6 @@ const CONDITIONS: Condition[] = [
   { name: 'lean_back', instructions: 'Lean back slightly (relaxed posture).' },
   { name: 'lean_forward', instructions: 'Lean forward slightly (concentrating posture).' },
   { name: 'glasses', instructions: 'If you have glasses: put them on. If not, you can skip this condition.', skippable: true },
-  { name: 'dim_light', instructions: 'Dim the room a bit if possible. If not possible, you can skip.', skippable: true },
 ];
 
 const AWAY_TARGETS = [
@@ -61,13 +60,18 @@ type Phase =
   | { kind: 'idle' }
   | { kind: 'ready' }
   | { kind: 'condition'; conditionIdx: number }
-  | { kind: 'countdown'; title: string; subtitle: string; secondsLeft: number }
+  | { kind: 'countdown'; title: string; subtitle: string; secondsLeft: number; label: AttentionLabel; awayDirection: string | null }
   | { kind: 'capture'; title: string; subtitle: string; label: AttentionLabel; awayDirection: string | null; secondsLeft: number }
   | { kind: 'done' };
 
-function intParam(v: string | null, fallback: number): number {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
+function targetText(phase: Phase): string {
+  if (phase.kind === 'countdown' || phase.kind === 'capture') {
+    if (phase.label === 'screen') return 'LOOK AT SCREEN';
+    const d = (phase.awayDirection || '').toUpperCase();
+    if (d) return `LOOK ${d}`;
+    return 'LOOK AWAY';
+  }
+  return '';
 }
 
 export default function DataCollector() {
@@ -85,11 +89,11 @@ export default function DataCollector() {
 
   const [participant, setParticipant] = useState('');
   const [session, setSession] = useState<'day' | 'night' | ''>('');
-  const [placement, setPlacement] = useState('laptop_webcam');
-  const [fps, setFps] = useState(6);
-  const [cycles, setCycles] = useState(3);
-  const [lookSeconds, setLookSeconds] = useState(6);
-  const [awaySeconds, setAwaySeconds] = useState(6);
+  // Fixed collection settings (participants shouldn't change these).
+  const placement = 'laptop_webcam';
+  const fps = 6;
+  const cycles = 2;
+  const segmentSeconds = 8;
   // Always-on: we only save frames when a face is detected.
   const requireFace = true;
   // Always-on: show an unmirrored preview (and save unmirrored crops).
@@ -112,14 +116,9 @@ export default function DataCollector() {
     const sp = new URLSearchParams(window.location.search);
     const p = sp.get('participant');
     const s = sp.get('session');
-    const pl = sp.get('placement');
     if (p) setParticipant(p);
     if (s === 'day' || s === 'night') setSession(s);
-    if (pl) setPlacement(pl);
-    if (sp.get('fps')) setFps(Math.max(1, intParam(sp.get('fps'), 6)));
-    if (sp.get('cycles')) setCycles(Math.max(1, intParam(sp.get('cycles'), 3)));
-    if (sp.get('lookSeconds')) setLookSeconds(Math.max(1, intParam(sp.get('lookSeconds'), 6)));
-    if (sp.get('awaySeconds')) setAwaySeconds(Math.max(1, intParam(sp.get('awaySeconds'), 6)));
+    // placement/fps/cycles/seconds are intentionally fixed
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -311,7 +310,14 @@ export default function DataCollector() {
           // LOOKING countdown
           for (let s = 3; s >= 1; s--) {
             ensureNotCancelled();
-            setPhase({ kind: 'countdown', title: 'LOOK AT SCREEN', subtitle: LOOKING_INSTRUCTION, secondsLeft: s });
+            setPhase({
+              kind: 'countdown',
+              title: 'LOOK AT SCREEN',
+              subtitle: LOOKING_INSTRUCTION,
+              secondsLeft: s,
+              label: 'screen',
+              awayDirection: null,
+            });
             beep();
             // eslint-disable-next-line no-await-in-loop
             await sleep(1000);
@@ -319,7 +325,7 @@ export default function DataCollector() {
           beep();
 
           // Capture LOOKING
-          const lookEnd = Date.now() + lookSeconds * 1000;
+          const lookEnd = Date.now() + segmentSeconds * 1000;
           while (Date.now() < lookEnd) {
             ensureNotCancelled();
             const { box } = await detectFace();
@@ -367,14 +373,21 @@ export default function DataCollector() {
             const away = AWAY_TARGETS[aIdx];
             for (let s = 3; s >= 1; s--) {
               ensureNotCancelled();
-              setPhase({ kind: 'countdown', title: 'LOOK AWAY', subtitle: away.text, secondsLeft: s });
+              setPhase({
+                kind: 'countdown',
+                title: 'LOOK AWAY',
+                subtitle: away.text,
+                secondsLeft: s,
+                label: away.label,
+                awayDirection: away.dir,
+              });
               beep();
               // eslint-disable-next-line no-await-in-loop
               await sleep(1000);
             }
             beep();
 
-            const awayEnd = Date.now() + awaySeconds * 1000;
+            const awayEnd = Date.now() + segmentSeconds * 1000;
             while (Date.now() < awayEnd) {
               ensureNotCancelled();
               const { box } = await detectFace();
@@ -478,8 +491,7 @@ export default function DataCollector() {
     <div className="dc">
       <div className="dc-header">
         <div>
-          <div className="dc-title">Data collection (looking vs not-looking)</div>
-          <div className="dc-sub">Runs fully in the browser. Downloads a zip you can send back.</div>
+          <div className="dc-title">Data collection</div>
         </div>
       </div>
 
@@ -489,12 +501,12 @@ export default function DataCollector() {
             <div className="dc-card-title">Setup</div>
             <div className="dc-form">
               <label>
-                Participant
+                Participant&apos;s Name
                 <input
                   value={participant}
                   onChange={(e) => setParticipant(e.target.value)}
                   disabled={running || participantMode}
-                  placeholder="e.g. p01"
+                  placeholder="e.g. John Doe"
                 />
               </label>
               <label>
@@ -509,62 +521,6 @@ export default function DataCollector() {
                   <option value="night">night</option>
                 </select>
               </label>
-              <label>
-                Placement
-                <input
-                  value={placement}
-                  onChange={(e) => setPlacement(e.target.value)}
-                  disabled={running || participantMode}
-                />
-              </label>
-              <div className="dc-row">
-                <label style={{ flex: 1 }}>
-                  FPS
-                  <input
-                    type="number"
-                    min={1}
-                    max={15}
-                    value={fps}
-                    onChange={(e) => setFps(Math.max(1, Number(e.target.value || 1)))}
-                    disabled={running || participantMode}
-                  />
-                </label>
-                <label style={{ flex: 1 }}>
-                  Cycles (screen + 4 away)
-                  <input
-                    type="number"
-                    min={1}
-                    max={20}
-                    value={cycles}
-                    onChange={(e) => setCycles(Math.max(1, Number(e.target.value || 1)))}
-                    disabled={running || participantMode}
-                  />
-                </label>
-              </div>
-              <div className="dc-row">
-                <label style={{ flex: 1 }}>
-                  Look seconds
-                  <input
-                    type="number"
-                    min={1}
-                    max={30}
-                    value={lookSeconds}
-                    onChange={(e) => setLookSeconds(Math.max(1, Number(e.target.value || 1)))}
-                    disabled={running || participantMode}
-                  />
-                </label>
-                <label style={{ flex: 1 }}>
-                  Away seconds
-                  <input
-                    type="number"
-                    min={1}
-                    max={30}
-                    value={awaySeconds}
-                    onChange={(e) => setAwaySeconds(Math.max(1, Number(e.target.value || 1)))}
-                    disabled={running || participantMode}
-                  />
-                </label>
-              </div>
               <label>
                 Camera
                 <select value={deviceId} onChange={(e) => setDeviceId(e.target.value)} disabled={running || participantMode}>
@@ -627,6 +583,14 @@ export default function DataCollector() {
           <div className="dc-preview dc-preview-unmirror">
             <video ref={videoRef} className="dc-video" playsInline muted />
             <canvas ref={overlayRef} className="dc-overlay" />
+            {(phase.kind === 'countdown' || phase.kind === 'capture') && (
+              <div className="dc-videoPrompt">
+                <div className="dc-videoPromptMain">{targetText(phase)}</div>
+                <div className="dc-videoPromptSub">
+                  {phase.kind === 'countdown' ? `Starting in ${phase.secondsLeft}s` : `${phase.secondsLeft}s left`}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
