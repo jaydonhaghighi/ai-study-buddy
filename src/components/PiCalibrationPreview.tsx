@@ -7,6 +7,9 @@ type Status = {
   faceDetected: boolean;
   aligned: boolean;
   faceBox: number[] | null;
+  lastError?: string | null;
+  faceDetectorAvailable?: boolean;
+  faceCascadePath?: string | null;
 };
 
 function getSavedPiUrl() {
@@ -205,6 +208,12 @@ export default function PiCalibrationPreview({
       </p>
 
       {error && <p className="pi-calibration-error">{error}</p>}
+      {!error && open && status?.lastError && <p className="pi-calibration-error">{status.lastError}</p>}
+      {!error && open && status?.faceDetectorAvailable === false && (
+        <p className="pi-calibration-error">
+          Face detector not loaded on Pi. Install OpenCV haarcascades. (Cascade: {status.faceCascadePath || 'unknown'})
+        </p>
+      )}
 
       {open && (
         <>

@@ -114,6 +114,8 @@ def main():
         print("Evaluating on test...")
         results = model.evaluate(test_ds, return_dict=True)
         print("Test metrics:", results)
+        # Save metrics for automation (e.g., LOPO runs)
+        (out_dir / "metrics_test.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
 
     saved_model_dir = out_dir / "focus_model_saved"
     model.save(saved_model_dir)
