@@ -62,6 +62,11 @@ def main():
         default="participant",
         help="How to split to avoid leakage (recommended: participant if you have >=3 participants)",
     )
+    parser.add_argument(
+        "--holdout-participant",
+        default=None,
+        help="If set (requires split-by=participant), force this participant into the test split (LOPO).",
+    )
     parser.add_argument("--val-frac", type=float, default=0.15)
     parser.add_argument("--test-frac", type=float, default=0.15)
     parser.add_argument("--max-per-group", type=int, default=800, help="Cap samples per (person/session/label) group")
@@ -92,6 +97,15 @@ def main():
     rng = random.Random(args.seed)
     rng.shuffle(keys)
 
+    holdout = (args.holdout_participant or "").strip() or None
+    if holdout:
+        if args.split_by != "participant":
+            raise SystemExit("--holdout-participant requires --split-by participant")
+        if holdout not in set(keys):
+            raise SystemExit(f"Holdout participant '{holdout}' not found. Available: {sorted(set(keys))}")
+        # Remove holdout from the pool used to build train/val; it will be assigned to test.
+        keys = [k for k in keys if k != holdout]
+
     n = len(keys)
     n_test = max(1, int(round(n * args.test_frac))) if n >= 3 else 1
     n_val = max(1, int(round(n * args.val_frac))) if n >= 3 else 1
@@ -99,7 +113,7 @@ def main():
 
     train_keys = set(keys[:n_train])
     val_keys = set(keys[n_train : n_train + n_val])
-    test_keys = set(keys[n_train + n_val :])
+    test_keys = set([holdout]) if holdout else set(keys[n_train + n_val :])
 
     def key_for(g: SampleGroup) -> str:
         return g.participant if args.split_by == "participant" else f"{g.participant}/{g.session}"
@@ -151,6 +165,8 @@ def main():
 
     print("Wrote dataset splits to:", out_dir)
     print("Split keys:", args.split_by)
+    if holdout:
+        print("Holdout participant (forced test):", holdout)
     print("Counts:")
     for split in ["train", "val", "test"]:
         parts = "  ".join([f"{lab}={counts[(split, lab)]:6d}" for lab in LABELS])
