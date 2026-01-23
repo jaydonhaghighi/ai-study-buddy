@@ -15,6 +15,7 @@ def build_model(input_size: int, num_classes: int) -> tf.keras.Model:
         input_shape=(input_size, input_size, 3),
         include_top=False,
         weights="imagenet",
+        name="backbone",
     )
     base.trainable = False
 
@@ -39,6 +40,25 @@ def load_dir_dataset(data_dir: Path, input_size: int, batch_size: int, shuffle: 
         seed=seed,
         class_names=LABELS,
     )
+
+def find_backbone(model: tf.keras.Model) -> tf.keras.Model:
+    """
+    Keras layer ordering can vary across versions (especially Keras 3).
+    Don't rely on model.layers[index]. Instead, grab the backbone by name,
+    falling back to a heuristic if needed.
+    """
+    try:
+        layer = model.get_layer("backbone")
+        if isinstance(layer, tf.keras.Model):
+            return layer
+    except Exception:
+        pass
+
+    for layer in model.layers:
+        if isinstance(layer, tf.keras.Model) and hasattr(layer, "layers") and len(layer.layers) > 10:
+            return layer
+
+    raise RuntimeError("Could not locate MobileNetV2 backbone layer to fine-tune.")
 
 
 def main():
@@ -97,7 +117,7 @@ def main():
     model.fit(train_ds, validation_data=val_ds, epochs=args.epochs_head)
 
     # Fine-tune last layers
-    base = model.layers[2]
+    base = find_backbone(model)
     base.trainable = True
     for layer in base.layers[: args.fine_tune_at]:
         layer.trainable = False
