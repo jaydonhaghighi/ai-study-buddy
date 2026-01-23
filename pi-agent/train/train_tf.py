@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 from pathlib import Path
 
 import tensorflow as tf
@@ -138,7 +139,13 @@ def main():
         (out_dir / "metrics_test.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
 
     saved_model_dir = out_dir / "focus_model_saved"
-    model.save(saved_model_dir)
+    # Keras 3: model.save() requires .keras/.h5. For SavedModel (needed for TFLite),
+    # use model.export(<dir>).
+    if saved_model_dir.exists():
+        shutil.rmtree(saved_model_dir)
+    model.export(str(saved_model_dir))
+    # Also save a .keras file for convenience.
+    model.save(str(out_dir / "focus_model.keras"))
 
     # Persist label order for inference.
     (out_dir / "focus_model_labels.json").write_text(json.dumps(LABELS, indent=2) + "\n", encoding="utf-8")
