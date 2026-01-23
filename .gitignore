@@ -57,7 +57,7 @@ pi-agent/.venv/
 .specstory/history/2025-12-29_02-12Z-prd-document-review.md
 PRD.md
 start-pi-agent.sh
-PRD.md
-pi-agent/train/setup_training.sh
-.gitignore
+CAPSTONE_PROGRESS_AUDIT.md
 pi-agent/train/run_lopo.sh
+.gitignore
+pi-agent/train/setup_training.sh
