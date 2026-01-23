@@ -22,6 +22,8 @@ class _SharedState:
         self.aligned: bool = False
         self.face_box: list[int] | None = None  # [x, y, w, h]
         self.last_error: str | None = None
+        self.face_detector_available: bool = False
+        self.face_cascade_path: str | None = None
 
         self._stop = False
         self._thread: threading.Thread | None = None
@@ -30,13 +32,108 @@ class _SharedState:
         self._face_cascade = None
         try:
             import cv2  # type: ignore
-            self._face_cascade = cv2.CascadeClassifier(
-                cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-            )
-            if self._face_cascade is None or self._face_cascade.empty():
-                self._face_cascade = None
+            path = None
+            try:
+                # OpenCV-python often provides this.
+                base = getattr(getattr(cv2, "data", None), "haarcascades", None)
+                if isinstance(base, str) and base:
+                    path = base + "haarcascade_frontalface_default.xml"
+            except Exception:
+                path = None
+
+            # Common system locations (Debian/Raspberry Pi OS)
+            if not path:
+                for p in [
+                    "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml",
+                    "/usr/share/opencv/haarcascades/haarcascade_frontalface_default.xml",
+                ]:
+                    try:
+                        with open(p, "rb"):
+                            path = p
+                            break
+                    except Exception:
+                        continue
+
+            # Optional override
+            if not path:
+                import os
+
+                root = os.getenv("OPENCV_HAAR_PATH", "").rstrip("/")
+                if root:
+                    cand = f"{root}/haarcascade_frontalface_default.xml"
+                    try:
+                        with open(cand, "rb"):
+                            path = cand
+                    except Exception:
+                        pass
+
+            if path:
+                self.face_cascade_path = path
+                self._face_cascade = cv2.CascadeClassifier(path)
+                if self._face_cascade is not None and not self._face_cascade.empty():
+                    self.face_detector_available = True
+                else:
+                    self._face_cascade = None
         except Exception:
             self._face_cascade = None
+
+    def _to_gray(self, frame: Any):
+        """
+        Convert to grayscale using the correct channel ordering.
+
+        Picamera2 commonly provides RGB frames when configured with "RGB888".
+        Haar cascades are sensitive enough that using the wrong conversion can
+        materially hurt face detection.
+        """
+        import cv2  # type: ignore
+
+        fmt = (
+            (getattr(self.camera, "actual_format", None) or getattr(self.camera, "requested_format", None) or "")
+            .upper()
+        )
+        if "RGB" in fmt and "BGR" not in fmt:
+            return cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    def _detect_faces_best_effort(self, frame: Any):
+        """
+        Haar cascades are fairly sensitive to preprocessing. In the wild we see frames
+        arrive as either RGB or BGR depending on camera/config, so we try both.
+        Returns (faces, used_mode) where used_mode is a short string for debugging.
+        """
+        import cv2  # type: ignore
+
+        candidates: list[tuple[str, Any]] = []
+        try:
+            candidates.append(("fmt", self._to_gray(frame)))
+        except Exception:
+            pass
+        # Fallbacks: try both channel orderings regardless of configured format.
+        try:
+            candidates.append(("bgr", cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)))
+        except Exception:
+            pass
+        try:
+            candidates.append(("rgb", cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)))
+        except Exception:
+            pass
+
+        for mode, gray in candidates:
+            try:
+                # Improve contrast a bit (helps in dim lighting)
+                gray2 = cv2.equalizeHist(gray)
+            except Exception:
+                gray2 = gray
+
+            faces = self._face_cascade.detectMultiScale(
+                gray2,
+                scaleFactor=1.1,
+                minNeighbors=4,
+                minSize=(48, 48),
+            )
+            if len(faces) > 0:
+                return faces, mode
+        return (), (candidates[0][0] if candidates else "none")
 
     def start(self) -> None:
         if self._thread is not None:
@@ -117,13 +214,7 @@ class _SharedState:
                 pass
 
             if self._face_cascade is not None:
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                faces = self._face_cascade.detectMultiScale(
-                    gray,
-                    scaleFactor=1.1,
-                    minNeighbors=5,
-                    minSize=(60, 60),
-                )
+                faces, _mode = self._detect_faces_best_effort(frame)
                 if len(faces) > 0:
                     # pick largest face
                     x, y, fw, fh = max(faces, key=lambda b: b[2] * b[3])
@@ -163,7 +254,14 @@ class _SharedState:
                 self.face_detected = face_detected
                 self.aligned = aligned
                 self.face_box = face_box
-                self.last_error = None
+                # If face detector isn't available, make it explicit.
+                if not self.face_detector_available:
+                    self.last_error = (
+                        "Face detector not available (Haar cascade not found). "
+                        "Install OpenCV haarcascades or set OPENCV_HAAR_PATH."
+                    )
+                else:
+                    self.last_error = None
 
 
 class PreviewServer:
@@ -222,6 +320,8 @@ class PreviewServer:
                             "aligned": bool(server.state.aligned),
                             "faceBox": [int(x) for x in server.state.face_box] if server.state.face_box else None,
                             "lastError": str(server.state.last_error) if server.state.last_error is not None else None,
+                            "faceDetectorAvailable": bool(server.state.face_detector_available),
+                            "faceCascadePath": server.state.face_cascade_path,
                         }
                     self.send_response(200)
                     self._cors()
