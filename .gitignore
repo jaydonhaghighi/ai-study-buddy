@@ -45,6 +45,7 @@ __pycache__/
 # Python virtualenvs
 .venv/
 venv/
+.venv-train/
 
 # Local datasets / generated data
 data/
@@ -57,3 +58,6 @@ pi-agent/.venv/
 PRD.md
 start-pi-agent.sh
 PRD.md
+pi-agent/train/setup_training.sh
+.gitignore
+pi-agent/train/run_lopo.sh
