@@ -61,6 +61,48 @@ def find_backbone(model: tf.keras.Model) -> tf.keras.Model:
 
     raise RuntimeError("Could not locate MobileNetV2 backbone layer to fine-tune.")
 
+def evaluate_detailed(model: tf.keras.Model, ds) -> dict:
+    """
+    Returns confusion matrix + per-class metrics and macro-F1.
+    Keeps dependencies minimal (pure TF/py).
+    """
+    y_true: list[int] = []
+    y_pred: list[int] = []
+
+    for x, y in ds:
+        probs = model.predict(x, verbose=0)
+        y_true.extend(tf.argmax(y, axis=1).numpy().tolist())
+        y_pred.extend(tf.argmax(probs, axis=1).numpy().tolist())
+
+    n = len(LABELS)
+    cm = tf.math.confusion_matrix(y_true, y_pred, num_classes=n).numpy().tolist()
+
+    per_class: dict[str, dict] = {}
+    for i, lab in enumerate(LABELS):
+        tp = cm[i][i]
+        fp = sum(cm[r][i] for r in range(n) if r != i)
+        fn = sum(cm[i][c] for c in range(n) if c != i)
+        support = sum(cm[i])
+        precision = tp / (tp + fp) if (tp + fp) else 0.0
+        recall = tp / (tp + fn) if (tp + fn) else 0.0
+        f1 = (2 * precision * recall) / (precision + recall) if (precision + recall) else 0.0
+        per_class[lab] = {
+            "precision": float(precision),
+            "recall": float(recall),
+            "f1": float(f1),
+            "support": int(support),
+        }
+
+    macro_f1 = sum(per_class[lab]["f1"] for lab in LABELS) / max(1, n)
+    overall_acc = sum(cm[i][i] for i in range(n)) / max(1, sum(sum(r) for r in cm))
+
+    return {
+        "accuracy_from_cm": float(overall_acc),
+        "macro_f1": float(macro_f1),
+        "per_class": per_class,
+        "confusion_matrix": {"labels": LABELS, "matrix": cm},
+    }
+
 
 def main():
     parser = argparse.ArgumentParser(description="Fine-tune a MobileNetV2 attention direction classifier (5-way softmax).")
@@ -135,8 +177,12 @@ def main():
         print("Evaluating on test...")
         results = model.evaluate(test_ds, return_dict=True)
         print("Test metrics:", results)
+        detailed = evaluate_detailed(model, test_ds)
+        merged = dict(results)
+        merged.update(detailed)
         # Save metrics for automation (e.g., LOPO runs)
-        (out_dir / "metrics_test.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
+        (out_dir / "metrics_test.json").write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+        print(f"Test macro_f1: {merged.get('macro_f1'):.4f}")
 
     saved_model_dir = out_dir / "focus_model_saved"
     # Keras 3: model.save() requires .keras/.h5. For SavedModel (needed for TFLite),
