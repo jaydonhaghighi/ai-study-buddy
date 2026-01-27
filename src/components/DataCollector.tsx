@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import JSZip from 'jszip';
-import { FilesetResolver, FaceDetector } from '@mediapipe/tasks-vision';
+import { FilesetResolver, FaceDetector, FaceLandmarker } from '@mediapipe/tasks-vision';
 import './DataCollector.css';
 
 type Condition = {
@@ -60,18 +60,44 @@ type Phase =
   | { kind: 'idle' }
   | { kind: 'ready' }
   | { kind: 'condition'; conditionIdx: number }
+  | { kind: 'calibration'; label: AttentionLabel; awayDirection: string | null; subtitle: string; progressPct: number }
   | { kind: 'countdown'; title: string; subtitle: string; secondsLeft: number; label: AttentionLabel; awayDirection: string | null }
   | { kind: 'capture'; title: string; subtitle: string; label: AttentionLabel; awayDirection: string | null; secondsLeft: number }
   | { kind: 'done' };
 
 function targetText(phase: Phase): string {
-  if (phase.kind === 'countdown' || phase.kind === 'capture') {
+  if (phase.kind === 'countdown' || phase.kind === 'capture' || phase.kind === 'calibration') {
     if (phase.label === 'screen') return 'LOOK AT SCREEN';
     const d = (phase.awayDirection || '').toUpperCase();
     if (d) return `LOOK ${d}`;
     return 'LOOK AWAY';
   }
   return '';
+}
+
+type Pose = { yaw: number; pitch: number; roll: number };
+
+function radToDeg(r: number) {
+  return (r * 180) / Math.PI;
+}
+
+function clamp(v: number, lo: number, hi: number) {
+  return Math.max(lo, Math.min(hi, v));
+}
+
+function poseFromMatrix4x4(data: number[] | Float32Array): Pose | null {
+  if (!data || data.length < 16) return null;
+  // MediaPipe provides a 4x4 matrix. Treat it as column-major (common in WebGL/MP).
+  const m = data;
+  const r00 = m[0];
+  const r10 = m[1];
+  const r20 = m[2], r21 = m[6], r22 = m[10];
+
+  // Yaw-Pitch-Roll (Z-Y-X) from rotation matrix
+  const pitch = Math.asin(clamp(-r20, -1, 1));
+  const yaw = Math.atan2(r10, r00);
+  const roll = Math.atan2(r21, r22);
+  return { yaw: radToDeg(yaw), pitch: radToDeg(pitch), roll: radToDeg(roll) };
 }
 
 export default function DataCollector() {
@@ -95,7 +121,6 @@ export default function DataCollector() {
   const cycles = 2;
   const segmentSeconds = 8;
   // Always-on: we only save frames when a face is detected.
-  const requireFace = true;
   // Always-on: show an unmirrored preview (and save unmirrored crops).
   const unmirrorPreview = true;
   const [zipProgress, setZipProgress] = useState<{ saved: number; skipped: number } | null>(null);
@@ -108,7 +133,16 @@ export default function DataCollector() {
   }, []);
 
   const [detector, setDetector] = useState<FaceDetector | null>(null);
+  const [landmarker, setLandmarker] = useState<FaceLandmarker | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const calibrationTargetsRef = useRef<Record<AttentionLabel, { yaw: number; pitch: number } | null>>({
+    screen: null,
+    away_left: null,
+    away_right: null,
+    away_up: null,
+    away_down: null,
+  });
+  const [poseHud, setPoseHud] = useState<string>('');
 
   // Participant mode: allow pre-filling via URL params and lock UI down.
   useEffect(() => {
@@ -167,7 +201,19 @@ export default function DataCollector() {
           },
           runningMode: 'VIDEO',
         });
-        if (!cancelled) setDetector(d);
+        const lm = await FaceLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath:
+              'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+          },
+          runningMode: 'VIDEO',
+          numFaces: 1,
+          outputFacialTransformationMatrixes: true,
+        } as any);
+        if (!cancelled) {
+          setDetector(d);
+          setLandmarker(lm);
+        }
       } catch (e: any) {
         if (!cancelled) setError(e?.message || 'Failed to initialize face detector');
       }
@@ -176,6 +222,129 @@ export default function DataCollector() {
       cancelled = true;
     };
   }, []);
+
+  const detectPose = async (): Promise<Pose | null> => {
+    const v = videoRef.current;
+    if (!v || !landmarker) return null;
+    const now = performance.now();
+    const res: any = landmarker.detectForVideo(v, now);
+    const mat = res?.facialTransformationMatrixes?.[0]?.data;
+    const pose = mat ? poseFromMatrix4x4(mat) : null;
+    return pose;
+  };
+
+  const poseInRange = (label: AttentionLabel, pose: Pose): boolean => {
+    const t = calibrationTargetsRef.current[label];
+    if (!t) return true; // if not calibrated yet, don't block
+    const yawTol = label === 'screen' ? 10 : 10;
+    const pitchTol = label === 'screen' ? 10 : 10;
+    return Math.abs(pose.yaw - t.yaw) <= yawTol && Math.abs(pose.pitch - t.pitch) <= pitchTol;
+  };
+
+  const calibrationSubtitleFor = (label: AttentionLabel) => {
+    switch (label) {
+      case 'screen': return 'Look at the center of your screen. Hold still.';
+      case 'away_left': return 'Turn your head LEFT (nose points to left edge of screen). Hold still.';
+      case 'away_right': return 'Turn your head RIGHT (nose points to right edge of screen). Hold still.';
+      case 'away_up': return 'Tilt head UP (look above the screen). Hold still.';
+      case 'away_down': return 'Tilt head DOWN (look toward keyboard/desk). Hold still.';
+    }
+  };
+
+  const runCalibration = async () => {
+    const HOLD_SECONDS = 3;
+    const steps: { label: AttentionLabel; awayDirection: string | null }[] = [
+      { label: 'screen', awayDirection: null },
+      { label: 'away_left', awayDirection: 'left' },
+      { label: 'away_right', awayDirection: 'right' },
+      { label: 'away_up', awayDirection: 'up' },
+      { label: 'away_down', awayDirection: 'down' },
+    ];
+
+    setStatus('Calibration: follow the prompts…');
+    for (const step of steps) {
+      // Give a moment to move into position
+      for (let s = 2; s >= 1; s--) {
+        setPhase({
+          kind: 'calibration',
+          label: step.label,
+          awayDirection: step.awayDirection,
+          subtitle: calibrationSubtitleFor(step.label),
+          progressPct: 0,
+        });
+        beep();
+        // eslint-disable-next-line no-await-in-loop
+        await sleep(800);
+      }
+
+      const samples: Pose[] = [];
+      let stableSince: number | null = null;
+      while (true) {
+        if (cancelRef.current) throw new Error('__SB_CANCELLED__');
+        // eslint-disable-next-line no-await-in-loop
+        const pose = await detectPose();
+        if (!pose) {
+          stableSince = null;
+          setPoseHud('No face landmarks (move into frame)');
+          setPhase({
+            kind: 'calibration',
+            label: step.label,
+            awayDirection: step.awayDirection,
+            subtitle: calibrationSubtitleFor(step.label),
+            progressPct: 0,
+          });
+          // eslint-disable-next-line no-await-in-loop
+          await sleep(120);
+          continue;
+        }
+
+        samples.push(pose);
+        while (samples.length > 18) samples.shift();
+
+        // compute simple stability (stddev) once we have enough samples
+        let okStable = false;
+        if (samples.length >= 12) {
+          const meanYaw = samples.reduce((a, p) => a + p.yaw, 0) / samples.length;
+          const meanPitch = samples.reduce((a, p) => a + p.pitch, 0) / samples.length;
+          const varYaw = samples.reduce((a, p) => a + (p.yaw - meanYaw) ** 2, 0) / samples.length;
+          const varPitch = samples.reduce((a, p) => a + (p.pitch - meanPitch) ** 2, 0) / samples.length;
+          const stdYaw = Math.sqrt(varYaw);
+          const stdPitch = Math.sqrt(varPitch);
+          okStable = stdYaw < 2.8 && stdPitch < 2.8;
+        }
+
+        if (okStable) {
+          if (stableSince == null) stableSince = Date.now();
+        } else {
+          stableSince = null;
+        }
+
+        const progress = stableSince
+          ? clamp(((Date.now() - stableSince) / 1000) / HOLD_SECONDS, 0, 1)
+          : 0;
+        setPoseHud(`Yaw ${pose.yaw.toFixed(0)}° • Pitch ${pose.pitch.toFixed(0)}° • ${okStable ? 'Hold…' : 'Adjust…'}`);
+        setPhase({
+          kind: 'calibration',
+          label: step.label,
+          awayDirection: step.awayDirection,
+          subtitle: calibrationSubtitleFor(step.label),
+          progressPct: Math.round(progress * 100),
+        });
+
+        if (progress >= 1) {
+          const meanYaw = samples.reduce((a, p) => a + p.yaw, 0) / samples.length;
+          const meanPitch = samples.reduce((a, p) => a + p.pitch, 0) / samples.length;
+          calibrationTargetsRef.current[step.label] = { yaw: meanYaw, pitch: meanPitch };
+          beep();
+          break;
+        }
+
+        // eslint-disable-next-line no-await-in-loop
+        await sleep(120);
+      }
+    }
+    setStatus('Calibration complete.');
+  };
 
   const startCamera = async () => {
     setError(null);
@@ -269,8 +438,8 @@ export default function DataCollector() {
       setError('Please select session: day or night.');
       return;
     }
-    if (!detector) {
-      setError('Face detector not ready yet. Please wait a second and try again.');
+    if (!detector || !landmarker) {
+      setError('Vision models not ready yet. Please wait a second and try again.');
       return;
     }
     const v = videoRef.current;
@@ -287,6 +456,8 @@ export default function DataCollector() {
     const metaLines: string[] = [];
 
     try {
+      // Enforce consistent head-turn standards (per-person calibration).
+      await runCalibration();
       const ensureNotCancelled = () => {
         if (cancelRef.current) throw new Error('__SB_CANCELLED__');
       };
@@ -325,21 +496,40 @@ export default function DataCollector() {
           beep();
 
           // Capture LOOKING
-          const lookEnd = Date.now() + segmentSeconds * 1000;
-          while (Date.now() < lookEnd) {
+          let lookStart: number | null = null;
+          while (true) {
             ensureNotCancelled();
             const { box } = await detectFace();
             drawOverlay(box);
-            if (!box) {
-              setZipProgress((p) => (p ? { ...p, skipped: p.skipped + 1 } : p));
-              if (requireFace) {
-                // eslint-disable-next-line no-await-in-loop
-                await sleep(1000 / Math.max(1, fps));
-                continue;
-              }
+
+            const pose = await detectPose();
+            if (pose) {
+              setPoseHud(`Yaw ${pose.yaw.toFixed(0)}° • Pitch ${pose.pitch.toFixed(0)}° • ${poseInRange('screen', pose) ? 'OK' : 'Adjust…'}`);
             }
 
-            if (box) {
+            const aligned = !!box && !!pose && poseInRange('screen', pose);
+            if (!lookStart) {
+              setPhase({
+                kind: 'capture',
+                title: 'LOOK AT SCREEN',
+                subtitle: `${LOOKING_INSTRUCTION} (Align to start)`,
+                label: 'screen',
+                awayDirection: null,
+                secondsLeft: segmentSeconds,
+              });
+              if (aligned) {
+                lookStart = Date.now();
+                beep();
+              }
+              // eslint-disable-next-line no-await-in-loop
+              await sleep(1000 / Math.max(1, fps));
+              continue;
+            }
+
+            const lookEnd = lookStart + segmentSeconds * 1000;
+            if (Date.now() >= lookEnd) break;
+
+            if (aligned) {
               const blob = await cropFaceToJpeg(box, 224);
               const ts = Date.now();
               const fname = `${ts}.jpg`;
@@ -360,6 +550,8 @@ export default function DataCollector() {
                 })
               );
               setZipProgress((p) => (p ? { ...p, saved: p.saved + 1 } : p));
+            } else {
+              setZipProgress((p) => (p ? { ...p, skipped: p.skipped + 1 } : p));
             }
             const secsLeft = Math.max(0, Math.ceil((lookEnd - Date.now()) / 1000));
             setPhase({ kind: 'capture', title: 'LOOK AT SCREEN', subtitle: LOOKING_INSTRUCTION, label: 'screen', awayDirection: null, secondsLeft: secsLeft });
@@ -387,21 +579,42 @@ export default function DataCollector() {
             }
             beep();
 
-            const awayEnd = Date.now() + segmentSeconds * 1000;
-            while (Date.now() < awayEnd) {
+            let awayStart: number | null = null;
+            while (true) {
               ensureNotCancelled();
               const { box } = await detectFace();
               drawOverlay(box);
-              if (!box) {
-                setZipProgress((p) => (p ? { ...p, skipped: p.skipped + 1 } : p));
-                if (requireFace) {
-                  // eslint-disable-next-line no-await-in-loop
-                  await sleep(1000 / Math.max(1, fps));
-                  continue;
-                }
+
+              const pose = await detectPose();
+              if (pose) {
+                setPoseHud(
+                  `Yaw ${pose.yaw.toFixed(0)}° • Pitch ${pose.pitch.toFixed(0)}° • ${poseInRange(away.label, pose) ? 'OK' : 'Adjust…'}`
+                );
               }
 
-              if (box) {
+              const aligned = !!box && !!pose && poseInRange(away.label, pose);
+              if (!awayStart) {
+                setPhase({
+                  kind: 'capture',
+                  title: 'LOOK AWAY',
+                  subtitle: `${away.text} (Align to start)`,
+                  label: away.label,
+                  awayDirection: away.dir,
+                  secondsLeft: segmentSeconds,
+                });
+                if (aligned) {
+                  awayStart = Date.now();
+                  beep();
+                }
+                // eslint-disable-next-line no-await-in-loop
+                await sleep(1000 / Math.max(1, fps));
+                continue;
+              }
+
+              const awayEnd = awayStart + segmentSeconds * 1000;
+              if (Date.now() >= awayEnd) break;
+
+              if (aligned) {
                 const blob = await cropFaceToJpeg(box, 224);
                 const ts = Date.now();
                 const fname = `${ts}.jpg`;
@@ -422,6 +635,8 @@ export default function DataCollector() {
                   })
                 );
                 setZipProgress((p) => (p ? { ...p, saved: p.saved + 1 } : p));
+              } else {
+                setZipProgress((p) => (p ? { ...p, skipped: p.skipped + 1 } : p));
               }
               const secsLeft = Math.max(0, Math.ceil((awayEnd - Date.now()) / 1000));
               setPhase({ kind: 'capture', title: 'LOOK AWAY', subtitle: away.text, label: away.label, awayDirection: away.dir, secondsLeft: secsLeft });
@@ -548,7 +763,7 @@ export default function DataCollector() {
                   disabled={running || phase.kind === 'idle' || !detector}
                   type="button"
                 >
-                  Start guided session
+                  Start Calibration
                 </button>
                 <button
                   className="dc-btn dc-btn-danger"
@@ -583,11 +798,15 @@ export default function DataCollector() {
           <div className="dc-preview dc-preview-unmirror">
             <video ref={videoRef} className="dc-video" playsInline muted />
             <canvas ref={overlayRef} className="dc-overlay" />
-            {(phase.kind === 'countdown' || phase.kind === 'capture') && (
+            {(phase.kind === 'countdown' || phase.kind === 'capture' || phase.kind === 'calibration') && (
               <div className="dc-videoPrompt">
                 <div className="dc-videoPromptMain">{targetText(phase)}</div>
                 <div className="dc-videoPromptSub">
-                  {phase.kind === 'countdown' ? `Starting in ${phase.secondsLeft}s` : `${phase.secondsLeft}s left`}
+                  {phase.kind === 'countdown'
+                    ? `Starting in ${phase.secondsLeft}s`
+                    : phase.kind === 'capture'
+                      ? `${phase.secondsLeft}s left`
+                      : `Calibration ${phase.progressPct}% • ${poseHud || 'Hold still…'}`}
                 </div>
               </div>
             )}
