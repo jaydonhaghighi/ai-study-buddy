@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 from pathlib import Path
 
 import tensorflow as tf
@@ -15,6 +16,7 @@ def build_model(input_size: int, num_classes: int) -> tf.keras.Model:
         input_shape=(input_size, input_size, 3),
         include_top=False,
         weights="imagenet",
+        name="backbone",
     )
     base.trainable = False
 
@@ -39,6 +41,67 @@ def load_dir_dataset(data_dir: Path, input_size: int, batch_size: int, shuffle: 
         seed=seed,
         class_names=LABELS,
     )
+
+def find_backbone(model: tf.keras.Model) -> tf.keras.Model:
+    """
+    Keras layer ordering can vary across versions (especially Keras 3).
+    Don't rely on model.layers[index]. Instead, grab the backbone by name,
+    falling back to a heuristic if needed.
+    """
+    try:
+        layer = model.get_layer("backbone")
+        if isinstance(layer, tf.keras.Model):
+            return layer
+    except Exception:
+        pass
+
+    for layer in model.layers:
+        if isinstance(layer, tf.keras.Model) and hasattr(layer, "layers") and len(layer.layers) > 10:
+            return layer
+
+    raise RuntimeError("Could not locate MobileNetV2 backbone layer to fine-tune.")
+
+def evaluate_detailed(model: tf.keras.Model, ds) -> dict:
+    """
+    Returns confusion matrix + per-class metrics and macro-F1.
+    Keeps dependencies minimal (pure TF/py).
+    """
+    y_true: list[int] = []
+    y_pred: list[int] = []
+
+    for x, y in ds:
+        probs = model.predict(x, verbose=0)
+        y_true.extend(tf.argmax(y, axis=1).numpy().tolist())
+        y_pred.extend(tf.argmax(probs, axis=1).numpy().tolist())
+
+    n = len(LABELS)
+    cm = tf.math.confusion_matrix(y_true, y_pred, num_classes=n).numpy().tolist()
+
+    per_class: dict[str, dict] = {}
+    for i, lab in enumerate(LABELS):
+        tp = cm[i][i]
+        fp = sum(cm[r][i] for r in range(n) if r != i)
+        fn = sum(cm[i][c] for c in range(n) if c != i)
+        support = sum(cm[i])
+        precision = tp / (tp + fp) if (tp + fp) else 0.0
+        recall = tp / (tp + fn) if (tp + fn) else 0.0
+        f1 = (2 * precision * recall) / (precision + recall) if (precision + recall) else 0.0
+        per_class[lab] = {
+            "precision": float(precision),
+            "recall": float(recall),
+            "f1": float(f1),
+            "support": int(support),
+        }
+
+    macro_f1 = sum(per_class[lab]["f1"] for lab in LABELS) / max(1, n)
+    overall_acc = sum(cm[i][i] for i in range(n)) / max(1, sum(sum(r) for r in cm))
+
+    return {
+        "accuracy_from_cm": float(overall_acc),
+        "macro_f1": float(macro_f1),
+        "per_class": per_class,
+        "confusion_matrix": {"labels": LABELS, "matrix": cm},
+    }
 
 
 def main():
@@ -97,7 +160,7 @@ def main():
     model.fit(train_ds, validation_data=val_ds, epochs=args.epochs_head)
 
     # Fine-tune last layers
-    base = model.layers[2]
+    base = find_backbone(model)
     base.trainable = True
     for layer in base.layers[: args.fine_tune_at]:
         layer.trainable = False
@@ -114,9 +177,21 @@ def main():
         print("Evaluating on test...")
         results = model.evaluate(test_ds, return_dict=True)
         print("Test metrics:", results)
+        detailed = evaluate_detailed(model, test_ds)
+        merged = dict(results)
+        merged.update(detailed)
+        # Save metrics for automation (e.g., LOPO runs)
+        (out_dir / "metrics_test.json").write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+        print(f"Test macro_f1: {merged.get('macro_f1'):.4f}")
 
     saved_model_dir = out_dir / "focus_model_saved"
-    model.save(saved_model_dir)
+    # Keras 3: model.save() requires .keras/.h5. For SavedModel (needed for TFLite),
+    # use model.export(<dir>).
+    if saved_model_dir.exists():
+        shutil.rmtree(saved_model_dir)
+    model.export(str(saved_model_dir))
+    # Also save a .keras file for convenience.
+    model.save(str(out_dir / "focus_model.keras"))
 
     # Persist label order for inference.
     (out_dir / "focus_model_labels.json").write_text(json.dumps(LABELS, indent=2) + "\n", encoding="utf-8")

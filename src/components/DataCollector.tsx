@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import JSZip from 'jszip';
-import { FilesetResolver, FaceDetector } from '@mediapipe/tasks-vision';
+import { FilesetResolver, FaceDetector, FaceLandmarker } from '@mediapipe/tasks-vision';
 import './DataCollector.css';
 
 type Condition = {
@@ -60,18 +60,48 @@ type Phase =
   | { kind: 'idle' }
   | { kind: 'ready' }
   | { kind: 'condition'; conditionIdx: number }
+  | { kind: 'calibration'; label: AttentionLabel; awayDirection: string | null; subtitle: string; progressPct: number }
   | { kind: 'countdown'; title: string; subtitle: string; secondsLeft: number; label: AttentionLabel; awayDirection: string | null }
   | { kind: 'capture'; title: string; subtitle: string; label: AttentionLabel; awayDirection: string | null; secondsLeft: number }
   | { kind: 'done' };
 
 function targetText(phase: Phase): string {
-  if (phase.kind === 'countdown' || phase.kind === 'capture') {
+  if (phase.kind === 'countdown' || phase.kind === 'capture' || phase.kind === 'calibration') {
     if (phase.label === 'screen') return 'LOOK AT SCREEN';
     const d = (phase.awayDirection || '').toUpperCase();
     if (d) return `LOOK ${d}`;
     return 'LOOK AWAY';
   }
   return '';
+}
+
+type Pose = { yaw: number; pitch: number; roll: number };
+
+function radToDeg(r: number) {
+  return (r * 180) / Math.PI;
+}
+
+function clamp(v: number, lo: number, hi: number) {
+  return Math.max(lo, Math.min(hi, v));
+}
+
+const POSE_TOL_DEG = 10;
+const MIN_GOOD_FRAMES_PER_SEGMENT = 40; // enforced balance per label
+const MAX_SEGMENT_SECONDS = 25; // safety cap to avoid infinite loops
+
+function poseFromMatrix4x4(data: number[] | Float32Array): Pose | null {
+  if (!data || data.length < 16) return null;
+  // MediaPipe provides a 4x4 matrix. Treat it as column-major (common in WebGL/MP).
+  const m = data;
+  const r00 = m[0];
+  const r10 = m[1];
+  const r20 = m[2], r21 = m[6], r22 = m[10];
+
+  // Yaw-Pitch-Roll (Z-Y-X) from rotation matrix
+  const pitch = Math.asin(clamp(-r20, -1, 1));
+  const yaw = Math.atan2(r10, r00);
+  const roll = Math.atan2(r21, r22);
+  return { yaw: radToDeg(yaw), pitch: radToDeg(pitch), roll: radToDeg(roll) };
 }
 
 export default function DataCollector() {
@@ -95,10 +125,10 @@ export default function DataCollector() {
   const cycles = 2;
   const segmentSeconds = 8;
   // Always-on: we only save frames when a face is detected.
-  const requireFace = true;
   // Always-on: show an unmirrored preview (and save unmirrored crops).
   const unmirrorPreview = true;
   const [zipProgress, setZipProgress] = useState<{ saved: number; skipped: number } | null>(null);
+  const [instructionsOpen, setInstructionsOpen] = useState(false);
 
   const runId = useMemo(() => `run_${Math.floor(Date.now() / 1000)}`, []);
   const participantMode = useMemo(() => {
@@ -108,7 +138,16 @@ export default function DataCollector() {
   }, []);
 
   const [detector, setDetector] = useState<FaceDetector | null>(null);
+  const [landmarker, setLandmarker] = useState<FaceLandmarker | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const calibrationTargetsRef = useRef<Record<AttentionLabel, { yaw: number; pitch: number } | null>>({
+    screen: null,
+    away_left: null,
+    away_right: null,
+    away_up: null,
+    away_down: null,
+  });
+  const [poseHud, setPoseHud] = useState<string>('');
 
   // Participant mode: allow pre-filling via URL params and lock UI down.
   useEffect(() => {
@@ -121,6 +160,18 @@ export default function DataCollector() {
     // placement/fps/cycles/seconds are intentionally fixed
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Show instructions once per browser (and always in participant mode).
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (participantMode) {
+      setInstructionsOpen(true);
+      return;
+    }
+    const key = 'sb_dc_instructions_seen_v1';
+    const seen = window.localStorage.getItem(key) === '1';
+    if (!seen) setInstructionsOpen(true);
+  }, [participantMode]);
 
   useEffect(() => {
     (async () => {
@@ -167,7 +218,19 @@ export default function DataCollector() {
           },
           runningMode: 'VIDEO',
         });
-        if (!cancelled) setDetector(d);
+        const lm = await FaceLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath:
+              'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+          },
+          runningMode: 'VIDEO',
+          numFaces: 1,
+          outputFacialTransformationMatrixes: true,
+        } as any);
+        if (!cancelled) {
+          setDetector(d);
+          setLandmarker(lm);
+        }
       } catch (e: any) {
         if (!cancelled) setError(e?.message || 'Failed to initialize face detector');
       }
@@ -176,6 +239,172 @@ export default function DataCollector() {
       cancelled = true;
     };
   }, []);
+
+  const detectPose = async (): Promise<Pose | null> => {
+    const v = videoRef.current;
+    if (!v || !landmarker) return null;
+    const now = performance.now();
+    const res: any = landmarker.detectForVideo(v, now);
+    const mat = res?.facialTransformationMatrixes?.[0]?.data;
+    const pose = mat ? poseFromMatrix4x4(mat) : null;
+    return pose;
+  };
+
+  const poseDelta = (label: AttentionLabel, pose: Pose) => {
+    const t = calibrationTargetsRef.current[label];
+    if (!t) return null;
+    return {
+      dyaw: pose.yaw - t.yaw,
+      dpitch: pose.pitch - t.pitch,
+      targetYaw: t.yaw,
+      targetPitch: t.pitch,
+    };
+  };
+
+  const poseInRange = (label: AttentionLabel, pose: Pose): boolean => {
+    const d = poseDelta(label, pose);
+    if (!d) return true; // if not calibrated yet, don't block
+    return Math.abs(d.dyaw) <= POSE_TOL_DEG && Math.abs(d.dpitch) <= POSE_TOL_DEG;
+  };
+
+  const poseGuidance = (label: AttentionLabel, pose: Pose): string => {
+    const d = poseDelta(label, pose);
+    if (!d) return `Yaw ${pose.yaw.toFixed(0)}° • Pitch ${pose.pitch.toFixed(0)}°`;
+    const parts: string[] = [
+      `Yaw ${pose.yaw.toFixed(0)}° (Δ${d.dyaw >= 0 ? '+' : ''}${d.dyaw.toFixed(0)}°)`,
+      `Pitch ${pose.pitch.toFixed(0)}° (Δ${d.dpitch >= 0 ? '+' : ''}${d.dpitch.toFixed(0)}°)`,
+    ];
+    const inYaw = Math.abs(d.dyaw) <= POSE_TOL_DEG;
+    const inPitch = Math.abs(d.dpitch) <= POSE_TOL_DEG;
+    if (inYaw && inPitch) return `${parts.join(' • ')} • OK`;
+
+    // Simple human-friendly guidance (relative to the calibrated target).
+    if (label === 'away_left') {
+      if (d.dyaw > POSE_TOL_DEG) return `${parts.join(' • ')} • Turn LEFT more`;
+      if (d.dyaw < -POSE_TOL_DEG) return `${parts.join(' • ')} • Turn back toward center`;
+    } else if (label === 'away_right') {
+      if (d.dyaw < -POSE_TOL_DEG) return `${parts.join(' • ')} • Turn RIGHT more`;
+      if (d.dyaw > POSE_TOL_DEG) return `${parts.join(' • ')} • Turn back toward center`;
+    } else if (label === 'away_up') {
+      if (d.dpitch > POSE_TOL_DEG) return `${parts.join(' • ')} • Look UP more`;
+      if (d.dpitch < -POSE_TOL_DEG) return `${parts.join(' • ')} • Look back toward center`;
+    } else if (label === 'away_down') {
+      if (d.dpitch < -POSE_TOL_DEG) return `${parts.join(' • ')} • Look DOWN more`;
+      if (d.dpitch > POSE_TOL_DEG) return `${parts.join(' • ')} • Look back toward center`;
+    } else {
+      // screen
+      if (d.dyaw > POSE_TOL_DEG) return `${parts.join(' • ')} • Turn slightly LEFT`;
+      if (d.dyaw < -POSE_TOL_DEG) return `${parts.join(' • ')} • Turn slightly RIGHT`;
+      if (d.dpitch > POSE_TOL_DEG) return `${parts.join(' • ')} • Tilt slightly UP`;
+      if (d.dpitch < -POSE_TOL_DEG) return `${parts.join(' • ')} • Tilt slightly DOWN`;
+    }
+    return `${parts.join(' • ')} • Adjust…`;
+  };
+
+  const calibrationSubtitleFor = (label: AttentionLabel) => {
+    switch (label) {
+      case 'screen': return 'Look at the center of your screen. Hold still.';
+      case 'away_left': return 'Turn your head LEFT (nose points to left edge of screen). Hold still.';
+      case 'away_right': return 'Turn your head RIGHT (nose points to right edge of screen). Hold still.';
+      case 'away_up': return 'Tilt head UP (look above the screen). Hold still.';
+      case 'away_down': return 'Tilt head DOWN (look toward keyboard/desk). Hold still.';
+    }
+  };
+
+  const runCalibration = async () => {
+    const HOLD_SECONDS = 3;
+    const steps: { label: AttentionLabel; awayDirection: string | null }[] = [
+      { label: 'screen', awayDirection: null },
+      { label: 'away_left', awayDirection: 'left' },
+      { label: 'away_right', awayDirection: 'right' },
+      { label: 'away_up', awayDirection: 'up' },
+      { label: 'away_down', awayDirection: 'down' },
+    ];
+
+    setStatus('Calibration: follow the prompts…');
+    for (const step of steps) {
+      // Give a moment to move into position
+      for (let s = 2; s >= 1; s--) {
+        setPhase({
+          kind: 'calibration',
+          label: step.label,
+          awayDirection: step.awayDirection,
+          subtitle: calibrationSubtitleFor(step.label),
+          progressPct: 0,
+        });
+        beep();
+        // eslint-disable-next-line no-await-in-loop
+        await sleep(800);
+      }
+
+      const samples: Pose[] = [];
+      let stableSince: number | null = null;
+      while (true) {
+        if (cancelRef.current) throw new Error('__SB_CANCELLED__');
+        // eslint-disable-next-line no-await-in-loop
+        const pose = await detectPose();
+        if (!pose) {
+          stableSince = null;
+          setPoseHud('No face landmarks (move into frame)');
+          setPhase({
+            kind: 'calibration',
+            label: step.label,
+            awayDirection: step.awayDirection,
+            subtitle: calibrationSubtitleFor(step.label),
+            progressPct: 0,
+          });
+          // eslint-disable-next-line no-await-in-loop
+          await sleep(120);
+          continue;
+        }
+
+        samples.push(pose);
+        while (samples.length > 18) samples.shift();
+
+        // compute simple stability (stddev) once we have enough samples
+        let okStable = false;
+        if (samples.length >= 12) {
+          const meanYaw = samples.reduce((a, p) => a + p.yaw, 0) / samples.length;
+          const meanPitch = samples.reduce((a, p) => a + p.pitch, 0) / samples.length;
+          const varYaw = samples.reduce((a, p) => a + (p.yaw - meanYaw) ** 2, 0) / samples.length;
+          const varPitch = samples.reduce((a, p) => a + (p.pitch - meanPitch) ** 2, 0) / samples.length;
+          const stdYaw = Math.sqrt(varYaw);
+          const stdPitch = Math.sqrt(varPitch);
+          okStable = stdYaw < 2.8 && stdPitch < 2.8;
+        }
+
+        if (okStable) {
+          if (stableSince == null) stableSince = Date.now();
+        } else {
+          stableSince = null;
+        }
+
+        const progress = stableSince
+          ? clamp(((Date.now() - stableSince) / 1000) / HOLD_SECONDS, 0, 1)
+          : 0;
+        setPoseHud(`Yaw ${pose.yaw.toFixed(0)}° • Pitch ${pose.pitch.toFixed(0)}° • ${okStable ? 'Hold…' : 'Adjust…'}`);
+        setPhase({
+          kind: 'calibration',
+          label: step.label,
+          awayDirection: step.awayDirection,
+          subtitle: calibrationSubtitleFor(step.label),
+          progressPct: Math.round(progress * 100),
+        });
+
+        if (progress >= 1) {
+          const meanYaw = samples.reduce((a, p) => a + p.yaw, 0) / samples.length;
+          const meanPitch = samples.reduce((a, p) => a + p.pitch, 0) / samples.length;
+          calibrationTargetsRef.current[step.label] = { yaw: meanYaw, pitch: meanPitch };
+          beep();
+          break;
+        }
+
+        // eslint-disable-next-line no-await-in-loop
+        await sleep(120);
+      }
+    }
+    setStatus('Calibration complete.');
+  };
 
   const startCamera = async () => {
     setError(null);
@@ -269,8 +498,8 @@ export default function DataCollector() {
       setError('Please select session: day or night.');
       return;
     }
-    if (!detector) {
-      setError('Face detector not ready yet. Please wait a second and try again.');
+    if (!detector || !landmarker) {
+      setError('Vision models not ready yet. Please wait a second and try again.');
       return;
     }
     const v = videoRef.current;
@@ -287,6 +516,8 @@ export default function DataCollector() {
     const metaLines: string[] = [];
 
     try {
+      // Enforce consistent head-turn standards (per-person calibration).
+      await runCalibration();
       const ensureNotCancelled = () => {
         if (cancelRef.current) throw new Error('__SB_CANCELLED__');
       };
@@ -325,21 +556,46 @@ export default function DataCollector() {
           beep();
 
           // Capture LOOKING
-          const lookEnd = Date.now() + segmentSeconds * 1000;
-          while (Date.now() < lookEnd) {
+          let lookStart: number | null = null;
+          let lookGood = 0;
+          while (true) {
             ensureNotCancelled();
             const { box } = await detectFace();
             drawOverlay(box);
-            if (!box) {
-              setZipProgress((p) => (p ? { ...p, skipped: p.skipped + 1 } : p));
-              if (requireFace) {
-                // eslint-disable-next-line no-await-in-loop
-                await sleep(1000 / Math.max(1, fps));
-                continue;
-              }
+
+            const pose = await detectPose();
+            if (pose) {
+              setPoseHud(`${poseGuidance('screen', pose)} • Good ${lookGood}/${MIN_GOOD_FRAMES_PER_SEGMENT}`);
             }
 
-            if (box) {
+            const aligned = !!box && !!pose && poseInRange('screen', pose);
+            if (!lookStart) {
+              setPhase({
+                kind: 'capture',
+                title: 'LOOK AT SCREEN',
+                subtitle: `${LOOKING_INSTRUCTION} (Align to start)`,
+                label: 'screen',
+                awayDirection: null,
+                secondsLeft: segmentSeconds,
+              });
+              if (aligned) {
+                lookStart = Date.now();
+                beep();
+              }
+              // eslint-disable-next-line no-await-in-loop
+              await sleep(1000 / Math.max(1, fps));
+              continue;
+            }
+
+            const elapsed = Date.now() - lookStart;
+            if (elapsed > MAX_SEGMENT_SECONDS * 1000 && lookGood < MIN_GOOD_FRAMES_PER_SEGMENT) {
+              throw new Error(
+                `Could not collect enough good frames for screen (${lookGood}/${MIN_GOOD_FRAMES_PER_SEGMENT}). Keep your head aligned and try again.`
+              );
+            }
+            if (lookGood >= MIN_GOOD_FRAMES_PER_SEGMENT) break;
+
+            if (aligned) {
               const blob = await cropFaceToJpeg(box, 224);
               const ts = Date.now();
               const fname = `${ts}.jpg`;
@@ -360,8 +616,11 @@ export default function DataCollector() {
                 })
               );
               setZipProgress((p) => (p ? { ...p, saved: p.saved + 1 } : p));
+              lookGood += 1;
+            } else {
+              setZipProgress((p) => (p ? { ...p, skipped: p.skipped + 1 } : p));
             }
-            const secsLeft = Math.max(0, Math.ceil((lookEnd - Date.now()) / 1000));
+            const secsLeft = Math.max(0, Math.ceil((segmentSeconds * 1000 - elapsed) / 1000));
             setPhase({ kind: 'capture', title: 'LOOK AT SCREEN', subtitle: LOOKING_INSTRUCTION, label: 'screen', awayDirection: null, secondsLeft: secsLeft });
             // eslint-disable-next-line no-await-in-loop
             await sleep(1000 / Math.max(1, fps));
@@ -387,21 +646,48 @@ export default function DataCollector() {
             }
             beep();
 
-            const awayEnd = Date.now() + segmentSeconds * 1000;
-            while (Date.now() < awayEnd) {
+            let awayStart: number | null = null;
+            let awayGood = 0;
+            while (true) {
               ensureNotCancelled();
               const { box } = await detectFace();
               drawOverlay(box);
-              if (!box) {
-                setZipProgress((p) => (p ? { ...p, skipped: p.skipped + 1 } : p));
-                if (requireFace) {
-                  // eslint-disable-next-line no-await-in-loop
-                  await sleep(1000 / Math.max(1, fps));
-                  continue;
-                }
+
+              const pose = await detectPose();
+              if (pose) {
+                setPoseHud(
+                  `${poseGuidance(away.label, pose)} • Good ${awayGood}/${MIN_GOOD_FRAMES_PER_SEGMENT}`
+                );
               }
 
-              if (box) {
+              const aligned = !!box && !!pose && poseInRange(away.label, pose);
+              if (!awayStart) {
+                setPhase({
+                  kind: 'capture',
+                  title: 'LOOK AWAY',
+                  subtitle: `${away.text} (Align to start)`,
+                  label: away.label,
+                  awayDirection: away.dir,
+                  secondsLeft: segmentSeconds,
+                });
+                if (aligned) {
+                  awayStart = Date.now();
+                  beep();
+                }
+                // eslint-disable-next-line no-await-in-loop
+                await sleep(1000 / Math.max(1, fps));
+                continue;
+              }
+
+              const elapsed = Date.now() - awayStart;
+              if (elapsed > MAX_SEGMENT_SECONDS * 1000 && awayGood < MIN_GOOD_FRAMES_PER_SEGMENT) {
+                throw new Error(
+                  `Could not collect enough good frames for ${away.dir} (${awayGood}/${MIN_GOOD_FRAMES_PER_SEGMENT}). Keep your head aligned and try again.`
+                );
+              }
+              if (awayGood >= MIN_GOOD_FRAMES_PER_SEGMENT) break;
+
+              if (aligned) {
                 const blob = await cropFaceToJpeg(box, 224);
                 const ts = Date.now();
                 const fname = `${ts}.jpg`;
@@ -422,8 +708,11 @@ export default function DataCollector() {
                   })
                 );
                 setZipProgress((p) => (p ? { ...p, saved: p.saved + 1 } : p));
+                awayGood += 1;
+              } else {
+                setZipProgress((p) => (p ? { ...p, skipped: p.skipped + 1 } : p));
               }
-              const secsLeft = Math.max(0, Math.ceil((awayEnd - Date.now()) / 1000));
+              const secsLeft = Math.max(0, Math.ceil((segmentSeconds * 1000 - elapsed) / 1000));
               setPhase({ kind: 'capture', title: 'LOOK AWAY', subtitle: away.text, label: away.label, awayDirection: away.dir, secondsLeft: secsLeft });
               // eslint-disable-next-line no-await-in-loop
               await sleep(1000 / Math.max(1, fps));
@@ -493,7 +782,82 @@ export default function DataCollector() {
         <div>
           <div className="dc-title">Data collection</div>
         </div>
+        <button className="dc-btn" type="button" onClick={() => setInstructionsOpen(true)}>
+          Instructions
+        </button>
       </div>
+
+      {instructionsOpen && (
+        <div
+          className="dc-modalBackdrop"
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setInstructionsOpen(false);
+          }}
+        >
+          <div className="dc-modal">
+            <div className="dc-modalHeader">
+              <div className="dc-modalTitle">How this data collection works</div>
+              <button className="dc-btn" type="button" onClick={() => setInstructionsOpen(false)}>
+                Close
+              </button>
+            </div>
+            <div className="dc-modalBody">
+              <div className="dc-modalSectionTitle">1) Setup (before you start)</div>
+              <ul className="dc-modalList">
+                <li>Sit at a desk with your laptop in front of you.</li>
+                <li>Keep your face fully in the camera frame (forehead + chin visible).</li>
+                <li>Try to keep lighting consistent (avoid strong backlight from a window behind you).</li>
+                <li>Don’t move the laptop/camera during the session.</li>
+              </ul>
+
+              <div className="dc-modalSectionTitle">2) Calibration (required)</div>
+              <ul className="dc-modalList">
+                <li>You will calibrate 5 head positions: <b>screen, left, right, up, down</b>.</li>
+                <li>For each position, hold still for <b>3 seconds</b> until it completes.</li>
+                <li>This sets your personal “target angles” so everyone turns their head the same amount.</li>
+              </ul>
+
+              <div className="dc-modalSectionTitle">3) Recording (what to do)</div>
+              <ul className="dc-modalList">
+                <li>Each segment will say where to look. The segment won’t start until your head is aligned.</li>
+                <li>Keep your head aligned and steady; the app will only save “good” frames.</li>
+                <li>It must collect at least <b>{MIN_GOOD_FRAMES_PER_SEGMENT}</b> good frames for each direction before moving on.</li>
+                <li>You’ll see live guidance like Δyaw/Δpitch and “Turn LEFT more”. Follow it.</li>
+              </ul>
+
+              <div className="dc-modalSectionTitle">4) Buttons & what gets saved</div>
+              <ul className="dc-modalList">
+                <li><b>Start camera</b>: enables your webcam.</li>
+                <li><b>Start Calibration</b>: runs calibration, then prompts you for each condition/direction.</li>
+                <li><b>Stop</b>: downloads a <b>partial zip</b> of what has been collected so far.</li>
+                <li>At the end you’ll automatically download a <b>.zip</b> with labeled face crops.</li>
+              </ul>
+
+              <div className="dc-modalSectionTitle">Troubleshooting</div>
+              <ul className="dc-modalList">
+                <li>If it says “No face landmarks”, move your face into frame and improve lighting.</li>
+                <li>If it can’t reach enough good frames, slow down and hold the pose steady.</li>
+              </ul>
+            </div>
+            <div className="dc-modalFooter">
+              <button
+                className="dc-btn dc-btn-primary"
+                type="button"
+                onClick={() => {
+                  if (typeof window !== 'undefined' && !participantMode) {
+                    window.localStorage.setItem('sb_dc_instructions_seen_v1', '1');
+                  }
+                  setInstructionsOpen(false);
+                }}
+              >
+                I understand — continue
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="dc-grid">
         <div className="dc-left">
@@ -548,7 +912,7 @@ export default function DataCollector() {
                   disabled={running || phase.kind === 'idle' || !detector}
                   type="button"
                 >
-                  Start guided session
+                  Start Calibration
                 </button>
                 <button
                   className="dc-btn dc-btn-danger"
@@ -583,11 +947,15 @@ export default function DataCollector() {
           <div className="dc-preview dc-preview-unmirror">
             <video ref={videoRef} className="dc-video" playsInline muted />
             <canvas ref={overlayRef} className="dc-overlay" />
-            {(phase.kind === 'countdown' || phase.kind === 'capture') && (
+            {(phase.kind === 'countdown' || phase.kind === 'capture' || phase.kind === 'calibration') && (
               <div className="dc-videoPrompt">
                 <div className="dc-videoPromptMain">{targetText(phase)}</div>
                 <div className="dc-videoPromptSub">
-                  {phase.kind === 'countdown' ? `Starting in ${phase.secondsLeft}s` : `${phase.secondsLeft}s left`}
+                  {phase.kind === 'countdown'
+                    ? `Starting in ${phase.secondsLeft}s`
+                    : phase.kind === 'capture'
+                      ? `${phase.secondsLeft}s left • ${poseHud || 'Align to start…'}`
+                      : `Calibration ${phase.progressPct}% • ${poseHud || 'Hold still…'}`}
                 </div>
               </div>
             )}

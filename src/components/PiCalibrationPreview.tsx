@@ -7,6 +7,9 @@ type Status = {
   faceDetected: boolean;
   aligned: boolean;
   faceBox: number[] | null;
+  lastError?: string | null;
+  faceDetectorAvailable?: boolean;
+  faceCascadePath?: string | null;
 };
 
 function getSavedPiUrl() {
@@ -15,14 +18,28 @@ function getSavedPiUrl() {
 
 type PiCalibrationPreviewProps = {
   variant?: 'floating' | 'embedded';
+  mode?: 'calibration' | 'monitor';
   autoStart?: boolean;
+  /**
+   * When set (in seconds), the preview auto-stops once alignment is stable for N seconds.
+   * Use `null` to keep the preview running continuously (monitor mode).
+   */
+  autoStopAfterAlignedSeconds?: number | null;
+  /**
+   * When alignment becomes stable, call `onAlignedStable`. If `true`, also stop the preview.
+   * This is `true` by default for calibration; set to `false` if you want to keep streaming.
+   */
+  stopOnAlignedStable?: boolean;
   onRequestClose?: () => void;
   onAlignedStable?: () => void;
 };
 
 export default function PiCalibrationPreview({
   variant = 'floating',
+  mode = 'calibration',
   autoStart = false,
+  autoStopAfterAlignedSeconds = mode === 'monitor' ? null : 3,
+  stopOnAlignedStable = true,
   onRequestClose,
   onAlignedStable,
 }: PiCalibrationPreviewProps) {
@@ -34,6 +51,7 @@ export default function PiCalibrationPreview({
   const alignedSinceRef = useRef<number | null>(null);
   const [alignedSeconds, setAlignedSeconds] = useState(0);
   const autoStartAttemptedRef = useRef(false);
+  const alignedStableFiredRef = useRef(false);
 
   const streamUrl = useMemo(() => {
     const base = piUrl.replace(/\/+$/, '');
@@ -53,6 +71,7 @@ export default function PiCalibrationPreview({
     setOpen(false);
     setAlignedSeconds(0);
     alignedSinceRef.current = null;
+    alignedStableFiredRef.current = false;
     if (closeModal) onRequestClose?.();
   };
 
@@ -69,6 +88,7 @@ export default function PiCalibrationPreview({
       setOpen(true);
       setAlignedSeconds(0);
       alignedSinceRef.current = null;
+      alignedStableFiredRef.current = false;
     } catch (e: any) {
       setError(e?.message || 'Failed to start preview');
       setOpen(false);
@@ -87,6 +107,7 @@ export default function PiCalibrationPreview({
 
   useEffect(() => {
     if (!open) return;
+    if (mode !== 'calibration') return;
     let cancelled = false;
     const base = normalizeBase(piUrl);
 
@@ -101,14 +122,20 @@ export default function PiCalibrationPreview({
           if (alignedSinceRef.current == null) alignedSinceRef.current = Date.now();
           const secs = Math.floor((Date.now() - alignedSinceRef.current) / 1000);
           setAlignedSeconds(secs);
-          if (secs >= 3) {
-            // Auto-stop after stable alignment
-            onAlignedStable?.();
-            await stopPreview(false);
+          if (autoStopAfterAlignedSeconds != null && secs >= autoStopAfterAlignedSeconds) {
+            if (!alignedStableFiredRef.current) {
+              alignedStableFiredRef.current = true;
+              // If we plan to stop (calibration), stop first to avoid racing a monitor preview starting elsewhere.
+              if (stopOnAlignedStable) {
+                await stopPreview(false);
+              }
+              onAlignedStable?.();
+            }
           }
         } else {
           alignedSinceRef.current = null;
           setAlignedSeconds(0);
+          alignedStableFiredRef.current = false;
         }
       } catch (e: any) {
         if (cancelled) return;
@@ -122,22 +149,25 @@ export default function PiCalibrationPreview({
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [open, piUrl]);
+  }, [open, piUrl, mode, autoStopAfterAlignedSeconds, stopOnAlignedStable, onAlignedStable]);
+
+  const autoStopLabel =
+    autoStopAfterAlignedSeconds == null ? 'continuous' : `auto-stops after ${autoStopAfterAlignedSeconds}s`;
 
   if (variant === 'floating') {
     // Keep the old floating widget behavior for dev/demo usage.
     return (
-      <div style={{ position: 'fixed', left: 16, bottom: 16, zIndex: 50, width: 320 }}>
+      <div style={{ position: 'fixed', right: 336, bottom: 92, zIndex: 50, width: 320 }}>
         <div style={{ background: 'rgba(20, 20, 20, 0.92)', color: '#fff', borderRadius: 12, padding: 12 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-            <div style={{ fontWeight: 700 }}>Pi Camera Calibration</div>
+            <div style={{ fontWeight: 700 }}>{mode === 'monitor' ? 'Camera preview' : 'Pi Camera Calibration'}</div>
             {open ? (
               <button onClick={() => stopPreview(false)} style={{ padding: '6px 10px', cursor: 'pointer' }}>
                 Stop
               </button>
             ) : (
               <button onClick={startPreview} style={{ padding: '6px 10px', cursor: 'pointer' }}>
-                Calibrate
+                Start
               </button>
             )}
           </div>
@@ -151,7 +181,7 @@ export default function PiCalibrationPreview({
               disabled={open}
             />
             <div style={{ fontSize: 12, opacity: 0.8, marginTop: 6 }}>
-              Local demo only (HTTP). Video is not saved; stream auto-stops when aligned.
+              Local demo only (HTTP). Video is not saved; preview is {autoStopLabel}.
             </div>
           </div>
 
@@ -162,12 +192,15 @@ export default function PiCalibrationPreview({
               <div style={{ borderRadius: 10, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.2)' }}>
                 <img src={streamUrl} style={{ width: '100%', display: 'block' }} />
               </div>
-              <div style={{ marginTop: 8, fontSize: 12, opacity: 0.9 }}>
-                <div>Face detected: {status?.faceDetected ? 'yes' : 'no'}</div>
-                <div>
-                  Aligned: {status?.aligned ? `yes (${alignedSeconds}s)` : 'no'} (auto-stops after 3s)
+              {mode === 'calibration' && (
+                <div style={{ marginTop: 8, fontSize: 12, opacity: 0.9 }}>
+                  <div>Face detected: {status?.faceDetected ? 'yes' : 'no'}</div>
+                  <div>
+                    Aligned: {status?.aligned ? `yes (${alignedSeconds}s)` : 'no'}
+                    {autoStopAfterAlignedSeconds == null ? '' : ` (auto-stops after ${autoStopAfterAlignedSeconds}s)`}
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           )}
         </div>
@@ -192,33 +225,21 @@ export default function PiCalibrationPreview({
           )}
         </div>
       </div>
-
-      <input
-        value={piUrl}
-        onChange={(e) => setPiUrl(e.target.value)}
-        placeholder="http://pi.local:8080"
-        className="pi-calibration-field"
-        disabled={open}
-      />
-      <p className="pi-calibration-help">
-        Local demo only (HTTP). Video is not saved; the preview auto-stops when aligned for ~3 seconds.
-      </p>
-
+    
       {error && <p className="pi-calibration-error">{error}</p>}
+      {!error && open && status?.lastError && <p className="pi-calibration-error">{status.lastError}</p>}
+      {!error && open && status?.faceDetectorAvailable === false && (
+        <p className="pi-calibration-error">
+          Face detector not loaded on Pi. Install OpenCV haarcascades. (Cascade: {status.faceCascadePath || 'unknown'})
+        </p>
+      )}
 
       {open && (
         <>
           <div className="pi-calibration-stream">
             <img src={streamUrl} alt="Pi camera preview" />
           </div>
-          <div className="pi-calibration-metrics">
-            <span className="pi-calibration-metric">
-              Face detected: <b>{status?.faceDetected ? 'yes' : 'no'}</b>
-            </span>
-            <span className="pi-calibration-metric">
-              Aligned: <b>{status?.aligned ? `yes (${alignedSeconds}s)` : 'no'}</b>
-            </span>
-          </div>
+          
         </>
       )}
     </div>
