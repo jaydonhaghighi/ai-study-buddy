@@ -85,6 +85,10 @@ function clamp(v: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, v));
 }
 
+const POSE_TOL_DEG = 10;
+const MIN_GOOD_FRAMES_PER_SEGMENT = 40; // enforced balance per label
+const MAX_SEGMENT_SECONDS = 25; // safety cap to avoid infinite loops
+
 function poseFromMatrix4x4(data: number[] | Float32Array): Pose | null {
   if (!data || data.length < 16) return null;
   // MediaPipe provides a 4x4 matrix. Treat it as column-major (common in WebGL/MP).
@@ -124,6 +128,7 @@ export default function DataCollector() {
   // Always-on: show an unmirrored preview (and save unmirrored crops).
   const unmirrorPreview = true;
   const [zipProgress, setZipProgress] = useState<{ saved: number; skipped: number } | null>(null);
+  const [instructionsOpen, setInstructionsOpen] = useState(false);
 
   const runId = useMemo(() => `run_${Math.floor(Date.now() / 1000)}`, []);
   const participantMode = useMemo(() => {
@@ -155,6 +160,18 @@ export default function DataCollector() {
     // placement/fps/cycles/seconds are intentionally fixed
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Show instructions once per browser (and always in participant mode).
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (participantMode) {
+      setInstructionsOpen(true);
+      return;
+    }
+    const key = 'sb_dc_instructions_seen_v1';
+    const seen = window.localStorage.getItem(key) === '1';
+    if (!seen) setInstructionsOpen(true);
+  }, [participantMode]);
 
   useEffect(() => {
     (async () => {
@@ -233,12 +250,55 @@ export default function DataCollector() {
     return pose;
   };
 
-  const poseInRange = (label: AttentionLabel, pose: Pose): boolean => {
+  const poseDelta = (label: AttentionLabel, pose: Pose) => {
     const t = calibrationTargetsRef.current[label];
-    if (!t) return true; // if not calibrated yet, don't block
-    const yawTol = label === 'screen' ? 10 : 10;
-    const pitchTol = label === 'screen' ? 10 : 10;
-    return Math.abs(pose.yaw - t.yaw) <= yawTol && Math.abs(pose.pitch - t.pitch) <= pitchTol;
+    if (!t) return null;
+    return {
+      dyaw: pose.yaw - t.yaw,
+      dpitch: pose.pitch - t.pitch,
+      targetYaw: t.yaw,
+      targetPitch: t.pitch,
+    };
+  };
+
+  const poseInRange = (label: AttentionLabel, pose: Pose): boolean => {
+    const d = poseDelta(label, pose);
+    if (!d) return true; // if not calibrated yet, don't block
+    return Math.abs(d.dyaw) <= POSE_TOL_DEG && Math.abs(d.dpitch) <= POSE_TOL_DEG;
+  };
+
+  const poseGuidance = (label: AttentionLabel, pose: Pose): string => {
+    const d = poseDelta(label, pose);
+    if (!d) return `Yaw ${pose.yaw.toFixed(0)}° • Pitch ${pose.pitch.toFixed(0)}°`;
+    const parts: string[] = [
+      `Yaw ${pose.yaw.toFixed(0)}° (Δ${d.dyaw >= 0 ? '+' : ''}${d.dyaw.toFixed(0)}°)`,
+      `Pitch ${pose.pitch.toFixed(0)}° (Δ${d.dpitch >= 0 ? '+' : ''}${d.dpitch.toFixed(0)}°)`,
+    ];
+    const inYaw = Math.abs(d.dyaw) <= POSE_TOL_DEG;
+    const inPitch = Math.abs(d.dpitch) <= POSE_TOL_DEG;
+    if (inYaw && inPitch) return `${parts.join(' • ')} • OK`;
+
+    // Simple human-friendly guidance (relative to the calibrated target).
+    if (label === 'away_left') {
+      if (d.dyaw > POSE_TOL_DEG) return `${parts.join(' • ')} • Turn LEFT more`;
+      if (d.dyaw < -POSE_TOL_DEG) return `${parts.join(' • ')} • Turn back toward center`;
+    } else if (label === 'away_right') {
+      if (d.dyaw < -POSE_TOL_DEG) return `${parts.join(' • ')} • Turn RIGHT more`;
+      if (d.dyaw > POSE_TOL_DEG) return `${parts.join(' • ')} • Turn back toward center`;
+    } else if (label === 'away_up') {
+      if (d.dpitch > POSE_TOL_DEG) return `${parts.join(' • ')} • Look UP more`;
+      if (d.dpitch < -POSE_TOL_DEG) return `${parts.join(' • ')} • Look back toward center`;
+    } else if (label === 'away_down') {
+      if (d.dpitch < -POSE_TOL_DEG) return `${parts.join(' • ')} • Look DOWN more`;
+      if (d.dpitch > POSE_TOL_DEG) return `${parts.join(' • ')} • Look back toward center`;
+    } else {
+      // screen
+      if (d.dyaw > POSE_TOL_DEG) return `${parts.join(' • ')} • Turn slightly LEFT`;
+      if (d.dyaw < -POSE_TOL_DEG) return `${parts.join(' • ')} • Turn slightly RIGHT`;
+      if (d.dpitch > POSE_TOL_DEG) return `${parts.join(' • ')} • Tilt slightly UP`;
+      if (d.dpitch < -POSE_TOL_DEG) return `${parts.join(' • ')} • Tilt slightly DOWN`;
+    }
+    return `${parts.join(' • ')} • Adjust…`;
   };
 
   const calibrationSubtitleFor = (label: AttentionLabel) => {
@@ -497,6 +557,7 @@ export default function DataCollector() {
 
           // Capture LOOKING
           let lookStart: number | null = null;
+          let lookGood = 0;
           while (true) {
             ensureNotCancelled();
             const { box } = await detectFace();
@@ -504,7 +565,7 @@ export default function DataCollector() {
 
             const pose = await detectPose();
             if (pose) {
-              setPoseHud(`Yaw ${pose.yaw.toFixed(0)}° • Pitch ${pose.pitch.toFixed(0)}° • ${poseInRange('screen', pose) ? 'OK' : 'Adjust…'}`);
+              setPoseHud(`${poseGuidance('screen', pose)} • Good ${lookGood}/${MIN_GOOD_FRAMES_PER_SEGMENT}`);
             }
 
             const aligned = !!box && !!pose && poseInRange('screen', pose);
@@ -526,8 +587,13 @@ export default function DataCollector() {
               continue;
             }
 
-            const lookEnd = lookStart + segmentSeconds * 1000;
-            if (Date.now() >= lookEnd) break;
+            const elapsed = Date.now() - lookStart;
+            if (elapsed > MAX_SEGMENT_SECONDS * 1000 && lookGood < MIN_GOOD_FRAMES_PER_SEGMENT) {
+              throw new Error(
+                `Could not collect enough good frames for screen (${lookGood}/${MIN_GOOD_FRAMES_PER_SEGMENT}). Keep your head aligned and try again.`
+              );
+            }
+            if (lookGood >= MIN_GOOD_FRAMES_PER_SEGMENT) break;
 
             if (aligned) {
               const blob = await cropFaceToJpeg(box, 224);
@@ -550,10 +616,11 @@ export default function DataCollector() {
                 })
               );
               setZipProgress((p) => (p ? { ...p, saved: p.saved + 1 } : p));
+              lookGood += 1;
             } else {
               setZipProgress((p) => (p ? { ...p, skipped: p.skipped + 1 } : p));
             }
-            const secsLeft = Math.max(0, Math.ceil((lookEnd - Date.now()) / 1000));
+            const secsLeft = Math.max(0, Math.ceil((segmentSeconds * 1000 - elapsed) / 1000));
             setPhase({ kind: 'capture', title: 'LOOK AT SCREEN', subtitle: LOOKING_INSTRUCTION, label: 'screen', awayDirection: null, secondsLeft: secsLeft });
             // eslint-disable-next-line no-await-in-loop
             await sleep(1000 / Math.max(1, fps));
@@ -580,6 +647,7 @@ export default function DataCollector() {
             beep();
 
             let awayStart: number | null = null;
+            let awayGood = 0;
             while (true) {
               ensureNotCancelled();
               const { box } = await detectFace();
@@ -588,7 +656,7 @@ export default function DataCollector() {
               const pose = await detectPose();
               if (pose) {
                 setPoseHud(
-                  `Yaw ${pose.yaw.toFixed(0)}° • Pitch ${pose.pitch.toFixed(0)}° • ${poseInRange(away.label, pose) ? 'OK' : 'Adjust…'}`
+                  `${poseGuidance(away.label, pose)} • Good ${awayGood}/${MIN_GOOD_FRAMES_PER_SEGMENT}`
                 );
               }
 
@@ -611,8 +679,13 @@ export default function DataCollector() {
                 continue;
               }
 
-              const awayEnd = awayStart + segmentSeconds * 1000;
-              if (Date.now() >= awayEnd) break;
+              const elapsed = Date.now() - awayStart;
+              if (elapsed > MAX_SEGMENT_SECONDS * 1000 && awayGood < MIN_GOOD_FRAMES_PER_SEGMENT) {
+                throw new Error(
+                  `Could not collect enough good frames for ${away.dir} (${awayGood}/${MIN_GOOD_FRAMES_PER_SEGMENT}). Keep your head aligned and try again.`
+                );
+              }
+              if (awayGood >= MIN_GOOD_FRAMES_PER_SEGMENT) break;
 
               if (aligned) {
                 const blob = await cropFaceToJpeg(box, 224);
@@ -635,10 +708,11 @@ export default function DataCollector() {
                   })
                 );
                 setZipProgress((p) => (p ? { ...p, saved: p.saved + 1 } : p));
+                awayGood += 1;
               } else {
                 setZipProgress((p) => (p ? { ...p, skipped: p.skipped + 1 } : p));
               }
-              const secsLeft = Math.max(0, Math.ceil((awayEnd - Date.now()) / 1000));
+              const secsLeft = Math.max(0, Math.ceil((segmentSeconds * 1000 - elapsed) / 1000));
               setPhase({ kind: 'capture', title: 'LOOK AWAY', subtitle: away.text, label: away.label, awayDirection: away.dir, secondsLeft: secsLeft });
               // eslint-disable-next-line no-await-in-loop
               await sleep(1000 / Math.max(1, fps));
@@ -708,7 +782,82 @@ export default function DataCollector() {
         <div>
           <div className="dc-title">Data collection</div>
         </div>
+        <button className="dc-btn" type="button" onClick={() => setInstructionsOpen(true)}>
+          Instructions
+        </button>
       </div>
+
+      {instructionsOpen && (
+        <div
+          className="dc-modalBackdrop"
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setInstructionsOpen(false);
+          }}
+        >
+          <div className="dc-modal">
+            <div className="dc-modalHeader">
+              <div className="dc-modalTitle">How this data collection works</div>
+              <button className="dc-btn" type="button" onClick={() => setInstructionsOpen(false)}>
+                Close
+              </button>
+            </div>
+            <div className="dc-modalBody">
+              <div className="dc-modalSectionTitle">1) Setup (before you start)</div>
+              <ul className="dc-modalList">
+                <li>Sit at a desk with your laptop in front of you.</li>
+                <li>Keep your face fully in the camera frame (forehead + chin visible).</li>
+                <li>Try to keep lighting consistent (avoid strong backlight from a window behind you).</li>
+                <li>Don’t move the laptop/camera during the session.</li>
+              </ul>
+
+              <div className="dc-modalSectionTitle">2) Calibration (required)</div>
+              <ul className="dc-modalList">
+                <li>You will calibrate 5 head positions: <b>screen, left, right, up, down</b>.</li>
+                <li>For each position, hold still for <b>3 seconds</b> until it completes.</li>
+                <li>This sets your personal “target angles” so everyone turns their head the same amount.</li>
+              </ul>
+
+              <div className="dc-modalSectionTitle">3) Recording (what to do)</div>
+              <ul className="dc-modalList">
+                <li>Each segment will say where to look. The segment won’t start until your head is aligned.</li>
+                <li>Keep your head aligned and steady; the app will only save “good” frames.</li>
+                <li>It must collect at least <b>{MIN_GOOD_FRAMES_PER_SEGMENT}</b> good frames for each direction before moving on.</li>
+                <li>You’ll see live guidance like Δyaw/Δpitch and “Turn LEFT more”. Follow it.</li>
+              </ul>
+
+              <div className="dc-modalSectionTitle">4) Buttons & what gets saved</div>
+              <ul className="dc-modalList">
+                <li><b>Start camera</b>: enables your webcam.</li>
+                <li><b>Start Calibration</b>: runs calibration, then prompts you for each condition/direction.</li>
+                <li><b>Stop</b>: downloads a <b>partial zip</b> of what has been collected so far.</li>
+                <li>At the end you’ll automatically download a <b>.zip</b> with labeled face crops.</li>
+              </ul>
+
+              <div className="dc-modalSectionTitle">Troubleshooting</div>
+              <ul className="dc-modalList">
+                <li>If it says “No face landmarks”, move your face into frame and improve lighting.</li>
+                <li>If it can’t reach enough good frames, slow down and hold the pose steady.</li>
+              </ul>
+            </div>
+            <div className="dc-modalFooter">
+              <button
+                className="dc-btn dc-btn-primary"
+                type="button"
+                onClick={() => {
+                  if (typeof window !== 'undefined' && !participantMode) {
+                    window.localStorage.setItem('sb_dc_instructions_seen_v1', '1');
+                  }
+                  setInstructionsOpen(false);
+                }}
+              >
+                I understand — continue
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="dc-grid">
         <div className="dc-left">
@@ -805,7 +954,7 @@ export default function DataCollector() {
                   {phase.kind === 'countdown'
                     ? `Starting in ${phase.secondsLeft}s`
                     : phase.kind === 'capture'
-                      ? `${phase.secondsLeft}s left`
+                      ? `${phase.secondsLeft}s left • ${poseHud || 'Align to start…'}`
                       : `Calibration ${phase.progressPct}% • ${poseHud || 'Hold still…'}`}
                 </div>
               </div>
