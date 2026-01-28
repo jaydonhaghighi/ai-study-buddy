@@ -1,5 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
-import { db, auth, storage } from '../firebase-config';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import rehypeHighlight from 'rehype-highlight';
+import 'highlight.js/styles/github.css';
+import { db, auth } from '../firebase-config';
 import { User, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { 
   collection, 
@@ -14,7 +18,6 @@ import {
   updateDoc,
   doc
 } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL, listAll, deleteObject, getMetadata } from 'firebase/storage';
 import { getAIResponse, createGenkitChat } from '../services/genkit-service';
 import { claimDevice, startFocusSession, stopFocusSession } from '../services/focus-service';
 import PiCalibrationPreview from './PiCalibrationPreview';
@@ -55,15 +58,6 @@ interface ChatSession {
   userId: string;
   createdAt: Date | null;
   lastMessageAt: Date | null;
-}
-
-interface UploadedFile {
-  id: string;
-  name: string;
-  url: string;
-  type: string;
-  size: number;
-  uploadedAt: Date;
 }
 
 interface Device {
@@ -124,10 +118,16 @@ export default function Chat({ user }: ChatProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsRef = useRef<HTMLDivElement>(null);
 
-  // Files Sidebar State
-  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
-  const [isDragging, setIsDragging] = useState(false);
-  const [uploading, setUploading] = useState(false);
+  // Always-on camera preview (local webapp usage)
+  const [cameraPreviewEnabled, setCameraPreviewEnabled] = useState(() => {
+    // default ON for local usage
+    return localStorage.getItem('cameraPreviewEnabled') !== '0';
+  });
+  const [cameraPreviewAfterCalibration, setCameraPreviewAfterCalibration] = useState(false);
+
+  useEffect(() => {
+    localStorage.setItem('cameraPreviewEnabled', cameraPreviewEnabled ? '1' : '0');
+  }, [cameraPreviewEnabled]);
 
   // Device + Focus Tracking State
   const [claimCode, setClaimCode] = useState('');
@@ -148,7 +148,6 @@ export default function Chat({ user }: ChatProps) {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!settingsOpen) return;
@@ -537,119 +536,6 @@ export default function Chat({ user }: ChatProps) {
     }
   };
 
-  // File Upload Handlers
-  const handleFileUpload = async (files: FileList | null) => {
-    if (!user || !selectedChatId || !files || files.length === 0) return;
-
-    setUploading(true);
-    const uploadPromises: Promise<void>[] = [];
-
-    Array.from(files).forEach((file) => {
-      const uploadPromise = (async () => {
-        try {
-          const fileRef = ref(storage, `chats/${selectedChatId}/${user.uid}/${Date.now()}_${file.name}`);
-          await uploadBytes(fileRef, file);
-          const url = await getDownloadURL(fileRef);
-          
-          const newFile: UploadedFile = {
-            id: fileRef.fullPath,
-            name: file.name,
-            url,
-            type: file.type,
-            size: file.size,
-            uploadedAt: new Date(),
-          };
-          
-          setUploadedFiles(prev => [...prev, newFile]);
-          setToastMessage(`${file.name} uploaded successfully`);
-        } catch (error) {
-          console.error('Error uploading file:', error);
-          setToastMessage(`Error uploading ${file.name}`);
-        }
-      })();
-      uploadPromises.push(uploadPromise);
-    });
-
-    await Promise.all(uploadPromises);
-    setUploading(false);
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(true);
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(false);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(false);
-    handleFileUpload(e.dataTransfer.files);
-  };
-
-  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    handleFileUpload(e.target.files);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-  };
-
-  const handleDeleteFile = async (fileId: string, fileName: string) => {
-    if (!user) return;
-    try {
-      const fileRef = ref(storage, fileId);
-      await deleteObject(fileRef);
-      setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
-      setToastMessage(`${fileName} deleted`);
-    } catch (error) {
-      console.error('Error deleting file:', error);
-      setToastMessage(`Error deleting ${fileName}`);
-    }
-  };
-
-  // Load files for selected chat
-  useEffect(() => {
-    if (!user || !selectedChatId) {
-      setUploadedFiles([]);
-      return;
-    }
-
-    const loadFiles = async () => {
-      try {
-        const filesRef = ref(storage, `chats/${selectedChatId}/${user.uid}`);
-        const filesList = await listAll(filesRef);
-        
-        const filePromises = filesList.items.map(async (itemRef) => {
-          const url = await getDownloadURL(itemRef);
-          const metadata = await getMetadata(itemRef);
-          // Extract original filename (remove timestamp prefix)
-          const fileName = itemRef.name.replace(/^\d+_/, '');
-          return {
-            id: itemRef.fullPath,
-            name: fileName,
-            url,
-            type: metadata.contentType || 'application/octet-stream',
-            size: metadata.size || 0,
-            uploadedAt: metadata.timeCreated ? new Date(metadata.timeCreated) : new Date(),
-          } as UploadedFile;
-        });
-
-        const files = await Promise.all(filePromises);
-        setUploadedFiles(files);
-      } catch (error) {
-        console.error('Error loading files:', error);
-      }
-    };
-
-    loadFiles();
-  }, [user, selectedChatId]);
-
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
@@ -804,7 +690,7 @@ export default function Chat({ user }: ChatProps) {
   const currentChat = chats.find(c => c.id === selectedChatId);
 
   return (
-    <div className="chat-container files-sidebar-open">
+    <div className={`chat-container ${cameraPreviewEnabled && mainView === 'chat' ? 'preview-sidebar-open' : ''}`}>
       {/* Sidebar */}
       <div className="chat-sidebar">
         <div className="sidebar-header">
@@ -996,6 +882,15 @@ export default function Chat({ user }: ChatProps) {
                           type="button"
                           className="chat-settings-item"
                           role="menuitem"
+                          onClick={() => setCameraPreviewEnabled((v) => !v)}
+                          disabled={focusBusy}
+                        >
+                          Camera preview: {cameraPreviewEnabled ? 'On' : 'Off'}
+                        </button>
+                        <button
+                          type="button"
+                          className="chat-settings-item"
+                          role="menuitem"
                           onClick={openPairModalFromSettings}
                           disabled={focusBusy}
                         >
@@ -1045,7 +940,39 @@ export default function Chat({ user }: ChatProps) {
                           <span className="message-name">{!message.isAI ? 'You' : (message.userName || 'AI Study Buddy')}</span>
                           {message.model && message.isAI && <span className="message-model">{message.model}</span>}
                         </div>
-                        <div className="message-text"><div className="plain-text">{message.text}</div></div>
+                        <div className="message-text">
+                          {!message.isAI ? (
+                            <div className="plain-text">{message.text}</div>
+                          ) : (
+                            <div className="markdown">
+                              <ReactMarkdown
+                                remarkPlugins={[remarkGfm]}
+                                rehypePlugins={[rehypeHighlight]}
+                                components={{
+                                  a: ({ children, ...props }) => (
+                                    <a {...props} target="_blank" rel="noopener noreferrer">
+                                      {children}
+                                    </a>
+                                  ),
+                                  code: ({ children, className, ...props }) => {
+                                    const isBlock = !!className && className.includes('language-');
+                                    return isBlock ? (
+                                      <code className={className} {...props}>
+                                        {children}
+                                      </code>
+                                    ) : (
+                                      <code className="inline-code" {...props}>
+                                        {children}
+                                      </code>
+                                    );
+                                  },
+                                }}
+                              >
+                                {message.text}
+                              </ReactMarkdown>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -1076,87 +1003,24 @@ export default function Chat({ user }: ChatProps) {
         )}
       </div>
 
-      {/* Files Sidebar */}
-      {user && (
-        <div className="files-sidebar">
-          <div className="files-sidebar-header">
-            <h3>Files</h3>
+      {/* Preview Sidebar */}
+      {cameraPreviewEnabled && mainView === 'chat' && (
+        <div className="preview-sidebar" aria-label="Camera preview sidebar">
+          <div className="preview-sidebar-header">
+            <h3>Camera</h3>
           </div>
 
-              <div 
-                className={`files-drop-zone ${isDragging ? 'dragging' : ''} ${uploading ? 'uploading' : ''}`}
-                onDragOver={handleDragOver}
-                onDragLeave={handleDragLeave}
-                onDrop={handleDrop}
-              >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  onChange={handleFileInputChange}
-                  style={{ display: 'none' }}
-                  accept="*/*"
-                />
-                <div className="drop-zone-content">
-                  <div className="drop-zone-icon">📁</div>
-                  <p className="drop-zone-text">
-                    {uploading ? 'Uploading...' : isDragging ? 'Drop files here' : 'Drag & drop files here'}
-                  </p>
-                  <button 
-                    className="drop-zone-button"
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={uploading}
-                  >
-                    Or click to browse
-                  </button>
-                </div>
+          <div className="preview-sidebar-body">
+            {!cameraPreviewAfterCalibration ? (
+              <div className="preview-sidebar-empty">
+                <p>
+                  Start Focus to run the usual calibration. Once calibration is complete, the live preview will stay here while you study.
+                </p>
               </div>
-
-              <div className="files-list">
-                {uploadedFiles.length === 0 ? (
-                  <div className="files-empty">
-                    <p>No files uploaded yet</p>
-                  </div>
-                ) : (
-                  uploadedFiles.map((file) => (
-                    <div key={file.id} className="file-item">
-                      <div className="file-info">
-                        <span className="file-icon">
-                          {file.type.startsWith('image/') ? '🖼️' : 
-                           file.type.includes('pdf') ? '📄' :
-                           file.type.includes('word') || file.name.endsWith('.docx') ? '📝' :
-                           file.type.includes('powerpoint') || file.name.endsWith('.pptx') ? '📊' :
-                           '📎'}
-                        </span>
-                        <div className="file-details">
-                          <span className="file-name" title={file.name}>{file.name}</span>
-                          <span className="file-size">
-                            {(file.size / 1024).toFixed(1)} KB
-                          </span>
-                        </div>
-                      </div>
-                      <div className="file-actions">
-                        <a 
-                          href={file.url} 
-                          target="_blank" 
-                          rel="noopener noreferrer"
-                          className="file-action-btn"
-                          title="Open"
-                        >
-                          ↗
-                        </a>
-                        <button
-                          onClick={() => handleDeleteFile(file.id, file.name)}
-                          className="file-action-btn"
-                          title="Delete"
-                        >
-                          ×
-                        </button>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
+            ) : (
+              <PiCalibrationPreview variant="embedded" mode="monitor" autoStart />
+            )}
+          </div>
         </div>
       )}
       
@@ -1257,12 +1121,16 @@ export default function Chat({ user }: ChatProps) {
               <PiCalibrationPreview
                 variant="embedded"
                 autoStart
+                mode="calibration"
+                autoStopAfterAlignedSeconds={3}
+                stopOnAlignedStable={false}
                 onRequestClose={() => {
                   setShowCalibrationModal(false);
                   setPendingFocusStart(null);
                 }}
                 onAlignedStable={() => {
                   setShowCalibrationModal(false);
+                  setCameraPreviewAfterCalibration(true);
                   startFocusAfterCalibration();
                 }}
               />
