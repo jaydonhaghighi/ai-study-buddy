@@ -11,6 +11,54 @@ import tensorflow as tf
 LABELS = ["screen", "away_left", "away_right", "away_up", "away_down"]
 
 
+def build_augmenter(seed: int) -> tf.keras.Model:
+    """
+    Label-safe augmentations to improve generalization to new people/cameras.
+    IMPORTANT: Do NOT horizontally flip (it would swap away_left/away_right).
+    """
+    return tf.keras.Sequential(
+        [
+            tf.keras.layers.RandomTranslation(
+                height_factor=0.06,
+                width_factor=0.06,
+                fill_mode="reflect",
+                seed=seed,
+            ),
+            tf.keras.layers.RandomZoom(
+                height_factor=(-0.08, 0.10),
+                width_factor=(-0.08, 0.10),
+                fill_mode="reflect",
+                seed=seed + 1,
+            ),
+            tf.keras.layers.RandomRotation(
+                factor=0.02,
+                fill_mode="reflect",
+                seed=seed + 2,
+            ),
+        ],
+        name="augmenter",
+    )
+
+
+def compute_class_weights(train_dir: Path) -> tuple[dict[int, float], dict[str, int]]:
+    counts: dict[str, int] = {}
+    for lab in LABELS:
+        d = train_dir / lab
+        if not d.exists():
+            counts[lab] = 0
+            continue
+        counts[lab] = len(list(d.glob("*.jpg"))) + len(list(d.glob("*.jpeg"))) + len(list(d.glob("*.png")))
+
+    total = sum(counts.values())
+    n = len(LABELS)
+    weights: dict[int, float] = {}
+    for i, lab in enumerate(LABELS):
+        c = counts[lab]
+        # If a class is missing, set weight to 0 (training will likely fail anyway due to missing class).
+        weights[i] = float(total / (n * c)) if c > 0 else 0.0
+    return weights, counts
+
+
 def build_model(input_size: int, num_classes: int) -> tf.keras.Model:
     base = tf.keras.applications.MobileNetV2(
         input_shape=(input_size, input_size, 3),
@@ -24,7 +72,7 @@ def build_model(input_size: int, num_classes: int) -> tf.keras.Model:
     x = tf.keras.applications.mobilenet_v2.preprocess_input(inputs)
     x = base(x, training=False)
     x = tf.keras.layers.GlobalAveragePooling2D()(x)
-    x = tf.keras.layers.Dropout(0.2)(x)
+    x = tf.keras.layers.Dropout(0.3)(x)
     outputs = tf.keras.layers.Dense(num_classes, activation="softmax")(x)
     model = tf.keras.Model(inputs, outputs)
     return model
@@ -115,6 +163,9 @@ def main():
     parser.add_argument("--epochs-head", type=int, default=4)
     parser.add_argument("--epochs-finetune", type=int, default=6)
     parser.add_argument("--fine-tune-at", type=int, default=100)
+    parser.add_argument("--label-smoothing", type=float, default=0.06)
+    parser.add_argument("--no-augment", action="store_true", help="Disable data augmentation (not recommended for LOPO)")
+    parser.add_argument("--no-class-weights", action="store_true", help="Disable class weights (not recommended if imbalanced)")
     parser.add_argument("--out-dir", default="models")
     parser.add_argument("--tflite-name", default="focus_model.tflite")
     parser.add_argument("--quantize", action="store_true", help="Enable dynamic range quantization")
@@ -144,20 +195,51 @@ def main():
         raise SystemExit("Provide either --train-dir/--val-dir (preferred) or --data-dir (quick).")
 
     autotune = tf.data.AUTOTUNE
+    # Augment only the training set (label-safe: no flips).
+    if not args.no_augment:
+        augmenter = build_augmenter(args.seed)
+
+        def _augment(x, y):
+            x = augmenter(x, training=True)
+            # Light photometric jitter for lighting/camera variance.
+            x = tf.image.random_brightness(x, max_delta=0.08)
+            x = tf.image.random_contrast(x, lower=0.85, upper=1.15)
+            x = tf.clip_by_value(x, 0.0, 255.0)
+            return x, y
+
+        train_ds = train_ds.map(_augment, num_parallel_calls=autotune)
+
     train_ds = train_ds.prefetch(autotune)
     val_ds = val_ds.prefetch(autotune)
     if test_ds is not None:
         test_ds = test_ds.prefetch(autotune)
 
+    class_weight = None
+    if train_dir and (not args.no_class_weights):
+        class_weight, counts = compute_class_weights(train_dir)
+        print("Train class counts:", counts)
+        print("Using class_weight:", class_weight)
+
     model = build_model(args.input_size, num_classes=len(LABELS))
     model.compile(
         optimizer=tf.keras.optimizers.Adam(1e-3),
-        loss=tf.keras.losses.CategoricalCrossentropy(),
+        loss=tf.keras.losses.CategoricalCrossentropy(label_smoothing=args.label_smoothing),
         metrics=["accuracy"],
     )
 
+    callbacks = [
+        tf.keras.callbacks.EarlyStopping(monitor="val_loss", patience=3, restore_best_weights=True),
+        tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=2, min_lr=1e-6),
+    ]
+
     print("Training head...")
-    model.fit(train_ds, validation_data=val_ds, epochs=args.epochs_head)
+    model.fit(
+        train_ds,
+        validation_data=val_ds,
+        epochs=args.epochs_head,
+        class_weight=class_weight,
+        callbacks=callbacks,
+    )
 
     # Fine-tune last layers
     base = find_backbone(model)
@@ -167,11 +249,17 @@ def main():
 
     model.compile(
         optimizer=tf.keras.optimizers.Adam(1e-5),
-        loss=tf.keras.losses.CategoricalCrossentropy(),
+        loss=tf.keras.losses.CategoricalCrossentropy(label_smoothing=args.label_smoothing),
         metrics=["accuracy"],
     )
     print("Fine-tuning...")
-    model.fit(train_ds, validation_data=val_ds, epochs=args.epochs_finetune)
+    model.fit(
+        train_ds,
+        validation_data=val_ds,
+        epochs=args.epochs_finetune,
+        class_weight=class_weight,
+        callbacks=callbacks,
+    )
 
     if test_ds is not None:
         print("Evaluating on test...")

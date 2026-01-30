@@ -87,7 +87,6 @@ function clamp(v: number, lo: number, hi: number) {
 
 const POSE_TOL_DEG = 10;
 const MIN_GOOD_FRAMES_PER_SEGMENT = 40; // enforced balance per label
-const MAX_SEGMENT_SECONDS = 25; // safety cap to avoid infinite loops
 
 function poseFromMatrix4x4(data: number[] | Float32Array): Pose | null {
   if (!data || data.length < 16) return null;
@@ -588,11 +587,6 @@ export default function DataCollector() {
             }
 
             const elapsed = Date.now() - lookStart;
-            if (elapsed > MAX_SEGMENT_SECONDS * 1000 && lookGood < MIN_GOOD_FRAMES_PER_SEGMENT) {
-              throw new Error(
-                `Could not collect enough good frames for screen (${lookGood}/${MIN_GOOD_FRAMES_PER_SEGMENT}). Keep your head aligned and try again.`
-              );
-            }
             if (lookGood >= MIN_GOOD_FRAMES_PER_SEGMENT) break;
 
             if (aligned) {
@@ -680,11 +674,6 @@ export default function DataCollector() {
               }
 
               const elapsed = Date.now() - awayStart;
-              if (elapsed > MAX_SEGMENT_SECONDS * 1000 && awayGood < MIN_GOOD_FRAMES_PER_SEGMENT) {
-                throw new Error(
-                  `Could not collect enough good frames for ${away.dir} (${awayGood}/${MIN_GOOD_FRAMES_PER_SEGMENT}). Keep your head aligned and try again.`
-                );
-              }
               if (awayGood >= MIN_GOOD_FRAMES_PER_SEGMENT) break;
 
               if (aligned) {
