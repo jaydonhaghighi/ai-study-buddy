@@ -59,6 +59,13 @@ pi-agent/runs/**
 !pi-agent/runs/REPORT.md
 !pi-agent/runs/PROFESSOR_BRIEF.md
 
+# ML pipeline artifacts (dockerized server-side training/inference)
+ml/artifacts/
+ml/.venv/
+ml/**/__pycache__/
+ml/.pytest_cache/
+ml/.mypy_cache/
+
 # Project-specific (kept explicit for clarity)
 pi-agent/.venv/
 .specstory/.what-is-this.md
