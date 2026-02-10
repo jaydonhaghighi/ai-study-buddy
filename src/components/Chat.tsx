@@ -22,6 +22,7 @@ import {
 import { getAIResponse, createGenkitChat } from '../services/genkit-service';
 import { startFocusSession, stopFocusSession } from '../services/focus-service';
 import { LaptopFocusTracker } from '../services/laptop-focus-tracker';
+import { InferenceFocusTracker } from '../services/inference-focus-tracker';
 import WebcamCalibrationPreview from './WebcamCalibrationPreview';
 import FocusDashboard from './FocusDashboard';
 import settingsIcon from '../public/settings.svg';
@@ -70,6 +71,24 @@ interface FocusSession {
   sessionId?: string | null;
   startedAt?: Date | null;
 }
+
+type FocusTrackerSummary = {
+  startTs: number;
+  endTs: number;
+  focusedMs: number;
+  distractedMs: number;
+  distractions: number;
+  focusPercent: number;
+  attentionLabelCounts: Record<string, number>;
+  [key: string]: unknown;
+};
+
+type FocusTrackerRuntime = {
+  start(): Promise<void>;
+  stop(): Promise<FocusTrackerSummary>;
+};
+
+type TrackerSource = 'ml_inference_api' | 'laptop_webcam';
 
 interface ChatProps {
   user: User | null;
@@ -127,12 +146,14 @@ export default function Chat({ user }: ChatProps) {
   const [activeFocusSession, setActiveFocusSession] = useState<FocusSession | null>(null);
   const [focusBusy, setFocusBusy] = useState(false);
   const [isLocalTrackerRunning, setIsLocalTrackerRunning] = useState(false);
+  const [activeTrackerLabel, setActiveTrackerLabel] = useState<string | null>(null);
   const [showCalibrationModal, setShowCalibrationModal] = useState(false);
   const [pendingFocusStart, setPendingFocusStart] = useState<{
     courseId?: string;
     sessionId?: string;
   } | null>(null);
-  const localFocusTrackerRef = useRef<LaptopFocusTracker | null>(null);
+  const localFocusTrackerRef = useRef<FocusTrackerRuntime | null>(null);
+  const trackerSourceRef = useRef<TrackerSource | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -236,6 +257,8 @@ export default function Chat({ user }: ChatProps) {
 
   useEffect(() => {
     if (activeFocusSession) return;
+    trackerSourceRef.current = null;
+    setActiveTrackerLabel(null);
     const tracker = localFocusTrackerRef.current;
     if (!tracker) return;
     localFocusTrackerRef.current = null;
@@ -504,6 +527,7 @@ export default function Chat({ user }: ChatProps) {
       setSettingsOpen(false);
       const tracker = localFocusTrackerRef.current;
       localFocusTrackerRef.current = null;
+      trackerSourceRef.current = null;
       if (tracker) {
         try {
           await tracker.stop();
@@ -512,6 +536,7 @@ export default function Chat({ user }: ChatProps) {
         }
       }
       setIsLocalTrackerRunning(false);
+      setActiveTrackerLabel(null);
       await signOut(auth);
       setCourses([]);
       setSessions([]);
@@ -547,18 +572,37 @@ export default function Chat({ user }: ChatProps) {
         sessionId: pendingFocusStart.sessionId,
       });
 
-      // Start local webcam tracking so dashboard data is generated directly from this device.
+      // Start server inference tracker first; fallback to local tracker if server is unavailable.
       try {
-        const tracker = new LaptopFocusTracker();
-        await tracker.start();
+        let tracker: FocusTrackerRuntime | null = null;
+        let trackerSource: TrackerSource = 'ml_inference_api';
+        let label = 'Server ML inference';
+
+        try {
+          const remoteTracker = new InferenceFocusTracker();
+          await remoteTracker.start();
+          tracker = remoteTracker;
+        } catch (remoteError) {
+          console.warn('Could not start server inference tracker. Falling back to local webcam tracker.', remoteError);
+          const fallbackTracker = new LaptopFocusTracker();
+          await fallbackTracker.start();
+          tracker = fallbackTracker;
+          trackerSource = 'laptop_webcam';
+          label = 'Laptop webcam (fallback)';
+        }
+
         localFocusTrackerRef.current = tracker;
+        trackerSourceRef.current = trackerSource;
+        setActiveTrackerLabel(label);
         setIsLocalTrackerRunning(true);
-        setToastMessage(`Focus tracking started (${res.focusSessionId.slice(0, 6)}...)`);
+        setToastMessage(`Focus tracking started (${res.focusSessionId.slice(0, 6)}...) via ${label}.`);
       } catch (trackerError) {
         localFocusTrackerRef.current = null;
+        trackerSourceRef.current = null;
+        setActiveTrackerLabel(null);
         setIsLocalTrackerRunning(false);
-        console.warn('Could not start laptop webcam tracker:', trackerError);
-        setToastMessage('Focus started, but webcam tracking is unavailable.');
+        console.warn('Could not start any focus tracker:', trackerError);
+        setToastMessage('Focus started, but tracking is unavailable on this device.');
       }
     } catch (error) {
       console.error('Error starting focus session:', error);
@@ -573,7 +617,10 @@ export default function Chat({ user }: ChatProps) {
     if (!user || !activeFocusSession) return;
     setFocusBusy(true);
     const tracker = localFocusTrackerRef.current;
+    const trackerSource = trackerSourceRef.current;
     localFocusTrackerRef.current = null;
+    trackerSourceRef.current = null;
+    setActiveTrackerLabel(null);
     setIsLocalTrackerRunning(false);
     let sessionStopped = false;
     try {
@@ -590,7 +637,7 @@ export default function Chat({ user }: ChatProps) {
           {
             focusSessionId: activeFocusSession.id,
             userId: user.uid,
-            source: 'laptop_webcam',
+            source: trackerSource ?? 'laptop_webcam',
             courseId: activeFocusSession.courseId || null,
             sessionId: activeFocusSession.sessionId || null,
             createdAt: serverTimestamp(),
@@ -598,13 +645,20 @@ export default function Chat({ user }: ChatProps) {
           },
           { merge: true }
         );
-        setToastMessage('Focus tracking stopped. Summary saved from laptop webcam.');
+        const sourceText = trackerSource === 'ml_inference_api' ? 'server ML inference' : 'laptop webcam';
+        setToastMessage(`Focus tracking stopped. Summary saved from ${sourceText}.`);
       } else {
-        setToastMessage('Focus tracking stopped. No webcam summary was captured.');
+        setToastMessage('Focus tracking stopped. No tracking summary was captured.');
       }
     } catch (error) {
       if (tracker && !sessionStopped) {
         localFocusTrackerRef.current = tracker;
+        trackerSourceRef.current = trackerSource;
+        if (trackerSource === 'ml_inference_api') {
+          setActiveTrackerLabel('Server ML inference');
+        } else if (trackerSource === 'laptop_webcam') {
+          setActiveTrackerLabel('Laptop webcam (fallback)');
+        }
         setIsLocalTrackerRunning(true);
       }
       console.error('Error stopping focus session:', error);
@@ -869,7 +923,7 @@ export default function Chat({ user }: ChatProps) {
                 {activeFocusSession && (
                   <div className="chat-header-meta">
                     <span className="chat-header-pill">Focus active</span>
-                    <span>Laptop webcam</span>
+                    <span>{activeTrackerLabel ?? 'Webcam tracking'}</span>
                   </div>
                 )}
               </div>
@@ -971,13 +1025,13 @@ export default function Chat({ user }: ChatProps) {
             {isLocalTrackerRunning ? (
               <div className="preview-sidebar-empty">
                 <p>
-                  Laptop webcam tracking is running in the background. Live preview pauses during tracking to avoid camera conflicts.
+                  Focus tracking is running in the background. Live preview pauses during tracking to avoid camera conflicts.
                 </p>
               </div>
             ) : !cameraPreviewAfterCalibration ? (
               <div className="preview-sidebar-empty">
                 <p>
-                  Start Focus to calibrate your laptop webcam. Once calibration is complete, the live preview will stay here while you study.
+                  Start Focus to calibrate your webcam. Once calibration is complete, the live preview will stay here while you study.
                 </p>
               </div>
             ) : (

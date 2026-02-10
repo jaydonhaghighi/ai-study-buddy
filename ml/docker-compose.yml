@@ -36,6 +36,7 @@ services:
     environment:
       STUDYBUDDY_MODEL_PATH: /app/artifacts/export/best_model.keras
       STUDYBUDDY_IMAGE_SIZE: 224
+      STUDYBUDDY_CORS_ORIGINS: ${STUDYBUDDY_CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
     command: uvicorn studybuddy_ml.serve_api:app --host 0.0.0.0 --port 8000
     ports:
       - "8001:8000"

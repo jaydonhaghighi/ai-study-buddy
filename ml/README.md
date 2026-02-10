@@ -76,6 +76,24 @@ Run smoke test manually at any time:
 make smoke-inference
 ```
 
+## App integration (Milestone 6)
+
+The web app can stream webcam frames to the inference API during focus sessions.
+
+Frontend env (`.env` in repo root):
+
+```bash
+VITE_INFERENCE_API_BASE_URL=http://localhost:8001
+```
+
+Inference API CORS is controlled with:
+
+```bash
+STUDYBUDDY_CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+```
+
+This is already wired in `ml/docker-compose.yml` with sensible defaults for local Vite dev.
+
 ## CLI commands (inside container or local venv)
 
 ```bash
