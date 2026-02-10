@@ -31,7 +31,7 @@ cleanup() {
 trap cleanup EXIT
 
 cat <<'EOF' | base64 --decode > "${tmp_img}"
-iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9W8xDbYAAAAASUVORK5CYII=
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYGAAAAAEAAH2FzhVAAAAAElFTkSuQmCC
 EOF
 
 predict_json="$(curl -fsS -X POST "${BASE_URL}/predict" -F "file=@${tmp_img};type=image/png")"
