@@ -29,10 +29,9 @@ async function fetchFunction(endpoint: string, options: RequestInit = {}) {
 
 export async function startFocusSession(params: {
   userId: string;
-  deviceId?: string;
   courseId?: string;
   sessionId?: string;
-  source?: 'pi' | 'webcam';
+  source?: 'webcam';
 }): Promise<{ ok: boolean; focusSessionId: string }> {
   const res = await fetchFunction('/focusStart', {
     method: 'POST',
@@ -44,7 +43,6 @@ export async function startFocusSession(params: {
 export async function stopFocusSession(params: {
   userId: string;
   focusSessionId: string;
-  deviceId?: string;
 }): Promise<{ ok: boolean }> {
   const res = await fetchFunction('/focusStop', {
     method: 'POST',

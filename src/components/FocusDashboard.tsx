@@ -19,7 +19,6 @@ type FocusSummaryDoc = {
   id: string;
   userId: string;
   focusSessionId?: string;
-  deviceId?: string | null;
   courseId?: string | null;
   sessionId?: string | null; // preferred (matches focusSessions.sessionId)
   courseSessionId?: string | null; // legacy/alternate
@@ -95,7 +94,6 @@ export default function FocusDashboard({ userId }: { userId: string }) {
             id: d.id,
             userId: data.userId,
             focusSessionId: data.focusSessionId,
-            deviceId: data.deviceId ?? null,
             courseId: data.courseId ?? null,
             sessionId: data.sessionId ?? null,
             courseSessionId: data.courseSessionId ?? null,
