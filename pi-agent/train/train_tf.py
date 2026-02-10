@@ -59,22 +59,95 @@ def compute_class_weights(train_dir: Path) -> tuple[dict[int, float], dict[str, 
     return weights, counts
 
 
-def build_model(input_size: int, num_classes: int) -> tf.keras.Model:
+def _build_backbone(backbone: str, input_size: int) -> tuple[tf.keras.Model, str]:
+    """
+    Returns (backbone_model, preprocess_kind).
+
+    preprocess_kind is used to keep preprocessing *inside the model graph* so that
+    the exported TFLite model is self-contained and the Pi agent can pass raw
+    0..255 RGB face crops.
+    """
+    b = (backbone or "").strip().lower()
+
+    if b in {"mobilenetv3small", "mobilenet_v3_small", "mnetv3small"}:
+        base = tf.keras.applications.MobileNetV3Small(
+            input_shape=(input_size, input_size, 3),
+            include_top=False,
+            weights="imagenet",
+            name="backbone",
+        )
+        return base, "mobilenet"
+
+    if b in {"mobilenetv3large", "mobilenet_v3_large", "mnetv3large"}:
+        base = tf.keras.applications.MobileNetV3Large(
+            input_shape=(input_size, input_size, 3),
+            include_top=False,
+            weights="imagenet",
+            name="backbone",
+        )
+        return base, "mobilenet"
+
+    if b in {"efficientnetlite0", "efficientnet_lite0", "enlite0"}:
+        # EfficientNet-Lite is not present in all TF builds; best-effort support.
+        EfficientNetLite0 = getattr(tf.keras.applications, "EfficientNetLite0", None)
+        if EfficientNetLite0 is None:
+            try:
+                from tensorflow.keras.applications.efficientnet_lite import (  # type: ignore
+                    EfficientNetLite0 as _EfficientNetLite0,
+                )
+            except Exception as e:
+                raise RuntimeError(
+                    "EfficientNetLite0 is not available in this TensorFlow build. "
+                    "Try a different backbone (e.g. mobilenetv3small) or install a TF version that includes EfficientNet-Lite."
+                ) from e
+            EfficientNetLite0 = _EfficientNetLite0
+
+        base = EfficientNetLite0(
+            input_shape=(input_size, input_size, 3),
+            include_top=False,
+            weights="imagenet",
+            name="backbone",
+        )
+        return base, "efficientnet"
+
+    # Default / fallback
     base = tf.keras.applications.MobileNetV2(
         input_shape=(input_size, input_size, 3),
         include_top=False,
         weights="imagenet",
         name="backbone",
     )
+    return base, "mobilenet"
+
+
+def _apply_preprocess(x: tf.Tensor, preprocess_kind: str) -> tf.Tensor:
+    """
+    Apply preprocessing in-graph so TFLite is self-contained.
+    """
+    kind = (preprocess_kind or "").strip().lower()
+    if kind == "mobilenet":
+        # MobileNetV2/V3 expect inputs in [-1, 1] after preprocessing.
+        # Using a layer avoids hard dependency on app-specific preprocess functions.
+        return tf.keras.layers.Rescaling(scale=1.0 / 127.5, offset=-1.0, name="preprocess_rescale")(x)
+
+    if kind == "efficientnet":
+        # EfficientNet family commonly expects [0, 1] scaling.
+        return tf.keras.layers.Rescaling(scale=1.0 / 255.0, name="preprocess_rescale")(x)
+
+    return x
+
+
+def build_model(input_size: int, num_classes: int, backbone: str) -> tf.keras.Model:
+    base, preprocess_kind = _build_backbone(backbone, input_size=input_size)
     base.trainable = False
 
-    inputs = tf.keras.Input(shape=(input_size, input_size, 3))
-    x = tf.keras.applications.mobilenet_v2.preprocess_input(inputs)
+    inputs = tf.keras.Input(shape=(input_size, input_size, 3), name="image")
+    x = _apply_preprocess(inputs, preprocess_kind=preprocess_kind)
     x = base(x, training=False)
     x = tf.keras.layers.GlobalAveragePooling2D()(x)
     x = tf.keras.layers.Dropout(0.3)(x)
-    outputs = tf.keras.layers.Dense(num_classes, activation="softmax")(x)
-    model = tf.keras.Model(inputs, outputs)
+    outputs = tf.keras.layers.Dense(num_classes, activation="softmax", name="probs")(x)
+    model = tf.keras.Model(inputs, outputs, name="attention_direction_model")
     return model
 
 
@@ -107,7 +180,7 @@ def find_backbone(model: tf.keras.Model) -> tf.keras.Model:
         if isinstance(layer, tf.keras.Model) and hasattr(layer, "layers") and len(layer.layers) > 10:
             return layer
 
-    raise RuntimeError("Could not locate MobileNetV2 backbone layer to fine-tune.")
+    raise RuntimeError("Could not locate backbone layer to fine-tune.")
 
 def evaluate_detailed(model: tf.keras.Model, ds) -> dict:
     """
@@ -153,7 +226,9 @@ def evaluate_detailed(model: tf.keras.Model, ds) -> dict:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Fine-tune a MobileNetV2 attention direction classifier (5-way softmax).")
+    parser = argparse.ArgumentParser(
+        description="Fine-tune an attention direction classifier (5-way softmax) and export TFLite."
+    )
     parser.add_argument("--data-dir", help="Directory with class subfolders (quick experiments)")
     parser.add_argument("--train-dir", help="Directory with class subfolders for training (preferred)")
     parser.add_argument("--val-dir", help="Directory with class subfolders for validation (preferred)")
@@ -166,6 +241,12 @@ def main():
     parser.add_argument("--label-smoothing", type=float, default=0.06)
     parser.add_argument("--no-augment", action="store_true", help="Disable data augmentation (not recommended for LOPO)")
     parser.add_argument("--no-class-weights", action="store_true", help="Disable class weights (not recommended if imbalanced)")
+    parser.add_argument(
+        "--backbone",
+        default="mobilenetv3small",
+        choices=["mobilenetv3small", "mobilenetv3large", "mobilenetv2", "efficientnetlite0"],
+        help="Backbone architecture. Default is a Pi-friendly MobileNetV3Small.",
+    )
     parser.add_argument("--out-dir", default="models")
     parser.add_argument("--tflite-name", default="focus_model.tflite")
     parser.add_argument("--quantize", action="store_true", help="Enable dynamic range quantization")
@@ -220,7 +301,7 @@ def main():
         print("Train class counts:", counts)
         print("Using class_weight:", class_weight)
 
-    model = build_model(args.input_size, num_classes=len(LABELS))
+    model = build_model(args.input_size, num_classes=len(LABELS), backbone=args.backbone)
     model.compile(
         optimizer=tf.keras.optimizers.Adam(1e-3),
         loss=tf.keras.losses.CategoricalCrossentropy(label_smoothing=args.label_smoothing),

@@ -1,4 +1,4 @@
-## Participant guide: record “looking at screen” data (laptop webcam)
+## Participant guide: record attention direction data (laptop webcam)
 
 This takes about **8–10 minutes** and works on **macOS** and **Windows**.
 
@@ -7,47 +7,15 @@ You can either:
 - download the `pi-agent/` folder from the project owner, or
 - clone the repo and use `pi-agent/`.
 
-### 2) Install dependencies (one-time)
+### 2) Run the guided session (web collector)
 
-#### macOS
+Data collection is done via the **web-based collector** (more reliable across OSes).
 
-```bash
-cd pi-agent
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements-collect.txt
-```
+1) Run the web app and open:
+- `http://localhost:5173/collect` (dev), or
+- your deployed site at `/collect`
 
-#### Windows (PowerShell)
-
-```powershell
-cd pi-agent
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements-collect.txt
-```
-
-### 3) Run the guided session
-
-#### macOS
-
-```bash
-cd pi-agent
-python3 -m studybuddy_pi collect-data --participant pXX --session s01 --placement laptop_webcam
-```
-
-#### Windows (PowerShell)
-
-```powershell
-cd pi-agent
-py -m studybuddy_pi collect-data --participant pXX --session s01 --placement laptop_webcam
-```
-
-If the webcam doesn't open, try a different index:
-
-```bash
-python -m studybuddy_pi collect-data --webcam 1 --participant pXX --session s01 --placement laptop_webcam
-```
+2) Fill in `participant` / `session` / `placement` and follow the guided flow.
 
 macOS camera permission:
 - If you see “not authorized to capture video”, enable camera access for your Terminal/Python in:
@@ -59,20 +27,14 @@ Windows camera permission:
   - turn on **Let desktop apps access your camera**
 
 Linux headless note:
-- If you’re on a machine without a desktop display, run with:
+- If you’re on a machine without a desktop display, use a machine with a browser + camera for collection.
 
-```bash
-python -m studybuddy_pi collect-data --no-preview --participant pXX --session s01 --placement laptop_webcam
-```
-
-When the preview window opens:
-- **Press Enter** to begin.
-- Follow the on-screen prompts. The program will tell you *exactly* where to look:
-  - **LOOK AT SCREEN**: look at the **center of your screen** (as if reading).
-  - **LOOK AWAY**: it will specify a direction (LEFT / RIGHT / UP / DOWN). Look fully away from the screen in that direction.
-- Keys:
-  - `Q` quit
-  - `S` skip the current condition (e.g., glasses/dim light if not applicable)
+During the flow you’ll be prompted to look in 5 directions:
+- **screen**
+- **away_left**
+- **away_right**
+- **away_up**
+- **away_down**
 
 ### 4) Send the output back
 
@@ -87,5 +49,5 @@ Please zip that entire folder and send it back.
 It contains labeled face crops in:
 
 ```
-face/<participant>/<session>/<placement_condition>/{looking,not_looking}/*.jpg
+face/<participant>/<session>/<placement_condition>/{screen,away_left,away_right,away_up,away_down}/*.jpg
 ```

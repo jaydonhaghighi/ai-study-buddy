@@ -1,8 +1,16 @@
 requests==2.32.3
 pydantic==2.10.4
 
-# Optional on Raspberry Pi (install separately depending on OS image)
-# tflite-runtime
-# opencv-python (required for camera + calibration preview)
+# Everything needed for local development + training + inference.
+#
+# Notes:
+# - TensorFlow may require Python 3.12 (or 3.11) depending on your OS.
+# - On Raspberry Pi, you can optionally install `tflite-runtime` (ARM wheels) instead of TensorFlow.
+numpy
+opencv-python
+tensorflow
+mlflow
+mediapipe
 
-
+# Prefer tflite-runtime on Raspberry Pi when available (optional).
+tflite-runtime; (platform_machine == "aarch64" or platform_machine == "armv7l")

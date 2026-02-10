@@ -51,6 +51,14 @@ venv/
 data/
 pi-agent/data/
 
+# Local model artifacts / experiment runs (keep lightweight reports tracked)
+pi-agent/models/
+pi-agent/runs/**
+!pi-agent/runs/
+!pi-agent/runs/index.csv
+!pi-agent/runs/REPORT.md
+!pi-agent/runs/PROFESSOR_BRIEF.md
+
 # Project-specific (kept explicit for clarity)
 pi-agent/.venv/
 .specstory/.what-is-this.md
@@ -61,3 +69,8 @@ CAPSTONE_PROGRESS_AUDIT.md
 pi-agent/train/run_lopo.sh
 .gitignore
 pi-agent/train/setup_training.sh
+pi-agent/train/recrop_faces.py
+pi-agent/data_recropped_margin025/
+pi-agent/data_aligned_m025/
+pi-agent/data_aligned_m025_v2/
+mlflow_artifacts/
