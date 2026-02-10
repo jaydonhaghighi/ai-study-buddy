@@ -288,7 +288,7 @@ export default function FocusDashboard({ userId }: { userId: string }) {
         <div className="focusdash-empty">
           <div className="focusdash-empty-title">No focus summaries yet</div>
           <div className="focusdash-empty-subtitle">
-            Start and stop a focus session while the Pi agent is running, then come back here.
+            Start and stop a focus session with webcam tracking enabled, then come back here.
           </div>
         </div>
       ) : (
@@ -423,7 +423,7 @@ export default function FocusDashboard({ userId }: { userId: string }) {
               </table>
             </div>
             <div className="focusdash-card-hint">
-              Tip: focus is computed from the Pi agent’s smoothed state; direction comes from the model’s predicted labels.
+              Tip: focus is computed from webcam-based face tracking; direction comes from predicted attention labels.
             </div>
           </div>
         </>

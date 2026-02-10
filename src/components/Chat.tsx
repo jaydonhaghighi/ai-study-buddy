@@ -8,6 +8,7 @@ import { User, signInWithEmailAndPassword, createUserWithEmailAndPassword, signO
 import { 
   collection, 
   addDoc, 
+  setDoc,
   query, 
   where,
   orderBy,
@@ -19,7 +20,8 @@ import {
   doc
 } from 'firebase/firestore';
 import { getAIResponse, createGenkitChat } from '../services/genkit-service';
-import { claimDevice, startFocusSession, stopFocusSession } from '../services/focus-service';
+import { startFocusSession, stopFocusSession } from '../services/focus-service';
+import { LaptopFocusTracker } from '../services/laptop-focus-tracker';
 import PiCalibrationPreview from './PiCalibrationPreview';
 import FocusDashboard from './FocusDashboard';
 import settingsIcon from '../public/settings.svg';
@@ -60,21 +62,14 @@ interface ChatSession {
   lastMessageAt: Date | null;
 }
 
-interface Device {
-  id: string;
-  claimCode?: string;
-  status?: string;
-  pairedUserId?: string;
-  activeFocusSessionId?: string | null;
-}
-
 interface FocusSession {
   id: string;
   userId: string;
-  deviceId: string;
+  deviceId?: string | null;
   status: string;
   courseId?: string | null;
   sessionId?: string | null;
+  startedAt?: Date | null;
 }
 
 interface ChatProps {
@@ -129,22 +124,16 @@ export default function Chat({ user }: ChatProps) {
     localStorage.setItem('cameraPreviewEnabled', cameraPreviewEnabled ? '1' : '0');
   }, [cameraPreviewEnabled]);
 
-  // Device + Focus Tracking State
-  const [claimCode, setClaimCode] = useState('');
-  const [devices, setDevices] = useState<Device[]>([]);
-  const [devicesLoaded, setDevicesLoaded] = useState(false);
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
+  // Focus Tracking State
   const [activeFocusSession, setActiveFocusSession] = useState<FocusSession | null>(null);
   const [focusBusy, setFocusBusy] = useState(false);
-  const [showPairModal, setShowPairModal] = useState(false);
+  const [isLocalTrackerRunning, setIsLocalTrackerRunning] = useState(false);
   const [showCalibrationModal, setShowCalibrationModal] = useState(false);
-  const hasAutoOpenedPairModal = useRef(false);
-  const userOverrodeDeviceSelectionRef = useRef(false);
   const [pendingFocusStart, setPendingFocusStart] = useState<{
-    deviceId: string;
     courseId?: string;
     sessionId?: string;
   } | null>(null);
+  const localFocusTrackerRef = useRef<LaptopFocusTracker | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -204,79 +193,6 @@ export default function Chat({ user }: ChatProps) {
     return () => unsubscribe();
   }, [user]);
 
-  // Devices (paired to user)
-  useEffect(() => {
-    if (!user) {
-      setDevices([]);
-      setDevicesLoaded(false);
-      setSelectedDeviceId('');
-      userOverrodeDeviceSelectionRef.current = false;
-      return;
-    }
-
-    setDevicesLoaded(false);
-    const q = query(
-      collection(db, 'devices'),
-      where('pairedUserId', '==', user.uid)
-    );
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const ds = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as any));
-      // Sort newest-first by pairedAt (fallback updatedAt, then createdAt).
-      const sorted = ds
-        .slice()
-        .sort((a: any, b: any) => {
-          const ta =
-            (a?.pairedAt?.toDate?.() ? a.pairedAt.toDate().getTime() : null) ??
-            (a?.updatedAt?.toDate?.() ? a.updatedAt.toDate().getTime() : null) ??
-            (a?.createdAt?.toDate?.() ? a.createdAt.toDate().getTime() : 0);
-          const tb =
-            (b?.pairedAt?.toDate?.() ? b.pairedAt.toDate().getTime() : null) ??
-            (b?.updatedAt?.toDate?.() ? b.updatedAt.toDate().getTime() : null) ??
-            (b?.createdAt?.toDate?.() ? b.createdAt.toDate().getTime() : 0);
-          return tb - ta;
-        })
-        .map((d: any) => d as Device);
-
-      setDevices(sorted);
-      setDevicesLoaded(true);
-
-      if (sorted.length === 0) {
-        setSelectedDeviceId('');
-        userOverrodeDeviceSelectionRef.current = false;
-        return;
-      }
-
-      const newestId = sorted[0].id;
-      const selectedStillExists = !!selectedDeviceId && sorted.some((d) => d.id === selectedDeviceId);
-
-      // Auto-select the newest device if:
-      // - nothing selected yet, or selected device disappeared, or user never manually chose a device.
-      if (!selectedDeviceId || !selectedStillExists || !userOverrodeDeviceSelectionRef.current) {
-        if (newestId && newestId !== selectedDeviceId) {
-          setSelectedDeviceId(newestId);
-        }
-      }
-    });
-
-    return () => unsubscribe();
-  }, [user, selectedDeviceId]);
-
-  // Prompt pairing via modal if user has no paired devices
-  useEffect(() => {
-    if (!user) {
-      hasAutoOpenedPairModal.current = false;
-      setShowPairModal(false);
-      return;
-    }
-    if (!devicesLoaded) return;
-    if (hasAutoOpenedPairModal.current) return;
-    if (devices.length === 0) {
-      setShowPairModal(true);
-      hasAutoOpenedPairModal.current = true;
-    }
-  }, [user, devicesLoaded, devices.length]);
-
   // Active focus session (assume at most 1 active per user for MVP)
   useEffect(() => {
     if (!user) {
@@ -296,11 +212,39 @@ export default function Chat({ user }: ChatProps) {
         return;
       }
       const doc0 = snapshot.docs[0];
-      setActiveFocusSession({ id: doc0.id, ...doc0.data() } as FocusSession);
+      const data = doc0.data() as any;
+      setActiveFocusSession({
+        id: doc0.id,
+        ...data,
+        startedAt: data.startedAt instanceof Timestamp ? data.startedAt.toDate() : null,
+      } as FocusSession);
     });
 
     return () => unsubscribe();
   }, [user]);
+
+  useEffect(() => {
+    return () => {
+      const tracker = localFocusTrackerRef.current;
+      localFocusTrackerRef.current = null;
+      if (tracker) {
+        void tracker.stop().catch((error) => {
+          console.error('Error stopping local focus tracker during cleanup:', error);
+        });
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (activeFocusSession) return;
+    const tracker = localFocusTrackerRef.current;
+    if (!tracker) return;
+    localFocusTrackerRef.current = null;
+    setIsLocalTrackerRunning(false);
+    void tracker.stop().catch((error) => {
+      console.error('Error stopping local focus tracker after session ended:', error);
+    });
+  }, [activeFocusSession]);
 
   // 2. Fetch Sessions (when a course is expanded)
   useEffect(() => {
@@ -559,56 +503,36 @@ export default function Chat({ user }: ChatProps) {
   const handleSignOut = async () => {
     try {
       setSettingsOpen(false);
+      const tracker = localFocusTrackerRef.current;
+      localFocusTrackerRef.current = null;
+      if (tracker) {
+        try {
+          await tracker.stop();
+        } catch (trackerError) {
+          console.warn('Error stopping tracker during sign out:', trackerError);
+        }
+      }
+      setIsLocalTrackerRunning(false);
       await signOut(auth);
       setCourses([]);
       setSessions([]);
       setChats([]);
       setMessages([]);
       setSelectedChatId(null);
-      setDevices([]);
-      setSelectedDeviceId('');
-      userOverrodeDeviceSelectionRef.current = false;
       setActiveFocusSession(null);
     } catch (error) {
       console.error("Sign out error:", error);
     }
   };
 
-  const handleClaimDeviceFromModal = async () => {
-    if (!user || !claimCode.trim()) return;
-    const submittedCode = claimCode.trim();
-    setFocusBusy(true);
-    try {
-      await claimDevice(submittedCode, user.uid);
-      setToastMessage("Device paired. Turn on your Pi agent to complete pairing.");
-      setClaimCode('');
-      setShowPairModal(false);
-    } catch (error) {
-      console.error('Error claiming device:', error);
-      setToastMessage("Error pairing device");
-    } finally {
-      setFocusBusy(false);
-    }
-  };
-
-  const openPairModalFromSettings = () => {
-    setSettingsOpen(false);
-    setShowPairModal(true);
-  };
-
   const handleStartFocus = async () => {
     if (!user) return;
-    if (!selectedDeviceId) {
-      setToastMessage("No paired device. Pair a device first.");
-      setShowPairModal(true);
-      return;
-    }
     // Optional: link focus session to the currently expanded course/session (chapter)
     const courseId = expandedCourseId || undefined;
     const sessionId = expandedSessionId || undefined;
 
     // Calibration gate: do not start focus until calibration completes
-    setPendingFocusStart({ deviceId: selectedDeviceId, courseId, sessionId });
+    setPendingFocusStart({ courseId, sessionId });
     setShowCalibrationModal(true);
   };
 
@@ -620,11 +544,24 @@ export default function Chat({ user }: ChatProps) {
     try {
       const res = await startFocusSession({
         userId: user.uid,
-        deviceId: pendingFocusStart.deviceId,
         courseId: pendingFocusStart.courseId,
         sessionId: pendingFocusStart.sessionId,
+        source: 'webcam',
       });
-      setToastMessage(`Focus tracking started (${res.focusSessionId.slice(0, 6)}...)`);
+
+      // Start local webcam tracking so dashboard data is generated directly from this device.
+      try {
+        const tracker = new LaptopFocusTracker();
+        await tracker.start();
+        localFocusTrackerRef.current = tracker;
+        setIsLocalTrackerRunning(true);
+        setToastMessage(`Focus tracking started (${res.focusSessionId.slice(0, 6)}...)`);
+      } catch (trackerError) {
+        localFocusTrackerRef.current = null;
+        setIsLocalTrackerRunning(false);
+        console.warn('Could not start laptop webcam tracker:', trackerError);
+        setToastMessage('Focus started, but webcam tracking is unavailable.');
+      }
     } catch (error) {
       console.error('Error starting focus session:', error);
       setToastMessage("Error starting focus tracking");
@@ -637,10 +574,43 @@ export default function Chat({ user }: ChatProps) {
   const handleStopFocus = async () => {
     if (!user || !activeFocusSession) return;
     setFocusBusy(true);
+    const tracker = localFocusTrackerRef.current;
+    localFocusTrackerRef.current = null;
+    setIsLocalTrackerRunning(false);
+    let sessionStopped = false;
     try {
-      await stopFocusSession({ userId: user.uid, focusSessionId: activeFocusSession.id, deviceId: activeFocusSession.deviceId });
-      setToastMessage("Focus tracking stopped. Waiting for Pi summary...");
+      await stopFocusSession({
+        userId: user.uid,
+        focusSessionId: activeFocusSession.id,
+        deviceId: activeFocusSession.deviceId || undefined,
+      });
+      sessionStopped = true;
+
+      if (tracker) {
+        const summary = await tracker.stop();
+        await setDoc(
+          doc(db, 'focusSummaries', activeFocusSession.id),
+          {
+            focusSessionId: activeFocusSession.id,
+            userId: user.uid,
+            source: 'laptop_webcam',
+            deviceId: null,
+            courseId: activeFocusSession.courseId || null,
+            sessionId: activeFocusSession.sessionId || null,
+            createdAt: serverTimestamp(),
+            ...summary,
+          },
+          { merge: true }
+        );
+        setToastMessage('Focus tracking stopped. Summary saved from laptop webcam.');
+      } else {
+        setToastMessage('Focus tracking stopped. No webcam summary was captured.');
+      }
     } catch (error) {
+      if (tracker && !sessionStopped) {
+        localFocusTrackerRef.current = tracker;
+        setIsLocalTrackerRunning(true);
+      }
       console.error('Error stopping focus session:', error);
       setToastMessage("Error stopping focus tracking");
     } finally {
@@ -827,7 +797,7 @@ export default function Chat({ user }: ChatProps) {
               </h2>
               <p className="chat-header-subtitle">
                 {mainView === 'dashboard'
-                  ? 'Visualize your focus sessions uploaded from the Pi.'
+                  ? 'Visualize focus sessions captured from your webcam.'
                   : (currentChat ? 'AI Study Buddy' : 'Choose an existing chat or create a new one to get started')}
               </p>
             </div>
@@ -889,15 +859,6 @@ export default function Chat({ user }: ChatProps) {
                         </button>
                         <button
                           type="button"
-                          className="chat-settings-item"
-                          role="menuitem"
-                          onClick={openPairModalFromSettings}
-                          disabled={focusBusy}
-                        >
-                          Pair device
-                        </button>
-                        <button
-                          type="button"
                           className="chat-settings-item chat-settings-item-danger"
                           role="menuitem"
                           onClick={handleSignOut}
@@ -912,7 +873,7 @@ export default function Chat({ user }: ChatProps) {
                 {activeFocusSession && (
                   <div className="chat-header-meta">
                     <span className="chat-header-pill">Focus active</span>
-                    <span>Device {activeFocusSession.deviceId.slice(0, 8)}…</span>
+                    <span>Laptop webcam</span>
                   </div>
                 )}
               </div>
@@ -1011,10 +972,16 @@ export default function Chat({ user }: ChatProps) {
           </div>
 
           <div className="preview-sidebar-body">
-            {!cameraPreviewAfterCalibration ? (
+            {isLocalTrackerRunning ? (
               <div className="preview-sidebar-empty">
                 <p>
-                  Start Focus to run the usual calibration. Once calibration is complete, the live preview will stay here while you study.
+                  Laptop webcam tracking is running in the background. Live preview pauses during tracking to avoid camera conflicts.
+                </p>
+              </div>
+            ) : !cameraPreviewAfterCalibration ? (
+              <div className="preview-sidebar-empty">
+                <p>
+                  Start Focus to calibrate your laptop webcam. Once calibration is complete, the live preview will stay here while you study.
                 </p>
               </div>
             ) : (
@@ -1027,61 +994,6 @@ export default function Chat({ user }: ChatProps) {
       {toastMessage && (
         <div className="toast-notification">
           {toastMessage}
-        </div>
-      )}
-
-      {showPairModal && (
-        <div
-          className="modal-overlay"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Pair a device"
-          onMouseDown={(e) => {
-            // Close when clicking the backdrop (but not when interacting with the modal)
-            if (e.target === e.currentTarget) setShowPairModal(false);
-          }}
-        >
-          <div className="modal">
-            <div className="modal-header">
-              <div>
-                <h3 className="modal-title">Pair your Raspberry Pi</h3>
-                <p className="modal-subtitle">Enter the claim code shown by the Pi agent.</p>
-              </div>
-              <button
-                className="modal-close"
-                onClick={() => setShowPairModal(false)}
-                aria-label="Close"
-                type="button"
-              >
-                ×
-              </button>
-            </div>
-
-            <div className="modal-body">
-              <div className="modal-row">
-                <input
-                  value={claimCode}
-                  onChange={(e) => setClaimCode(e.target.value)}
-                  placeholder="e.g. ABCD-1234"
-                  className="modal-field"
-                  disabled={focusBusy}
-                  autoFocus
-                />
-                <button
-                  onClick={handleClaimDeviceFromModal}
-                  className="modal-btn modal-btn-primary"
-                  disabled={focusBusy || !claimCode.trim()}
-                  type="button"
-                >
-                  Pair
-                </button>
-              </div>
-
-              <div className="modal-hint">
-                After pairing, keep the Pi agent running so it can complete pairing and start receiving focus sessions.
-              </div>
-            </div>
-          </div>
         </div>
       )}
 
@@ -1102,7 +1014,7 @@ export default function Chat({ user }: ChatProps) {
             <div className="modal-header">
               <div>
                 <h3 className="modal-title">Camera calibration</h3>
-                <p className="modal-subtitle">Align your camera before tracking. This preview runs on your local network.</p>
+                <p className="modal-subtitle">Align your laptop webcam before focus tracking starts.</p>
               </div>
               <button
                 className="modal-close"
