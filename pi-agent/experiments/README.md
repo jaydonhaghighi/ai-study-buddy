@@ -85,6 +85,18 @@ cd pi-agent
 python experiments/headpose_eval.py --splits-dir /path/to/splits --tag headpose_eval --download-task
 ```
 
+Realtime webcam tester (yaw/pitch/roll + direction):
+
+```bash
+cd pi-agent
+python experiments/realtime_headpose.py --download-task --mirror
+```
+
+Keys:
+- `c`: calibrate neutral while looking at screen
+- `r`: reset neutral
+- `q`: quit
+
 ### Auto strategy: sweep → pick top K → LOPO
 
 This runs a sweep, picks the top K configs by mean macro-F1, then runs LOPO on those configs. Everything is tracked in MLflow with nested runs.

@@ -74,3 +74,4 @@ pi-agent/data_recropped_margin025/
 pi-agent/data_aligned_m025/
 pi-agent/data_aligned_m025_v2/
 mlflow_artifacts/
+artifacts/

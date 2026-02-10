@@ -90,3 +90,35 @@ python -m studybuddy_pi run
 - If no face is detected at runtime, the agent treats it as **not focused**.
 - You can tune `STUDYBUDDY_MODEL_THRESHOLD` to trade off false positives vs false negatives for the `screen` class.
 - Augmentations are designed to be label-safe (notably: **no horizontal flips**, since that would swap left/right).
+
+### Optional: clean bad samples before splitting
+
+You can automatically flag (and optionally quarantine) low-quality or suspiciously labeled images:
+
+- **Blur check**: Laplacian variance threshold
+- **Label check**: head-pose-derived label mismatch
+
+Dry-run (report only):
+
+```bash
+cd pi-agent
+python train/clean_dataset.py \
+  --runs-dir data_aligned_m025_v2 \
+  --merge-screen-down-focus \
+  --blur-laplacian-var-min 80 \
+  --out-report artifacts/data_clean/report.json \
+  --out-csv artifacts/data_clean/report.csv
+```
+
+Apply quarantine (move flagged images):
+
+```bash
+cd pi-agent
+python train/clean_dataset.py \
+  --runs-dir data_aligned_m025_v2 \
+  --merge-screen-down-focus \
+  --quarantine-dir artifacts/data_clean/quarantine \
+  --apply
+```
+
+Tip: start with dry-run, inspect `report.csv`, then run with `--apply`.

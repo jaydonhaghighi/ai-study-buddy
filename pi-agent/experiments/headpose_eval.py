@@ -87,7 +87,7 @@ class HeadPoseEstimator:
         opts = vision.FaceLandmarkerOptions(base_options=base, output_face_blendshapes=False, output_facial_transformation_matrixes=False, num_faces=1)
         self._landmarker = vision.FaceLandmarker.create_from_options(opts)
 
-    def estimate_yaw_pitch(self, bgr_image) -> tuple[float, float] | None:
+    def estimate_yaw_pitch_roll(self, bgr_image) -> tuple[float, float, float] | None:
         cv2 = self._cv2
         np = self._np
         mp = self._mp
@@ -148,12 +148,22 @@ class HeadPoseEstimator:
         if not singular:
             pitch = math.atan2(float(rmat[2, 1]), float(rmat[2, 2]))
             yaw = math.atan2(float(-rmat[2, 0]), float(sy))
+            roll = math.atan2(float(rmat[1, 0]), float(rmat[0, 0]))
         else:
             pitch = math.atan2(float(-rmat[1, 2]), float(rmat[1, 1]))
             yaw = math.atan2(float(-rmat[2, 0]), float(sy))
+            roll = 0.0
 
         pitch_deg = float(pitch * 180.0 / math.pi)
         yaw_deg = float(yaw * 180.0 / math.pi)
+        roll_deg = float(roll * 180.0 / math.pi)
+        return yaw_deg, pitch_deg, roll_deg
+
+    def estimate_yaw_pitch(self, bgr_image) -> tuple[float, float] | None:
+        ypr = self.estimate_yaw_pitch_roll(bgr_image)
+        if ypr is None:
+            return None
+        yaw_deg, pitch_deg, _roll_deg = ypr
         return yaw_deg, pitch_deg
 
 
