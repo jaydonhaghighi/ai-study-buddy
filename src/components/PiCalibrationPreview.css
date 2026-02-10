@@ -104,6 +104,12 @@
   display: block;
 }
 
+.pi-calibration-stream video {
+  width: 100%;
+  display: block;
+  transform: scaleX(-1);
+}
+
 .pi-calibration-metrics {
   display: flex;
   gap: 14px;

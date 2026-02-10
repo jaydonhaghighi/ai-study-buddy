@@ -422,7 +422,7 @@ export const deviceSessionSummary = onRequest(
 
 /**
  * POST /focus/start
- * Body: { userId: string, deviceId: string, courseId?: string, sessionId?: string }
+ * Body: { userId: string, deviceId?: string, courseId?: string, sessionId?: string, source?: "pi" | "webcam" }
  */
 export const focusStart = onRequest(
   FUNCTION_CONFIG,
@@ -432,28 +432,29 @@ export const focusStart = onRequest(
       return;
     }
     try {
-      const { userId, deviceId, courseId, sessionId } = req.body || {};
+      const { userId, deviceId, courseId, sessionId, source } = req.body || {};
       if (!userId || typeof userId !== "string") {
         badRequest(res, "Missing required field: userId");
         return;
       }
-      if (!deviceId || typeof deviceId !== "string") {
-        badRequest(res, "Missing required field: deviceId");
-        return;
-      }
 
-      const deviceRef = db.collection("devices").doc(deviceId);
-      const deviceDoc = await deviceRef.get();
-      if (!deviceDoc.exists) {
-        sendErrorResponse(res, 404, "Device not found");
-        return;
+      const usingDevice = typeof deviceId === "string" && deviceId.length > 0;
+      let deviceRef: any = null;
+      if (usingDevice) {
+        deviceRef = db.collection("devices").doc(deviceId);
+        const deviceDoc = await deviceRef.get();
+        if (!deviceDoc.exists) {
+          sendErrorResponse(res, 404, "Device not found");
+          return;
+        }
       }
 
       const focusSessionId = crypto.randomUUID();
       await db.collection("focusSessions").doc(focusSessionId).set({
         id: focusSessionId,
         userId,
-        deviceId,
+        deviceId: usingDevice ? deviceId : null,
+        source: source === "webcam" || !usingDevice ? "webcam" : "pi",
         status: "active",
         courseId: (typeof courseId === "string" ? courseId : null),
         sessionId: (typeof sessionId === "string" ? sessionId : null),
@@ -462,10 +463,12 @@ export const focusStart = onRequest(
         updatedAt: new Date(),
       });
 
-      await deviceRef.set(
-        { activeFocusSessionId: focusSessionId, updatedAt: new Date() },
-        { merge: true }
-      );
+      if (deviceRef) {
+        await deviceRef.set(
+          { activeFocusSessionId: focusSessionId, updatedAt: new Date() },
+          { merge: true }
+        );
+      }
 
       okJson(res, { ok: true, focusSessionId });
     } catch (error) {

@@ -27,19 +27,12 @@ async function fetchFunction(endpoint: string, options: RequestInit = {}) {
   return response;
 }
 
-export async function claimDevice(claimCode: string, userId: string): Promise<{ ok: boolean; deviceId: string; paired: boolean }> {
-  const res = await fetchFunction('/deviceClaim', {
-    method: 'POST',
-    body: JSON.stringify({ claimCode, userId }),
-  });
-  return await res.json();
-}
-
 export async function startFocusSession(params: {
   userId: string;
-  deviceId: string;
+  deviceId?: string;
   courseId?: string;
   sessionId?: string;
+  source?: 'pi' | 'webcam';
 }): Promise<{ ok: boolean; focusSessionId: string }> {
   const res = await fetchFunction('/focusStart', {
     method: 'POST',
