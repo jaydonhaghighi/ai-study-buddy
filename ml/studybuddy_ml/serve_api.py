@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 import tensorflow as tf
 from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from . import LABELS
@@ -18,6 +19,18 @@ from .temporal import SessionSummaryAccumulator, TemporalConfig, TemporalFocusEn
 
 MODEL_PATH = Path(os.getenv("STUDYBUDDY_MODEL_PATH", "/app/artifacts/export/best_model.keras"))
 IMAGE_SIZE = int(os.getenv("STUDYBUDDY_IMAGE_SIZE", "224"))
+CORS_ORIGINS_RAW = os.getenv(
+    "STUDYBUDDY_CORS_ORIGINS",
+    "http://localhost:5173,http://127.0.0.1:5173",
+)
+if CORS_ORIGINS_RAW.strip() == "*":
+    CORS_ORIGINS = ["*"]
+else:
+    CORS_ORIGINS = [
+        origin.strip()
+        for origin in CORS_ORIGINS_RAW.split(",")
+        if origin.strip()
+    ]
 
 
 @dataclass
@@ -56,6 +69,13 @@ class StopSessionResponse(BaseModel):
 
 
 app = FastAPI(title="StudyBuddy GPU Inference API", version="0.1.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 _model: tf.keras.Model | None = None
 _sessions: dict[str, SessionContext] = {}
 
