@@ -545,7 +545,6 @@ export default function Chat({ user }: ChatProps) {
         userId: user.uid,
         courseId: pendingFocusStart.courseId,
         sessionId: pendingFocusStart.sessionId,
-        source: 'webcam',
       });
 
       // Start local webcam tracking so dashboard data is generated directly from this device.
