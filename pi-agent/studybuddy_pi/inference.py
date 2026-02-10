@@ -11,6 +11,10 @@ class InferenceResult:
     is_focused: bool
     confidence: float | None = None
     label: str | None = None
+    # Continuous direction proxy derived from softmax (x~yaw, y~pitch), in [-1, 1].
+    direction: tuple[float, float] | None = None
+    # Optional extra bucket keys to increment in attentionLabelCounts.
+    bins: list[str] | None = None
 
 
 class FocusInference:
@@ -142,11 +146,30 @@ class FocusInference:
                 pass
 
         face = cv2.resize(face, (self.model_input_size, self.model_input_size), interpolation=cv2.INTER_AREA)
+        # IMPORTANT: keep pixel range 0..255 and let the exported model handle preprocessing.
+        # This avoids double-preprocessing when the training graph includes a preprocessing layer.
         face = face.astype(np.float32)
-        # MobileNetV2-style preprocess: scale to [-1, 1]
-        face = (face / 127.5) - 1.0
         face = np.expand_dims(face, axis=0)  # [1, H, W, 3]
         return face
+
+    @staticmethod
+    def _bin_01(v: float) -> str:
+        """
+        Bin a value in [-1, 1] into stable string keys for aggregation.
+        """
+        # Clamp to expected range
+        if v < -1.0:
+            v = -1.0
+        if v > 1.0:
+            v = 1.0
+
+        # 5 bins keeps cardinality reasonable.
+        edges = [-1.0, -0.5, -0.25, 0.25, 0.5, 1.0]
+        for lo, hi in zip(edges[:-1], edges[1:]):
+            # Include the right edge only for the final bin.
+            if (v >= lo and v < hi) or (hi == 1.0 and v <= hi):
+                return f"{lo:.2f}..{hi:.2f}"
+        return "-1.00..1.00"
 
     def _tflite_predict(self, frame: Any | None) -> InferenceResult:
         self._ensure_detectors()
@@ -210,8 +233,25 @@ class FocusInference:
         idx = int(vec.argmax())
         prob = float(vec[idx])
         label = self.labels[idx] if idx < len(self.labels) else None
+
+        # Continuous direction proxy (expected value over class vectors).
+        # screen -> (0, 0)
+        # away_left/right -> (-1/1, 0)
+        # away_up/down -> (0, 1/-1)
+        vx = 0.0
+        vy = 0.0
+        if vec.size >= 5:
+            p_screen, p_left, p_right, p_up, p_down = (float(vec[i]) for i in range(5))
+            vx = (-1.0 * p_left) + (1.0 * p_right)
+            vy = (1.0 * p_up) + (-1.0 * p_down)
+        direction = (vx, vy)
+        bins = [
+            f"yawBin:{self._bin_01(vx)}",
+            f"pitchBin:{self._bin_01(vy)}",
+        ]
+
         is_focused = (label == "screen") and (prob >= self.model_threshold)
-        return InferenceResult(is_focused=is_focused, confidence=prob, label=label)
+        return InferenceResult(is_focused=is_focused, confidence=prob, label=label, direction=direction, bins=bins)
 
     def _to_gray(self, frame: Any):
         cv2 = self._cv2
@@ -297,7 +337,14 @@ class FocusInference:
             is_focused = centered and eyes_found
         else:
             is_focused = score >= 0.6
-        return InferenceResult(is_focused=bool(is_focused), confidence=score, label=("screen" if is_focused else "away_down"))
+        label = "screen" if is_focused else "away_down"
+        # Best-effort continuous proxy even for heuristic mode.
+        direction = (0.0, 0.0) if label == "screen" else (0.0, -1.0)
+        bins = [
+            f"yawBin:{self._bin_01(direction[0])}",
+            f"pitchBin:{self._bin_01(direction[1])}",
+        ]
+        return InferenceResult(is_focused=bool(is_focused), confidence=score, label=label, direction=direction, bins=bins)
 
     def predict(self, frame: Any | None = None) -> InferenceResult:
         if self.simulate:

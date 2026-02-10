@@ -1,10 +1,20 @@
-## Training: "Looking at screen" classifier (fine-tune)
+## Training: attention direction classifier (5-way, fine-tune)
 
-This folder provides a **simple fine-tuning pipeline** for a binary classifier:
+This folder provides a **simple fine-tuning pipeline** for a 5-way attention direction classifier:
 
-- `looking` vs `not_looking`
-- MobileNetV2 backbone (pretrained) + small classifier head
-- Export to **TFLite** for Raspberry Pi inference
+- `screen`
+- `away_left`
+- `away_right`
+- `away_up`
+- `away_down`
+
+It uses a **MobileNetV2 backbone** (ImageNet pretrained) + a small softmax head, and exports to **TFLite** for Raspberry Pi inference.
+
+Important: label order is fixed across training + inference and must match:
+
+```python
+["screen", "away_left", "away_right", "away_up", "away_down"]
+```
 
 ### 1) Collect data (on the Pi)
 
@@ -25,8 +35,11 @@ pi-agent/data/
 So you end up with:
 
 ```
-data/run_<timestamp>/face/<participant>/<session>/<placement_condition>/looking/*
-data/run_<timestamp>/face/<participant>/<session>/<placement_condition>/not_looking/*
+data/run_<timestamp>/face/<participant>/<session>/<placement_condition>/screen/*
+data/run_<timestamp>/face/<participant>/<session>/<placement_condition>/away_left/*
+data/run_<timestamp>/face/<participant>/<session>/<placement_condition>/away_right/*
+data/run_<timestamp>/face/<participant>/<session>/<placement_condition>/away_up/*
+data/run_<timestamp>/face/<participant>/<session>/<placement_condition>/away_down/*
 ```
 
 ### 2) Prepare train/val/test splits (recommended)
@@ -41,9 +54,9 @@ python train/prepare_dataset.py --runs-dir data --out-dir data/splits --split-by
 Outputs:
 
 ```
-data/splits/train/{looking,not_looking}/*
-data/splits/val/{looking,not_looking}/*
-data/splits/test/{looking,not_looking}/*
+data/splits/train/{screen,away_left,away_right,away_up,away_down}/*
+data/splits/val/{screen,away_left,away_right,away_up,away_down}/*
+data/splits/test/{screen,away_left,away_right,away_up,away_down}/*
 ```
 
 ### 3) Train + export TFLite (on your laptop/desktop)
@@ -73,6 +86,7 @@ python -m studybuddy_pi run
 ```
 
 ### Notes
-- The model expects **face crops** (from the same collection script).
-- If no face is detected at runtime, it counts as **not looking**.
-- You can tune `STUDYBUDDY_MODEL_THRESHOLD` to trade off false positives vs false negatives.
+- The model expects **face crops** (from the same collection pipeline). At runtime, the Pi agent detects a face and classifies the face crop into one of the 5 labels.
+- If no face is detected at runtime, the agent treats it as **not focused**.
+- You can tune `STUDYBUDDY_MODEL_THRESHOLD` to trade off false positives vs false negatives for the `screen` class.
+- Augmentations are designed to be label-safe (notably: **no horizontal flips**, since that would swap left/right).

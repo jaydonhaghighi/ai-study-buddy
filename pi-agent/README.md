@@ -42,10 +42,11 @@ python -m studybuddy_pi run
 - Install OpenCV for encoding/face detection (`opencv-python`).
 - Use the provided systemd unit in `systemd/ai-study-buddy.service`.
 
-### Training a simple "looking at screen" model (fine-tune)
+### Training an attention direction model (fine-tune)
 If you need a **deep-learning model** (fine-tuned) instead of heuristics, use the scripts in `train/`:
 
-- `train/train_tf.py` fine-tunes MobileNetV2 and exports TFLite.
+- `train/train_tf.py` fine-tunes a lightweight backbone (default: **MobileNetV3Small**) and exports **TFLite**.
+  - You can choose `--backbone mobilenetv3small|mobilenetv2|efficientnetlite0`.
 
 See `train/README.md` for step-by-step instructions.
 

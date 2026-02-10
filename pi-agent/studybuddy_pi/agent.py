@@ -168,6 +168,9 @@ class Agent:
                 fsm.update(res.is_focused, now=tick_start)
                 if res.label:
                     attention_counts[res.label] = attention_counts.get(res.label, 0) + 1
+                if res.bins:
+                    for k in res.bins:
+                        attention_counts[k] = attention_counts.get(k, 0) + 1
             except NotImplementedError:
                 # If real inference isn't wired, require simulate
                 raise
