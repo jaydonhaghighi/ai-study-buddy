@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "studybuddy-ml"
+version = "0.1.0"
+description = "Lean training and inference pipeline for AI Study Buddy head-pose model."
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+studybuddy-ml = "studybuddy_ml.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["studybuddy_ml*"]

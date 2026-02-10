@@ -1,0 +1,10 @@
+# Optional mapping used to anonymize participant names in manifests and runs.
+# Keys must match the "participant" values found in meta.jsonl.
+# Values should be stable IDs that never change once chosen.
+
+Yara: p01
+Can Meto: p02
+Kareem Mourad: p03
+Johnny: p04
+Jaydon: p05
+Mais: p06
