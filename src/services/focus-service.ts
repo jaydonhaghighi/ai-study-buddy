@@ -31,7 +31,6 @@ export async function startFocusSession(params: {
   userId: string;
   courseId?: string;
   sessionId?: string;
-  source?: 'webcam';
 }): Promise<{ ok: boolean; focusSessionId: string }> {
   const res = await fetchFunction('/focusStart', {
     method: 'POST',
