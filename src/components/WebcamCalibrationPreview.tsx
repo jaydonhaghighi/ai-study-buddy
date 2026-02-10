@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { FaceDetector, FilesetResolver } from '@mediapipe/tasks-vision';
-import './PiCalibrationPreview.css';
+import './WebcamCalibrationPreview.css';
 
 type Status = {
   enabled: boolean;
@@ -11,7 +11,7 @@ type Status = {
   lastError?: string | null;
 };
 
-type PiCalibrationPreviewProps = {
+type WebcamCalibrationPreviewProps = {
   variant?: 'floating' | 'embedded';
   mode?: 'calibration' | 'monitor';
   autoStart?: boolean;
@@ -29,7 +29,7 @@ type PiCalibrationPreviewProps = {
   onAlignedStable?: () => void;
 };
 
-export default function PiCalibrationPreview({
+export default function WebcamCalibrationPreview({
   variant = 'floating',
   mode = 'calibration',
   autoStart = false,
@@ -37,7 +37,7 @@ export default function PiCalibrationPreview({
   stopOnAlignedStable = true,
   onRequestClose,
   onAlignedStable,
-}: PiCalibrationPreviewProps) {
+}: WebcamCalibrationPreviewProps) {
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -51,7 +51,7 @@ export default function PiCalibrationPreview({
   const autoStartAttemptedRef = useRef(false);
   const alignedStableFiredRef = useRef(false);
 
-  const stopPreview = useCallback(async (closeModal: boolean = false) => {
+  const stopPreview = async (closeModal: boolean = false) => {
     if (pollTimerRef.current != null) {
       window.clearInterval(pollTimerRef.current);
       pollTimerRef.current = null;
@@ -69,9 +69,9 @@ export default function PiCalibrationPreview({
     alignedSinceRef.current = null;
     alignedStableFiredRef.current = false;
     if (closeModal) onRequestClose?.();
-  }, [onRequestClose]);
+  };
 
-  const startPreview = useCallback(async () => {
+  const startPreview = async () => {
     setError(null);
     try {
       if (!detectorRef.current) {
@@ -115,7 +115,7 @@ export default function PiCalibrationPreview({
       setError(e?.message || 'Could not access laptop webcam');
       setOpen(false);
     }
-  }, []);
+  };
 
   // Auto-start preview (useful when shown in a modal)
   useEffect(() => {
@@ -123,8 +123,9 @@ export default function PiCalibrationPreview({
     if (open) return;
     if (autoStartAttemptedRef.current) return;
     autoStartAttemptedRef.current = true;
-    startPreview();
-  }, [autoStart, open, startPreview]);
+    void startPreview();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoStart]);
 
   useEffect(() => {
     if (!open) return;
@@ -149,7 +150,7 @@ export default function PiCalibrationPreview({
             })()
           : false;
 
-        const json: Status = {
+        const nextStatus: Status = {
           enabled: true,
           lastFrameTs: Date.now(),
           faceDetected,
@@ -161,10 +162,10 @@ export default function PiCalibrationPreview({
         };
 
         if (cancelled) return;
-        setStatus(json);
+        setStatus(nextStatus);
 
         if (mode === 'calibration') {
-          if (json.aligned) {
+          if (nextStatus.aligned) {
             if (alignedSinceRef.current == null) alignedSinceRef.current = Date.now();
             const secs = Math.floor((Date.now() - alignedSinceRef.current) / 1000);
             setAlignedSeconds(secs);
@@ -198,7 +199,7 @@ export default function PiCalibrationPreview({
 
     const id = window.setInterval(tick, 400);
     pollTimerRef.current = id;
-    tick();
+    void tick();
     return () => {
       cancelled = true;
       window.clearInterval(id);
@@ -206,7 +207,7 @@ export default function PiCalibrationPreview({
         pollTimerRef.current = null;
       }
     };
-  }, [open, mode, autoStopAfterAlignedSeconds, stopOnAlignedStable, onAlignedStable, stopPreview]);
+  }, [open, mode, autoStopAfterAlignedSeconds, stopOnAlignedStable, onAlignedStable]);
 
   useEffect(() => {
     return () => {
@@ -227,18 +228,17 @@ export default function PiCalibrationPreview({
     autoStopAfterAlignedSeconds == null ? 'continuous' : `auto-stops after ${autoStopAfterAlignedSeconds}s`;
 
   if (variant === 'floating') {
-    // Keep the old floating widget behavior for dev/demo usage.
     return (
       <div style={{ position: 'fixed', right: 336, bottom: 92, zIndex: 50, width: 320 }}>
         <div style={{ background: 'rgba(20, 20, 20, 0.92)', color: '#fff', borderRadius: 12, padding: 12 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
             <div style={{ fontWeight: 700 }}>{mode === 'monitor' ? 'Laptop camera preview' : 'Laptop camera calibration'}</div>
             {open ? (
-              <button onClick={() => stopPreview(false)} style={{ padding: '6px 10px', cursor: 'pointer' }}>
+              <button onClick={() => void stopPreview(false)} style={{ padding: '6px 10px', cursor: 'pointer' }}>
                 Stop
               </button>
             ) : (
-              <button onClick={startPreview} style={{ padding: '6px 10px', cursor: 'pointer' }}>
+              <button onClick={() => void startPreview()} style={{ padding: '6px 10px', cursor: 'pointer' }}>
                 Start
               </button>
             )}
@@ -271,42 +271,41 @@ export default function PiCalibrationPreview({
     );
   }
 
-  // Embedded (modal-friendly) UI
   return (
-    <div className="pi-calibration">
-      <div className="pi-calibration-header">
-        <h4 className="pi-calibration-title">{mode === 'monitor' ? 'Laptop webcam' : 'Laptop webcam calibration'}</h4>
-        <div className="pi-calibration-controls">
+    <div className="webcam-calibration">
+      <div className="webcam-calibration-header">
+        <h4 className="webcam-calibration-title">{mode === 'monitor' ? 'Laptop webcam' : 'Laptop webcam calibration'}</h4>
+        <div className="webcam-calibration-controls">
           {open ? (
-            <button className="pi-calibration-btn" onClick={() => stopPreview(true)} type="button">
+            <button className="webcam-calibration-btn" onClick={() => void stopPreview(true)} type="button">
               Stop
             </button>
           ) : (
-            <button className="pi-calibration-btn pi-calibration-btn-primary" onClick={startPreview} type="button">
+            <button className="webcam-calibration-btn webcam-calibration-btn-primary" onClick={() => void startPreview()} type="button">
               Start preview
             </button>
           )}
         </div>
       </div>
-    
-      {error && <p className="pi-calibration-error">{error}</p>}
-      {!error && open && status?.lastError && <p className="pi-calibration-error">{status.lastError}</p>}
+
+      {error && <p className="webcam-calibration-error">{error}</p>}
+      {!error && open && status?.lastError && <p className="webcam-calibration-error">{status.lastError}</p>}
 
       {open && (
         <>
-          <div className="pi-calibration-stream">
+          <div className="webcam-calibration-stream">
             <video ref={videoRef} autoPlay playsInline muted />
           </div>
 
           {mode === 'calibration' && (
-            <div className="pi-calibration-metrics">
-              <div className="pi-calibration-metric">
+            <div className="webcam-calibration-metrics">
+              <div className="webcam-calibration-metric">
                 Face: <b>{status?.faceDetected ? 'detected' : 'not detected'}</b>
               </div>
-              <div className="pi-calibration-metric">
+              <div className="webcam-calibration-metric">
                 Aligned: <b>{status?.aligned ? 'yes' : 'no'}</b>
               </div>
-              <div className="pi-calibration-metric">
+              <div className="webcam-calibration-metric">
                 Stable: <b>{alignedSeconds}s</b>
               </div>
             </div>
@@ -316,5 +315,4 @@ export default function PiCalibrationPreview({
     </div>
   );
 }
-
 

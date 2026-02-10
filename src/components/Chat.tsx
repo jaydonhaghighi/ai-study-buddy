@@ -22,7 +22,7 @@ import {
 import { getAIResponse, createGenkitChat } from '../services/genkit-service';
 import { startFocusSession, stopFocusSession } from '../services/focus-service';
 import { LaptopFocusTracker } from '../services/laptop-focus-tracker';
-import PiCalibrationPreview from './PiCalibrationPreview';
+import WebcamCalibrationPreview from './WebcamCalibrationPreview';
 import FocusDashboard from './FocusDashboard';
 import settingsIcon from '../public/settings.svg';
 import './Chat.css';
@@ -65,7 +65,6 @@ interface ChatSession {
 interface FocusSession {
   id: string;
   userId: string;
-  deviceId?: string | null;
   status: string;
   courseId?: string | null;
   sessionId?: string | null;
@@ -582,7 +581,6 @@ export default function Chat({ user }: ChatProps) {
       await stopFocusSession({
         userId: user.uid,
         focusSessionId: activeFocusSession.id,
-        deviceId: activeFocusSession.deviceId || undefined,
       });
       sessionStopped = true;
 
@@ -594,7 +592,6 @@ export default function Chat({ user }: ChatProps) {
             focusSessionId: activeFocusSession.id,
             userId: user.uid,
             source: 'laptop_webcam',
-            deviceId: null,
             courseId: activeFocusSession.courseId || null,
             sessionId: activeFocusSession.sessionId || null,
             createdAt: serverTimestamp(),
@@ -985,7 +982,7 @@ export default function Chat({ user }: ChatProps) {
                 </p>
               </div>
             ) : (
-              <PiCalibrationPreview variant="embedded" mode="monitor" autoStart />
+              <WebcamCalibrationPreview variant="embedded" mode="monitor" autoStart />
             )}
           </div>
         </div>
@@ -1030,7 +1027,7 @@ export default function Chat({ user }: ChatProps) {
             </div>
 
             <div className="modal-body">
-              <PiCalibrationPreview
+              <WebcamCalibrationPreview
                 variant="embedded"
                 autoStart
                 mode="calibration"
