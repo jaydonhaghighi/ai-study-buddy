@@ -1,0 +1,12 @@
+experiment_name: studybuddy-headpose-loso-stability-v1
+seed: 42
+image_size: 224
+backbone: efficientnetv2b0
+batch_size: 16
+epochs: 24
+learning_rate: 0.0003
+dropout: 0.35
+early_stopping_patience: 8
+label_column: label
+participant_column: participant_id
+path_column: image_path

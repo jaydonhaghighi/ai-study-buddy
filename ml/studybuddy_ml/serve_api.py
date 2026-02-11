@@ -18,10 +18,14 @@ from . import LABELS
 from .temporal import SessionSummaryAccumulator, TemporalConfig, TemporalFocusEngine
 
 MODEL_PATH = Path(os.getenv("STUDYBUDDY_MODEL_PATH", "/app/artifacts/export/best_model.keras"))
-IMAGE_SIZE = int(os.getenv("STUDYBUDDY_IMAGE_SIZE", "224"))
+IMAGE_SIZE_RAW = os.getenv("STUDYBUDDY_IMAGE_SIZE")
+if IMAGE_SIZE_RAW and IMAGE_SIZE_RAW.strip():
+    IMAGE_SIZE_OVERRIDE: int | None = int(IMAGE_SIZE_RAW)
+else:
+    IMAGE_SIZE_OVERRIDE = None
 CORS_ORIGINS_RAW = os.getenv(
     "STUDYBUDDY_CORS_ORIGINS",
-    "http://localhost:5173,http://127.0.0.1:5173",
+    "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174,http://localhost:5175,http://127.0.0.1:5175",
 )
 if CORS_ORIGINS_RAW.strip() == "*":
     CORS_ORIGINS = ["*"]
@@ -85,7 +89,9 @@ def _load_model() -> tf.keras.Model:
         raise FileNotFoundError(
             f"Model file does not exist at {MODEL_PATH}. Run export-best first."
         )
-    return tf.keras.models.load_model(MODEL_PATH)
+    # Inference only needs forward pass; compile state may contain
+    # custom training losses that are not required at serve time.
+    return tf.keras.models.load_model(MODEL_PATH, compile=False)
 
 
 def _ensure_model() -> tf.keras.Model:
@@ -95,9 +101,34 @@ def _ensure_model() -> tf.keras.Model:
     return _model
 
 
-def _decode_image(image_bytes: bytes) -> tf.Tensor:
+def _infer_model_image_size(model: tf.keras.Model) -> int | None:
+    input_shape = model.input_shape
+    if isinstance(input_shape, list):
+        if not input_shape:
+            return None
+        input_shape = input_shape[0]
+    if not isinstance(input_shape, tuple) or len(input_shape) < 3:
+        return None
+    height = input_shape[1]
+    width = input_shape[2]
+    if isinstance(height, int) and isinstance(width, int) and height > 0 and width > 0:
+        # Current models are square; use height for resize target.
+        return int(height)
+    return None
+
+
+def _effective_image_size(model: tf.keras.Model) -> int:
+    if IMAGE_SIZE_OVERRIDE is not None and IMAGE_SIZE_OVERRIDE > 0:
+        return IMAGE_SIZE_OVERRIDE
+    inferred = _infer_model_image_size(model)
+    if inferred is not None:
+        return inferred
+    return 224
+
+
+def _decode_image(image_bytes: bytes, image_size: int) -> tf.Tensor:
     image = tf.io.decode_image(image_bytes, channels=3, expand_animations=False)
-    image = tf.image.resize(image, [IMAGE_SIZE, IMAGE_SIZE])
+    image = tf.image.resize(image, [image_size, image_size])
     image = tf.cast(image, tf.float32)
     image = tf.expand_dims(image, axis=0)
     return image
@@ -105,7 +136,8 @@ def _decode_image(image_bytes: bytes) -> tf.Tensor:
 
 def _predict_probs(image_bytes: bytes) -> np.ndarray:
     model = _ensure_model()
-    image = _decode_image(image_bytes)
+    image_size = _effective_image_size(model)
+    image = _decode_image(image_bytes, image_size)
     probs = model(image, training=False).numpy()[0]
     return probs
 
@@ -154,9 +186,10 @@ async def health() -> dict[str, Any]:
 @app.get("/model-info")
 async def model_info() -> dict[str, Any]:
     model = _ensure_model()
+    image_size = _effective_image_size(model)
     return {
         "model_path": str(MODEL_PATH),
-        "image_size": IMAGE_SIZE,
+        "image_size": image_size,
         "num_classes": len(LABELS),
         "labels": LABELS,
         "input_shape": model.input_shape,

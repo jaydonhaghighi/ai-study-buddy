@@ -90,6 +90,9 @@ type FocusTrackerRuntime = {
 };
 
 type TrackerSource = 'ml_inference_api' | 'laptop_webcam';
+const FAST_UI_CONFIDENCE_THRESHOLD = 0.45;
+const FAST_UI_DISTRACT_HOLD_MS = 450;
+const FAST_UI_REFOCUS_HOLD_MS = 250;
 
 interface ChatProps {
   user: User | null;
@@ -762,6 +765,9 @@ export default function Chat({ user }: ChatProps) {
     setFocusBusy(true);
     try {
       resetUiDistractionCounter();
+      // Focus starts right after calibration alignment, so seed as focused.
+      // This ensures the first away transition is counted as a distraction.
+      uiFocusStateRef.current = 'focused';
       const res = await startFocusSession({
         userId: user.uid,
         courseId: pendingFocusStart.courseId,
@@ -795,19 +801,36 @@ export default function Chat({ user }: ChatProps) {
               });
 
               if (p.transitioned) {
-                if (p.state === 'distracted') {
-                  announceFocusState('distracted', 'transitioned');
-                } else if (p.state === 'focused') {
-                  announceFocusState('focused', 'transitioned');
+                const transitionedState: 'focused' | 'distracted' | null =
+                  p.state === 'distracted'
+                    ? 'distracted'
+                    : p.state === 'focused'
+                      ? 'focused'
+                      : null;
+                if (transitionedState) {
+                  // Keep counter behavior aligned with visible transitioned toasts.
+                  applyUiFocusState(transitionedState);
+                  announceFocusState(transitionedState, 'transitioned');
+                  candidateFocusStateRef.current = null;
+                  candidateSinceMsRef.current = null;
                 }
               }
 
               // Fast UI-only detector (does NOT affect logged summaries):
               // If the model's smoothed label is away/screen with sufficient confidence,
               // notify after a short debounce so quick in/out still registers.
-              const conf = typeof p.smoothed_confidence === 'number' ? p.smoothed_confidence : 0;
-              const uiCandidate: 'focused' | 'distracted' | null =
-                conf >= 0.55 ? (p.smoothed_label === 'screen' ? 'focused' : 'distracted') : null;
+              const smoothedConf = typeof p.smoothed_confidence === 'number' ? p.smoothed_confidence : 0;
+              const rawConf = typeof p.raw_confidence === 'number' ? p.raw_confidence : 0;
+
+              const smoothedCandidate: 'focused' | 'distracted' | null =
+                smoothedConf >= FAST_UI_CONFIDENCE_THRESHOLD
+                  ? (p.smoothed_label === 'screen' ? 'focused' : 'distracted')
+                  : null;
+              const rawCandidate: 'focused' | 'distracted' | null =
+                rawConf >= FAST_UI_CONFIDENCE_THRESHOLD
+                  ? (p.raw_label === 'screen' ? 'focused' : 'distracted')
+                  : null;
+              const uiCandidate: 'focused' | 'distracted' | null = smoothedCandidate ?? rawCandidate;
 
               const now = Date.now();
               if (uiCandidate !== candidateFocusStateRef.current) {
@@ -815,7 +838,10 @@ export default function Chat({ user }: ChatProps) {
                 candidateSinceMsRef.current = uiCandidate ? now : null;
               } else if (uiCandidate && candidateSinceMsRef.current != null) {
                 const elapsed = now - candidateSinceMsRef.current;
-                const requiredMs = uiCandidate === 'distracted' ? 600 : 300;
+                const requiredMs =
+                  uiCandidate === 'distracted'
+                    ? FAST_UI_DISTRACT_HOLD_MS
+                    : FAST_UI_REFOCUS_HOLD_MS;
                 if (elapsed >= requiredMs) {
                   // Use the fast UI detector for the distraction counter.
                   applyUiFocusState(uiCandidate);

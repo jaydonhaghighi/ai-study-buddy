@@ -82,6 +82,37 @@ Generate capstone-ready Markdown + plots (LOSO report):
 make capstone-report
 ```
 
+Clean artifacts before a fresh run:
+
+```bash
+make ml-clean
+make ml-fresh-pipeline
+```
+
+Notes:
+- `ml-clean` removes split/training/export outputs and non-versioned report files.
+- It preserves `ml/artifacts/reports/runs/` (timestamped report history) and `ml/artifacts/mlflow/`.
+- Use `make ml-clean-all` only when you want to delete all ML artifacts, including history.
+- If cleanup fails with `Permission denied`, run `make fix-artifact-perms` once.
+
+Run recommended next experiment presets (fresh pipeline + timestamped report):
+
+```bash
+make ml-exp-stability-v1
+make ml-exp-regularized-v2
+make ml-exp-hires-v3
+make ml-exp-v4
+```
+
+`ml-exp-v4` adds two-stage fine-tuning, label smoothing, and stronger label-safe augmentation.
+
+Use a custom config without editing `baseline.yaml`:
+
+```bash
+make ml-fresh-pipeline ML_CONFIG=/app/configs/exp_stability_v1.yaml
+make capstone-report ML_CONFIG=/app/configs/exp_stability_v1.yaml
+```
+
 ## App integration (Milestone 6)
 
 The web app can stream webcam frames to the inference API during focus sessions.

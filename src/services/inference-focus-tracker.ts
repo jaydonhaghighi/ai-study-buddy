@@ -1,3 +1,5 @@
+import { FaceDetector, FilesetResolver } from '@mediapipe/tasks-vision';
+
 type FocusPredictionSummary = {
   startTs: number;
   endTs: number;
@@ -35,6 +37,9 @@ type TrackerOptions = {
   sampleIntervalMs?: number;
   requestTimeoutMs?: number;
   jpegQuality?: number;
+  cropToFace?: boolean;
+  mirrorInput?: boolean;
+  facePadding?: number;
   onPrediction?: (payload: InferencePredictionPayload) => void;
   stream?: MediaStream;
 };
@@ -43,6 +48,9 @@ const DEFAULT_BASE_URL = 'http://localhost:8001';
 const DEFAULT_SAMPLE_INTERVAL_MS = 200; // 5 FPS
 const DEFAULT_REQUEST_TIMEOUT_MS = 8000;
 const DEFAULT_JPEG_QUALITY = 0.85;
+const DEFAULT_CROP_TO_FACE = (import.meta.env.VITE_INFERENCE_FACE_CROP ?? '1') !== '0';
+const DEFAULT_MIRROR_INPUT = (import.meta.env.VITE_INFERENCE_MIRROR_INPUT ?? '1') !== '0';
+const DEFAULT_FACE_PADDING = 0.5;
 
 function getBaseUrl(url?: string): string {
   const configured = (url ?? import.meta.env.VITE_INFERENCE_API_BASE_URL ?? DEFAULT_BASE_URL).trim();
@@ -79,16 +87,24 @@ function canvasToJpegBlob(canvas: HTMLCanvasElement, quality: number): Promise<B
   });
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
 export class InferenceFocusTracker {
   private readonly baseUrl: string;
   private readonly sampleIntervalMs: number;
   private readonly requestTimeoutMs: number;
   private readonly jpegQuality: number;
+  private readonly cropToFace: boolean;
+  private readonly mirrorInput: boolean;
+  private readonly facePadding: number;
 
   private stream: MediaStream | null = null;
   private ownsStream = true;
   private video: HTMLVideoElement | null = null;
   private canvas: HTMLCanvasElement | null = null;
+  private detector: FaceDetector | null = null;
   private timer: number | null = null;
   private sessionId: string | null = null;
   private sampleInFlight = false;
@@ -101,6 +117,9 @@ export class InferenceFocusTracker {
     this.sampleIntervalMs = options.sampleIntervalMs ?? DEFAULT_SAMPLE_INTERVAL_MS;
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.jpegQuality = options.jpegQuality ?? DEFAULT_JPEG_QUALITY;
+    this.cropToFace = options.cropToFace ?? DEFAULT_CROP_TO_FACE;
+    this.mirrorInput = options.mirrorInput ?? DEFAULT_MIRROR_INPUT;
+    this.facePadding = options.facePadding ?? DEFAULT_FACE_PADDING;
     this.onPrediction = options.onPrediction;
     if (options.stream) {
       this.stream = options.stream;
@@ -156,6 +175,15 @@ export class InferenceFocusTracker {
       await this.video.play();
 
       this.canvas = document.createElement('canvas');
+      if (this.cropToFace) {
+        try {
+          await this.ensureFaceDetector();
+        } catch (error) {
+          // Keep streaming even if detector setup fails; full-frame fallback still works.
+          console.warn('Inference tracker: face detector init failed, using full-frame input.', error);
+          this.detector = null;
+        }
+      }
       this.timer = window.setInterval(() => {
         void this.sample();
       }, this.sampleIntervalMs);
@@ -178,16 +206,7 @@ export class InferenceFocusTracker {
 
     this.sampleInFlight = true;
     try {
-      if (this.canvas.width !== this.video.videoWidth || this.canvas.height !== this.video.videoHeight) {
-        this.canvas.width = this.video.videoWidth;
-        this.canvas.height = this.video.videoHeight;
-      }
-      const ctx = this.canvas.getContext('2d');
-      if (!ctx) {
-        throw new Error('Failed to get 2D context for frame capture');
-      }
-      ctx.drawImage(this.video, 0, 0, this.canvas.width, this.canvas.height);
-      const blob = await canvasToJpegBlob(this.canvas, this.jpegQuality);
+      const blob = await this.captureFrameBlob();
 
       const formData = new FormData();
       formData.append('file', blob, `frame-${this.frameSeq++}.jpg`);
@@ -222,6 +241,77 @@ export class InferenceFocusTracker {
     } finally {
       this.sampleInFlight = false;
     }
+  }
+
+  private async captureFrameBlob(): Promise<Blob> {
+    if (!this.video || !this.canvas) {
+      throw new Error('Inference tracker media is not initialized');
+    }
+    const ctx = this.canvas.getContext('2d');
+    if (!ctx) {
+      throw new Error('Failed to get 2D context for frame capture');
+    }
+
+    const frameW = this.video.videoWidth;
+    const frameH = this.video.videoHeight;
+    let sx = 0;
+    let sy = 0;
+    let sw = frameW;
+    let sh = frameH;
+
+    if (this.cropToFace && this.detector) {
+      const result = this.detector.detectForVideo(this.video, performance.now());
+      const box = result.detections?.[0]?.boundingBox;
+      if (box && box.width > 1 && box.height > 1) {
+        const px = box.width * this.facePadding;
+        const py = box.height * this.facePadding;
+        const x1 = clamp(box.originX - px, 0, frameW);
+        const y1 = clamp(box.originY - py, 0, frameH);
+        const x2 = clamp(box.originX + box.width + px, 0, frameW);
+        const y2 = clamp(box.originY + box.height + py, 0, frameH);
+        sx = x1;
+        sy = y1;
+        sw = Math.max(1, x2 - x1);
+        sh = Math.max(1, y2 - y1);
+      }
+    }
+
+    const targetW = Math.max(1, Math.round(sw));
+    const targetH = Math.max(1, Math.round(sh));
+    if (this.canvas.width !== targetW || this.canvas.height !== targetH) {
+      this.canvas.width = targetW;
+      this.canvas.height = targetH;
+    }
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, targetW, targetH);
+    if (this.mirrorInput) {
+      ctx.save();
+      ctx.translate(targetW, 0);
+      ctx.scale(-1, 1);
+      ctx.drawImage(this.video, sx, sy, sw, sh, 0, 0, targetW, targetH);
+      ctx.restore();
+    } else {
+      ctx.drawImage(this.video, sx, sy, sw, sh, 0, 0, targetW, targetH);
+    }
+
+    return await canvasToJpegBlob(this.canvas, this.jpegQuality);
+  }
+
+  private async ensureFaceDetector(): Promise<void> {
+    if (this.detector) {
+      return;
+    }
+    const vision = await FilesetResolver.forVisionTasks(
+      'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
+    );
+    this.detector = await FaceDetector.createFromOptions(vision, {
+      baseOptions: {
+        modelAssetPath:
+          'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite',
+      },
+      runningMode: 'VIDEO',
+    });
   }
 
   async stop(): Promise<FocusPredictionSummary> {
@@ -272,6 +362,10 @@ export class InferenceFocusTracker {
       this.video = null;
     }
     this.canvas = null;
+    if (this.detector) {
+      this.detector.close();
+      this.detector = null;
+    }
   }
 
   private async stopRemoteSessionQuietly(sessionId: string): Promise<void> {
