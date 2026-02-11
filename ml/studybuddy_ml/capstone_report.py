@@ -38,11 +38,17 @@ def generate_capstone_report(
     criterion: str = "test_macro_f1",
     config_path: Path | None = None,
     data_validation_json: Path | None = None,
+    run_dir: Path | None = None,
 ) -> dict[str, Any]:
     summary_csv = summary_csv.resolve()
     folds_dir = folds_dir.resolve()
-    out_md = out_md.resolve()
-    plots_dir = plots_dir.resolve()
+    if run_dir is not None:
+        run_dir = run_dir.resolve()
+        out_md = (run_dir / "capstone_report.md").resolve()
+        plots_dir = (run_dir / "plots").resolve()
+    else:
+        out_md = out_md.resolve()
+        plots_dir = plots_dir.resolve()
 
     frame = pd.read_csv(summary_csv)
     if frame.empty:

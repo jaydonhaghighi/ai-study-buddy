@@ -34,9 +34,20 @@ class TrainConfig:
     backbone: str = "efficientnetv2b0"
     batch_size: int = 32
     epochs: int = 12
+    freeze_epochs: int | None = None
+    fine_tune_epochs: int = 0
     learning_rate: float = 1e-3
+    fine_tune_learning_rate: float = 1e-4
+    fine_tune_trainable_layers: int = 30
     dropout: float = 0.2
+    label_smoothing: float = 0.0
     early_stopping_patience: int = 3
+    aug_brightness_delta: float = 0.12
+    aug_contrast_lower: float = 0.9
+    aug_contrast_upper: float = 1.1
+    aug_saturation_lower: float = 0.9
+    aug_saturation_upper: float = 1.1
+    aug_gaussian_noise_stddev: float = 0.0
     participant_column: str = "participant_id"
     label_column: str = "label"
     path_column: str = "image_path"
@@ -69,7 +80,49 @@ def load_train_config(config_path: Path) -> TrainConfig:
     for key, value in payload.items():
         if hasattr(config, key):
             setattr(config, key, value)
+    _validate_train_config(config)
     return config
+
+
+def _validate_train_config(config: TrainConfig) -> None:
+    if config.freeze_epochs is None:
+        config.freeze_epochs = int(config.epochs)
+    config.freeze_epochs = int(config.freeze_epochs)
+    config.fine_tune_epochs = int(config.fine_tune_epochs)
+    config.fine_tune_trainable_layers = int(config.fine_tune_trainable_layers)
+    config.batch_size = int(config.batch_size)
+    if config.freeze_epochs < 0:
+        raise ValueError(f"freeze_epochs must be >= 0, got {config.freeze_epochs}")
+    if config.fine_tune_epochs < 0:
+        raise ValueError(f"fine_tune_epochs must be >= 0, got {config.fine_tune_epochs}")
+    if config.freeze_epochs == 0 and config.fine_tune_epochs == 0:
+        raise ValueError("At least one of freeze_epochs or fine_tune_epochs must be > 0")
+
+    if not 0.0 <= config.label_smoothing < 1.0:
+        raise ValueError(f"label_smoothing must be in [0, 1), got {config.label_smoothing}")
+
+    if config.fine_tune_learning_rate <= 0:
+        raise ValueError(
+            f"fine_tune_learning_rate must be positive, got {config.fine_tune_learning_rate}"
+        )
+    if config.learning_rate <= 0:
+        raise ValueError(f"learning_rate must be positive, got {config.learning_rate}")
+    if config.batch_size <= 0:
+        raise ValueError(f"batch_size must be positive, got {config.batch_size}")
+
+    if config.aug_contrast_lower <= 0 or config.aug_contrast_upper <= 0:
+        raise ValueError("aug_contrast_lower/upper must be positive")
+    if config.aug_contrast_lower > config.aug_contrast_upper:
+        raise ValueError("aug_contrast_lower must be <= aug_contrast_upper")
+
+    if config.aug_saturation_lower <= 0 or config.aug_saturation_upper <= 0:
+        raise ValueError("aug_saturation_lower/upper must be positive")
+    if config.aug_saturation_lower > config.aug_saturation_upper:
+        raise ValueError("aug_saturation_lower must be <= aug_saturation_upper")
+    if config.aug_brightness_delta < 0:
+        raise ValueError("aug_brightness_delta must be >= 0")
+    if config.aug_gaussian_noise_stddev < 0:
+        raise ValueError("aug_gaussian_noise_stddev must be >= 0")
 
 
 def load_participant_map(map_path: Path | None) -> dict[str, str]:
@@ -261,8 +314,7 @@ def _load_split_files(split_dir: Path) -> list[Path]:
 
 def _prepare_dataset(
     frame: pd.DataFrame,
-    image_size: int,
-    batch_size: int,
+    config: TrainConfig,
     training: bool,
     seed: int,
 ) -> tf.data.Dataset:
@@ -275,16 +327,32 @@ def _prepare_dataset(
 
     def _map(path: tf.Tensor, label: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
         image = tf.io.decode_jpeg(tf.io.read_file(path), channels=3)
-        image = tf.image.resize(image, [image_size, image_size])
+        image = tf.image.resize(image, [config.image_size, config.image_size])
         image = tf.cast(image, tf.float32)
         if training:
-            image = tf.image.random_brightness(image, max_delta=0.12)
-            image = tf.image.random_contrast(image, lower=0.9, upper=1.1)
-            image = tf.image.random_saturation(image, lower=0.9, upper=1.1)
+            image = tf.image.random_brightness(image, max_delta=config.aug_brightness_delta)
+            image = tf.image.random_contrast(
+                image,
+                lower=config.aug_contrast_lower,
+                upper=config.aug_contrast_upper,
+            )
+            image = tf.image.random_saturation(
+                image,
+                lower=config.aug_saturation_lower,
+                upper=config.aug_saturation_upper,
+            )
+            if config.aug_gaussian_noise_stddev > 0:
+                noise = tf.random.normal(
+                    tf.shape(image),
+                    mean=0.0,
+                    stddev=config.aug_gaussian_noise_stddev,
+                    dtype=tf.float32,
+                )
+                image = tf.clip_by_value(image + noise, 0.0, 255.0)
         return image, label
 
     ds = ds.map(_map, num_parallel_calls=tf.data.AUTOTUNE)
-    ds = ds.batch(batch_size)
+    ds = ds.batch(config.batch_size)
     ds = ds.prefetch(tf.data.AUTOTUNE)
     return ds
 
@@ -293,9 +361,8 @@ def _build_model(
     image_size: int,
     num_classes: int,
     dropout: float,
-    learning_rate: float,
     backbone: str = "efficientnetv2b0",
-) -> tf.keras.Model:
+) -> tuple[tf.keras.Model, tf.keras.Model]:
     inputs = tf.keras.Input(shape=(image_size, image_size, 3), name="image")
     bb = _slugify(backbone)
     if bb in {"efficientnetv2b0", "efficientnet_v2_b0", "efficientnetv2_b0"}:
@@ -329,12 +396,75 @@ def _build_model(
     outputs = tf.keras.layers.Dense(num_classes, activation="softmax", name="probs")(x)
 
     model = tf.keras.Model(inputs=inputs, outputs=outputs, name="studybuddy_headpose")
+    return model, base
+
+
+def _make_classification_loss(
+    label_smoothing: float,
+    num_classes: int,
+) -> tf.keras.losses.Loss | Any:
+    if label_smoothing <= 0:
+        return tf.keras.losses.SparseCategoricalCrossentropy()
+
+    categorical_loss = tf.keras.losses.CategoricalCrossentropy(
+        label_smoothing=label_smoothing
+    )
+
+    def _smoothed_sparse_loss(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
+        y_true = tf.cast(y_true, tf.int32)
+        y_true = tf.reshape(y_true, [-1])
+        y_true_one_hot = tf.one_hot(y_true, depth=num_classes, dtype=tf.float32)
+        return categorical_loss(y_true_one_hot, y_pred)
+
+    return _smoothed_sparse_loss
+
+
+def _compile_model(
+    model: tf.keras.Model,
+    learning_rate: float,
+    label_smoothing: float,
+    num_classes: int,
+) -> None:
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
-        loss=tf.keras.losses.SparseCategoricalCrossentropy(),
+        loss=_make_classification_loss(
+            label_smoothing=label_smoothing,
+            num_classes=num_classes,
+        ),
         metrics=["accuracy"],
     )
-    return model
+
+
+def _set_backbone_trainable_layers(
+    base: tf.keras.Model,
+    trainable_layers: int,
+) -> int:
+    base.trainable = True
+    total_layers = len(base.layers)
+    if trainable_layers <= 0 or trainable_layers >= total_layers:
+        first_trainable_idx = 0
+    else:
+        first_trainable_idx = total_layers - trainable_layers
+
+    trainable_count = 0
+    for idx, layer in enumerate(base.layers):
+        is_trainable_region = idx >= first_trainable_idx
+        # Keep batch norm frozen for stability on small participant datasets.
+        layer.trainable = is_trainable_region and not isinstance(
+            layer, tf.keras.layers.BatchNormalization
+        )
+        if layer.trainable:
+            trainable_count += 1
+    return trainable_count
+
+
+def _merge_history_dicts(histories: list[dict[str, list[float]]]) -> dict[str, list[float]]:
+    merged: dict[str, list[float]] = {}
+    for history in histories:
+        for key, values in history.items():
+            merged.setdefault(key, [])
+            merged[key].extend(float(v) for v in values)
+    return merged
 
 
 def _dataset_labels(dataset: tf.data.Dataset) -> np.ndarray:
@@ -448,9 +578,9 @@ def train_loso(
         if train_df.empty or val_df.empty or test_df.empty:
             raise ValueError(f"Fold {fold_id} has empty split. Check LOSO generation.")
 
-        train_ds = _prepare_dataset(train_df, config.image_size, config.batch_size, True, config.seed)
-        val_ds = _prepare_dataset(val_df, config.image_size, config.batch_size, False, config.seed)
-        test_ds = _prepare_dataset(test_df, config.image_size, config.batch_size, False, config.seed)
+        train_ds = _prepare_dataset(train_df, config, True, config.seed)
+        val_ds = _prepare_dataset(val_df, config, False, config.seed)
+        test_ds = _prepare_dataset(test_df, config, False, config.seed)
 
         class_values = np.unique(train_df["label_id"].to_numpy())
         class_weights = compute_class_weight(
@@ -480,47 +610,105 @@ def train_loso(
                     "backbone": config.backbone,
                     "batch_size": config.batch_size,
                     "epochs": config.epochs,
+                    "freeze_epochs": config.freeze_epochs,
+                    "fine_tune_epochs": config.fine_tune_epochs,
                     "learning_rate": config.learning_rate,
+                    "fine_tune_learning_rate": config.fine_tune_learning_rate,
+                    "fine_tune_trainable_layers": config.fine_tune_trainable_layers,
                     "dropout": config.dropout,
+                    "label_smoothing": config.label_smoothing,
                     "early_stopping_patience": config.early_stopping_patience,
+                    "aug_brightness_delta": config.aug_brightness_delta,
+                    "aug_contrast_lower": config.aug_contrast_lower,
+                    "aug_contrast_upper": config.aug_contrast_upper,
+                    "aug_saturation_lower": config.aug_saturation_lower,
+                    "aug_saturation_upper": config.aug_saturation_upper,
+                    "aug_gaussian_noise_stddev": config.aug_gaussian_noise_stddev,
                 }
             )
 
-            model = _build_model(
+            model, base = _build_model(
                 image_size=config.image_size,
                 num_classes=len(LABELS),
                 dropout=config.dropout,
-                learning_rate=config.learning_rate,
                 backbone=config.backbone,
             )
-            callbacks: list[tf.keras.callbacks.Callback] = [
-                tf.keras.callbacks.ModelCheckpoint(
-                    filepath=str(checkpoint_path),
-                    monitor="val_accuracy",
-                    mode="max",
-                    save_best_only=True,
-                    save_weights_only=False,
-                ),
-                tf.keras.callbacks.EarlyStopping(
-                    monitor="val_accuracy",
-                    mode="max",
-                    patience=config.early_stopping_patience,
-                    restore_best_weights=True,
-                ),
-            ]
-            history = model.fit(
-                train_ds,
-                validation_data=val_ds,
-                epochs=config.epochs,
-                class_weight=class_weight,
-                callbacks=callbacks,
-                verbose=2,
+            checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
+                filepath=str(checkpoint_path),
+                monitor="val_accuracy",
+                mode="max",
+                save_best_only=True,
+                save_weights_only=False,
             )
-            history_out = fold_dir / "history.json"
-            history_out.write_text(json.dumps(history.history, indent=2), encoding="utf-8")
+            history_chunks: list[dict[str, list[float]]] = []
+            completed_epochs = 0
 
-            val_true, val_pred = _evaluate_dataset(model, val_ds)
-            test_true, test_pred = _evaluate_dataset(model, test_ds)
+            if config.freeze_epochs and config.freeze_epochs > 0:
+                base.trainable = False
+                _compile_model(
+                    model,
+                    config.learning_rate,
+                    config.label_smoothing,
+                    num_classes=len(LABELS),
+                )
+                freeze_history = model.fit(
+                    train_ds,
+                    validation_data=val_ds,
+                    initial_epoch=completed_epochs,
+                    epochs=completed_epochs + config.freeze_epochs,
+                    class_weight=class_weight,
+                    callbacks=[
+                        checkpoint_callback,
+                        tf.keras.callbacks.EarlyStopping(
+                            monitor="val_accuracy",
+                            mode="max",
+                            patience=config.early_stopping_patience,
+                            restore_best_weights=True,
+                        ),
+                    ],
+                    verbose=2,
+                )
+                history_chunks.append(freeze_history.history)
+                completed_epochs += len(freeze_history.history.get("loss", []))
+
+            if config.fine_tune_epochs > 0:
+                trainable_backbone_layers = _set_backbone_trainable_layers(
+                    base,
+                    config.fine_tune_trainable_layers,
+                )
+                mlflow.log_param("fine_tune_trainable_layers_effective", trainable_backbone_layers)
+                _compile_model(
+                    model,
+                    config.fine_tune_learning_rate,
+                    config.label_smoothing,
+                    num_classes=len(LABELS),
+                )
+                fine_tune_history = model.fit(
+                    train_ds,
+                    validation_data=val_ds,
+                    initial_epoch=completed_epochs,
+                    epochs=completed_epochs + config.fine_tune_epochs,
+                    class_weight=class_weight,
+                    callbacks=[
+                        checkpoint_callback,
+                        tf.keras.callbacks.EarlyStopping(
+                            monitor="val_accuracy",
+                            mode="max",
+                            patience=config.early_stopping_patience,
+                            restore_best_weights=True,
+                        ),
+                    ],
+                    verbose=2,
+                )
+                history_chunks.append(fine_tune_history.history)
+
+            history = _merge_history_dicts(history_chunks)
+            history_out = fold_dir / "history.json"
+            history_out.write_text(json.dumps(history, indent=2), encoding="utf-8")
+
+            best_model = tf.keras.models.load_model(checkpoint_path, compile=False)
+            val_true, val_pred = _evaluate_dataset(best_model, val_ds)
+            test_true, test_pred = _evaluate_dataset(best_model, test_ds)
             val_metrics = _classification_metrics(val_true, val_pred)
             test_metrics = _classification_metrics(test_true, test_pred)
 
@@ -611,7 +799,7 @@ def export_best_model(
     dst_model = export_dir / "best_model.keras"
     shutil.copy2(src_model, dst_model)
 
-    model = tf.keras.models.load_model(dst_model)
+    model = tf.keras.models.load_model(dst_model, compile=False)
     saved_model_dir = export_dir / "saved_model"
     model.export(str(saved_model_dir))
 
