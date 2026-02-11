@@ -20,6 +20,8 @@ export type LaptopFocusSummary = {
 
 type TrackerOptions = {
   sampleIntervalMs?: number;
+  onSample?: (payload: { label: AttentionLabel; isFocused: boolean }) => void;
+  stream?: MediaStream;
 };
 
 const DEFAULT_SAMPLE_INTERVAL_MS = 400;
@@ -30,6 +32,7 @@ function clamp(v: number, lo: number, hi: number) {
 
 export class LaptopFocusTracker {
   private stream: MediaStream | null = null;
+  private ownsStream = true;
   private video: HTMLVideoElement | null = null;
   private detector: FaceDetector | null = null;
   private timer: number | null = null;
@@ -40,6 +43,7 @@ export class LaptopFocusTracker {
   private distractions = 0;
   private previousFocused: boolean | null = null;
   private readonly sampleIntervalMs: number;
+  private readonly onSample?: (payload: { label: AttentionLabel; isFocused: boolean }) => void;
   private readonly labelCounts: Record<AttentionLabel, number> = {
     screen: 0,
     away_left: 0,
@@ -51,6 +55,11 @@ export class LaptopFocusTracker {
 
   constructor(options: TrackerOptions = {}) {
     this.sampleIntervalMs = options.sampleIntervalMs ?? DEFAULT_SAMPLE_INTERVAL_MS;
+    this.onSample = options.onSample;
+    if (options.stream) {
+      this.stream = options.stream;
+      this.ownsStream = false;
+    }
   }
 
   async start() {
@@ -69,10 +78,13 @@ export class LaptopFocusTracker {
     });
 
     try {
-      this.stream = await navigator.mediaDevices.getUserMedia({
-        video: true,
-        audio: false,
-      });
+      if (!this.stream) {
+        this.stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false,
+        });
+        this.ownsStream = true;
+      }
 
       this.video = document.createElement('video');
       this.video.playsInline = true;
@@ -129,6 +141,8 @@ export class LaptopFocusTracker {
     const label = this.classifyAttentionLabel(box);
     const isFocused = label === 'screen';
 
+    this.onSample?.({ label, isFocused });
+
     this.labelCounts[label] += 1;
     if (isFocused) {
       this.focusedMs += deltaMs;
@@ -174,10 +188,10 @@ export class LaptopFocusTracker {
     const totalMeasuredMs = this.focusedMs + this.distractedMs;
     const focusPercent = totalMeasuredMs > 0 ? (this.focusedMs / totalMeasuredMs) * 100 : 0;
 
-    if (this.stream) {
+    if (this.stream && this.ownsStream) {
       this.stream.getTracks().forEach((track) => track.stop());
-      this.stream = null;
     }
+    this.stream = null;
     if (this.video) {
       this.video.pause();
       this.video.srcObject = null;

@@ -15,6 +15,7 @@ from .pipeline import (
     train_loso,
     write_manifest_and_report,
 )
+from .capstone_report import generate_capstone_report
 
 app = typer.Typer(
     help="StudyBuddy ML pipeline commands (validate, split, train, eval, export, serve).",
@@ -209,6 +210,60 @@ def show_summary(
         "mean_test_macro_f1": float(frame["test_macro_f1"].mean()),
     }
     typer.echo(json.dumps(payload, indent=2))
+
+
+@app.command("capstone-report")
+def capstone_report(
+    summary_csv: Path = typer.Option(
+        Path("artifacts/training/loso_summary.csv"),
+        "--summary-csv",
+        exists=True,
+        help="Summary CSV produced by train-loso.",
+    ),
+    folds_dir: Path = typer.Option(
+        Path("artifacts/training/folds"),
+        "--folds-dir",
+        exists=True,
+        file_okay=False,
+        help="Directory containing fold_*/ artifacts (history, confusion matrix, etc.).",
+    ),
+    out_md: Path = typer.Option(
+        Path("artifacts/reports/capstone_report.md"),
+        "--out-md",
+        help="Output markdown report path.",
+    ),
+    plots_dir: Path = typer.Option(
+        Path("artifacts/reports/plots"),
+        "--plots-dir",
+        help="Output directory for PNG plots referenced in the report.",
+    ),
+    criterion: str = typer.Option(
+        "test_macro_f1",
+        "--criterion",
+        help="Metric column from summary CSV used to pick the best fold.",
+    ),
+    config_path: Path | None = typer.Option(
+        None,
+        "--config-path",
+        help="Optional training config YAML to embed in the report.",
+    ),
+    data_validation_json: Path | None = typer.Option(
+        None,
+        "--data-validation-json",
+        help="Optional data validation JSON to embed in the report.",
+    ),
+) -> None:
+    meta = generate_capstone_report(
+        summary_csv=summary_csv,
+        folds_dir=folds_dir,
+        out_md=out_md,
+        plots_dir=plots_dir,
+        criterion=criterion,
+        config_path=config_path,
+        data_validation_json=data_validation_json,
+    )
+    typer.echo(f"[capstone-report] Wrote: {meta['out_md']}")
+    typer.echo(f"[capstone-report] Plots: {meta['plots_dir']}")
 
 
 if __name__ == "__main__":

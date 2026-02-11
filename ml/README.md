@@ -76,6 +76,12 @@ Run smoke test manually at any time:
 make smoke-inference
 ```
 
+Generate capstone-ready Markdown + plots (LOSO report):
+
+```bash
+make capstone-report
+```
+
 ## App integration (Milestone 6)
 
 The web app can stream webcam frames to the inference API during focus sessions.

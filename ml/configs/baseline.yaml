@@ -1,6 +1,7 @@
 experiment_name: studybuddy-headpose-loso
 seed: 42
 image_size: 224
+backbone: efficientnetv2b0
 batch_size: 32
 epochs: 12
 learning_rate: 0.001

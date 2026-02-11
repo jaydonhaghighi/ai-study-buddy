@@ -31,6 +31,7 @@ class TrainConfig:
     experiment_name: str = "studybuddy-headpose-loso"
     seed: int = 42
     image_size: int = 224
+    backbone: str = "efficientnetv2b0"
     batch_size: int = 32
     epochs: int = 12
     learning_rate: float = 1e-3
@@ -288,14 +289,39 @@ def _prepare_dataset(
     return ds
 
 
-def _build_model(image_size: int, num_classes: int, dropout: float, learning_rate: float) -> tf.keras.Model:
+def _build_model(
+    image_size: int,
+    num_classes: int,
+    dropout: float,
+    learning_rate: float,
+    backbone: str = "efficientnetv2b0",
+) -> tf.keras.Model:
     inputs = tf.keras.Input(shape=(image_size, image_size, 3), name="image")
-    x = tf.keras.applications.mobilenet_v2.preprocess_input(inputs)
-    base = tf.keras.applications.MobileNetV2(
-        include_top=False,
-        weights="imagenet",
-        input_shape=(image_size, image_size, 3),
-    )
+    bb = _slugify(backbone)
+    if bb in {"efficientnetv2b0", "efficientnet_v2_b0", "efficientnetv2_b0"}:
+        # EfficientNetV2 models include their own preprocessing when
+        # include_preprocessing=True. Our dataset produces float32 images in
+        # the 0..255 range, which matches the expected input for built-in preprocessing.
+        x = inputs
+        base = tf.keras.applications.efficientnet_v2.EfficientNetV2B0(
+            include_top=False,
+            weights="imagenet",
+            input_shape=(image_size, image_size, 3),
+            include_preprocessing=True,
+        )
+    elif bb in {"mobilenetv2", "mobilenet_v2"}:
+        x = tf.keras.applications.mobilenet_v2.preprocess_input(inputs)
+        base = tf.keras.applications.MobileNetV2(
+            include_top=False,
+            weights="imagenet",
+            input_shape=(image_size, image_size, 3),
+        )
+    else:
+        raise ValueError(
+            "Unsupported backbone. Use 'efficientnetv2b0' or 'mobilenetv2'. "
+            f"Got: {backbone!r}"
+        )
+
     base.trainable = False
     x = base(x, training=False)
     x = tf.keras.layers.GlobalAveragePooling2D()(x)
@@ -451,6 +477,7 @@ def train_loso(
             mlflow.log_params(
                 {
                     "image_size": config.image_size,
+                    "backbone": config.backbone,
                     "batch_size": config.batch_size,
                     "epochs": config.epochs,
                     "learning_rate": config.learning_rate,
@@ -464,6 +491,7 @@ def train_loso(
                 num_classes=len(LABELS),
                 dropout=config.dropout,
                 learning_rate=config.learning_rate,
+                backbone=config.backbone,
             )
             callbacks: list[tf.keras.callbacks.Callback] = [
                 tf.keras.callbacks.ModelCheckpoint(

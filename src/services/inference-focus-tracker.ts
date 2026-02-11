@@ -19,11 +19,24 @@ type SessionStopResponse = {
   summary: FocusPredictionSummary;
 };
 
+export type InferencePredictionPayload = {
+  session_id: string;
+  timestamp_ms: number;
+  raw_label: string;
+  raw_confidence: number;
+  smoothed_label: string;
+  smoothed_confidence: number;
+  state: string;
+  transitioned: boolean;
+};
+
 type TrackerOptions = {
   baseUrl?: string;
   sampleIntervalMs?: number;
   requestTimeoutMs?: number;
   jpegQuality?: number;
+  onPrediction?: (payload: InferencePredictionPayload) => void;
+  stream?: MediaStream;
 };
 
 const DEFAULT_BASE_URL = 'http://localhost:8001';
@@ -73,18 +86,30 @@ export class InferenceFocusTracker {
   private readonly jpegQuality: number;
 
   private stream: MediaStream | null = null;
+  private ownsStream = true;
   private video: HTMLVideoElement | null = null;
   private canvas: HTMLCanvasElement | null = null;
   private timer: number | null = null;
   private sessionId: string | null = null;
   private sampleInFlight = false;
   private frameSeq = 0;
+  private readonly onPrediction?: (payload: InferencePredictionPayload) => void;
+  private lastPrediction: InferencePredictionPayload | null = null;
 
   constructor(options: TrackerOptions = {}) {
     this.baseUrl = getBaseUrl(options.baseUrl);
     this.sampleIntervalMs = options.sampleIntervalMs ?? DEFAULT_SAMPLE_INTERVAL_MS;
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.jpegQuality = options.jpegQuality ?? DEFAULT_JPEG_QUALITY;
+    this.onPrediction = options.onPrediction;
+    if (options.stream) {
+      this.stream = options.stream;
+      this.ownsStream = false;
+    }
+  }
+
+  getLastPrediction(): InferencePredictionPayload | null {
+    return this.lastPrediction;
   }
 
   async start(): Promise<void> {
@@ -116,10 +141,13 @@ export class InferenceFocusTracker {
     this.sessionId = startPayload.session_id;
 
     try {
-      this.stream = await navigator.mediaDevices.getUserMedia({
-        video: true,
-        audio: false,
-      });
+      if (!this.stream) {
+        this.stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false,
+        });
+        this.ownsStream = true;
+      }
 
       this.video = document.createElement('video');
       this.video.playsInline = true;
@@ -177,6 +205,17 @@ export class InferenceFocusTracker {
         const text = await response.text().catch(() => '');
         throw new Error(`Frame upload failed (${response.status}): ${text || 'unknown error'}`);
       }
+
+      // The API returns a prediction payload for this frame; use it for live UI.
+      try {
+        const payload = (await response.json()) as InferencePredictionPayload;
+        if (payload && typeof payload.smoothed_label === 'string') {
+          this.lastPrediction = payload;
+          this.onPrediction?.(payload);
+        }
+      } catch {
+        // If body can't be parsed (or no body), keep going.
+      }
     } catch (error) {
       // Keep tracker alive on transient errors; caller sees warnings in console.
       console.warn('Inference frame upload error:', error);
@@ -223,10 +262,10 @@ export class InferenceFocusTracker {
   }
 
   private async cleanupMedia(): Promise<void> {
-    if (this.stream) {
+    if (this.stream && this.ownsStream) {
       this.stream.getTracks().forEach((track) => track.stop());
-      this.stream = null;
     }
+    this.stream = null;
     if (this.video) {
       this.video.pause();
       this.video.srcObject = null;

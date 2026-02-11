@@ -4,7 +4,7 @@ ML_COMPOSE = PI_AGENT_DATA_ROOT="$(PI_AGENT_DATA_ROOT)" $(DOCKER_COMPOSE) -f ml/
 TRAINER_CLI = $(ML_COMPOSE) run --rm trainer studybuddy-ml
 INFERENCE_URL ?= http://localhost:8001
 
-.PHONY: compose-check ml-build mlflow-up mlflow-down validate split-loso train-loso eval-loso export-best serve-gpu serve-gpu-detached smoke-inference ml-pipeline ml-run
+.PHONY: compose-check ml-build mlflow-up mlflow-down validate split-loso train-loso eval-loso export-best serve-gpu serve-gpu-detached smoke-inference ml-pipeline ml-run capstone-report
 
 compose-check:
 	@$(DOCKER_COMPOSE) version >/dev/null 2>&1 || ( \
@@ -77,3 +77,13 @@ ml-run: compose-check
 	$(MAKE) serve-gpu-detached
 	$(MAKE) smoke-inference
 	@echo "Done. MLflow: http://localhost:5001 | Inference: $(INFERENCE_URL)"
+
+capstone-report: compose-check
+	$(TRAINER_CLI) capstone-report \
+		--summary-csv /app/artifacts/training/loso_summary.csv \
+		--folds-dir /app/artifacts/training/folds \
+		--out-md /app/artifacts/reports/capstone_report.md \
+		--plots-dir /app/artifacts/reports/plots \
+		--criterion test_macro_f1 \
+		--config-path /app/configs/baseline.yaml \
+		--data-validation-json /app/artifacts/reports/data_validation.json
