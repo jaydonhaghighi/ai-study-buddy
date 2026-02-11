@@ -22,7 +22,8 @@ import {
 import { getAIResponse, createGenkitChat } from '../services/genkit-service';
 import { startFocusSession, stopFocusSession } from '../services/focus-service';
 import { LaptopFocusTracker } from '../services/laptop-focus-tracker';
-import { InferenceFocusTracker } from '../services/inference-focus-tracker';
+import { InferenceFocusTracker, type InferencePredictionPayload } from '../services/inference-focus-tracker';
+import { acquireWebcamStream } from '../services/webcam-manager';
 import WebcamCalibrationPreview from './WebcamCalibrationPreview';
 import FocusDashboard from './FocusDashboard';
 import settingsIcon from '../public/settings.svg';
@@ -94,6 +95,17 @@ interface ChatProps {
   user: User | null;
 }
 
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
 export default function Chat({ user }: ChatProps) {
   // Navigation State
   const [courses, setCourses] = useState<Course[]>([]);
@@ -128,8 +140,94 @@ export default function Chat({ user }: ChatProps) {
   const [editChatName, setEditChatName] = useState('');
   
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [toastVariant, setToastVariant] = useState<'success' | 'warning' | 'info'>('success');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsRef = useRef<HTMLDivElement>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const announcedFocusStateRef = useRef<'focused' | 'distracted' | null>(null);
+  const candidateFocusStateRef = useRef<'focused' | 'distracted' | null>(null);
+  const candidateSinceMsRef = useRef<number | null>(null);
+  const lastAnnounceMsRef = useRef<number>(0);
+  const uiFocusStateRef = useRef<'focused' | 'distracted' | null>(null);
+  const uiDistractionsRef = useRef<number>(0);
+
+  const showToast = (message: string, variant: 'success' | 'warning' | 'info' = 'success') => {
+    setToastVariant(variant);
+    setToastMessage(message);
+  };
+
+  const playBeep = (frequencyHz: number, durationMs: number, gain: number = 0.06) => {
+    try {
+      const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioContextCtor) return;
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new AudioContextCtor();
+      }
+      const ctx = audioCtxRef.current;
+      // best-effort resume; may still be blocked until user gesture (Start Focus counts)
+      if (ctx.state === 'suspended') {
+        void ctx.resume().catch(() => {});
+      }
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = frequencyHz;
+      g.gain.value = gain;
+      osc.connect(g);
+      g.connect(ctx.destination);
+      const now = ctx.currentTime;
+      osc.start(now);
+      osc.stop(now + durationMs / 1000);
+    } catch {
+      // ignore audio failures (permissions/autoplay policy)
+    }
+  };
+
+  const playFocusTransitionSound = (nextState: 'focused' | 'distracted') => {
+    if (nextState === 'distracted') {
+      playBeep(220, 140);
+      window.setTimeout(() => playBeep(220, 140), 170);
+    } else {
+      playBeep(660, 180);
+    }
+  };
+
+  const announceFocusState = (nextState: 'focused' | 'distracted', mode: 'fast' | 'transitioned') => {
+    // Prevent duplicate announcements
+    if (announcedFocusStateRef.current === nextState) return;
+
+    // Rate-limit to avoid spam when jittering
+    const now = Date.now();
+    if (now - lastAnnounceMsRef.current < 800) return;
+
+    announcedFocusStateRef.current = nextState;
+    lastAnnounceMsRef.current = now;
+
+    if (nextState === 'distracted') {
+      showToast(mode === 'fast' ? 'You are distracted' : 'You are distracted', 'warning');
+      playFocusTransitionSound('distracted');
+    } else {
+      showToast(mode === 'fast' ? "You're back in focus" : "You're back in focus", 'success');
+      playFocusTransitionSound('focused');
+    }
+  };
+
+  const resetUiDistractionCounter = () => {
+    uiFocusStateRef.current = null;
+    uiDistractionsRef.current = 0;
+    candidateFocusStateRef.current = null;
+    candidateSinceMsRef.current = null;
+    announcedFocusStateRef.current = null;
+    lastAnnounceMsRef.current = 0;
+  };
+
+  const applyUiFocusState = (nextState: 'focused' | 'distracted') => {
+    const prev = uiFocusStateRef.current;
+    if (prev === 'focused' && nextState === 'distracted') {
+      uiDistractionsRef.current += 1;
+    }
+    uiFocusStateRef.current = nextState;
+  };
 
   // Always-on camera preview (local webapp usage)
   const [cameraPreviewEnabled, setCameraPreviewEnabled] = useState(() => {
@@ -137,16 +235,68 @@ export default function Chat({ user }: ChatProps) {
     return localStorage.getItem('cameraPreviewEnabled') !== '0';
   });
   const [cameraPreviewAfterCalibration, setCameraPreviewAfterCalibration] = useState(false);
+  const previewVideoRef = useRef<HTMLVideoElement | null>(null);
+  const previewReleaseRef = useRef<null | (() => void)>(null);
+  const trackerReleaseRef = useRef<null | (() => void)>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
 
   useEffect(() => {
     localStorage.setItem('cameraPreviewEnabled', cameraPreviewEnabled ? '1' : '0');
   }, [cameraPreviewEnabled]);
+
+  // Shared camera preview: use a single MediaStream for preview (and potentially tracking).
+  useEffect(() => {
+    const shouldShowPreview = cameraPreviewEnabled && cameraPreviewAfterCalibration && mainView === 'chat';
+    let cancelled = false;
+
+    const stopPreview = () => {
+      if (previewReleaseRef.current) {
+        previewReleaseRef.current();
+        previewReleaseRef.current = null;
+      }
+      if (previewVideoRef.current) {
+        previewVideoRef.current.pause();
+        previewVideoRef.current.srcObject = null;
+      }
+    };
+
+    if (!shouldShowPreview) {
+      stopPreview();
+      return;
+    }
+
+    void (async () => {
+      try {
+        setPreviewError(null);
+        // Acquire shared stream for preview.
+        const { stream, release } = await acquireWebcamStream();
+        if (cancelled) {
+          release();
+          return;
+        }
+        previewReleaseRef.current = release;
+        const el = previewVideoRef.current;
+        if (!el) return;
+        el.srcObject = stream;
+        await el.play();
+      } catch (e: any) {
+        setPreviewError(e?.message || 'Could not start camera preview');
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      stopPreview();
+    };
+  }, [cameraPreviewEnabled, cameraPreviewAfterCalibration, mainView]);
 
   // Focus Tracking State
   const [activeFocusSession, setActiveFocusSession] = useState<FocusSession | null>(null);
   const [focusBusy, setFocusBusy] = useState(false);
   const [isLocalTrackerRunning, setIsLocalTrackerRunning] = useState(false);
   const [activeTrackerLabel, setActiveTrackerLabel] = useState<string | null>(null);
+  const [lastPose, setLastPose] = useState<InferencePredictionPayload | null>(null);
+  const [focusElapsedMs, setFocusElapsedMs] = useState<number>(0);
   const [showCalibrationModal, setShowCalibrationModal] = useState(false);
   const [pendingFocusStart, setPendingFocusStart] = useState<{
     courseId?: string;
@@ -154,6 +304,20 @@ export default function Chat({ user }: ChatProps) {
   } | null>(null);
   const localFocusTrackerRef = useRef<FocusTrackerRuntime | null>(null);
   const trackerSourceRef = useRef<TrackerSource | null>(null);
+  const focusStartLocalMsRef = useRef<number | null>(null);
+
+  // Avoid camera conflicts: pause shared preview while calibration modal is open.
+  useEffect(() => {
+    if (!showCalibrationModal) return;
+    if (previewReleaseRef.current) {
+      previewReleaseRef.current();
+      previewReleaseRef.current = null;
+    }
+    if (previewVideoRef.current) {
+      previewVideoRef.current.pause();
+      previewVideoRef.current.srcObject = null;
+    }
+  }, [showCalibrationModal]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -247,6 +411,14 @@ export default function Chat({ user }: ChatProps) {
     return () => {
       const tracker = localFocusTrackerRef.current;
       localFocusTrackerRef.current = null;
+      if (trackerReleaseRef.current) {
+        trackerReleaseRef.current();
+        trackerReleaseRef.current = null;
+      }
+      if (previewReleaseRef.current) {
+        previewReleaseRef.current();
+        previewReleaseRef.current = null;
+      }
       if (tracker) {
         void tracker.stop().catch((error) => {
           console.error('Error stopping local focus tracker during cleanup:', error);
@@ -259,6 +431,9 @@ export default function Chat({ user }: ChatProps) {
     if (activeFocusSession) return;
     trackerSourceRef.current = null;
     setActiveTrackerLabel(null);
+    setLastPose(null);
+    setFocusElapsedMs(0);
+    focusStartLocalMsRef.current = null;
     const tracker = localFocusTrackerRef.current;
     if (!tracker) return;
     localFocusTrackerRef.current = null;
@@ -267,6 +442,21 @@ export default function Chat({ user }: ChatProps) {
       console.error('Error stopping local focus tracker after session ended:', error);
     });
   }, [activeFocusSession]);
+
+  useEffect(() => {
+    if (!activeFocusSession) return;
+    const startMs =
+      activeFocusSession.startedAt?.getTime?.() ??
+      focusStartLocalMsRef.current ??
+      Date.now();
+
+    const tick = () => {
+      setFocusElapsedMs(Date.now() - startMs);
+    };
+    tick();
+    const id = window.setInterval(tick, 1000);
+    return () => window.clearInterval(id);
+  }, [activeFocusSession?.id, activeFocusSession?.startedAt]);
 
   // 2. Fetch Sessions (when a course is expanded)
   useEffect(() => {
@@ -495,10 +685,10 @@ export default function Chat({ user }: ChatProps) {
     try {
       await deleteDoc(doc(db, 'chats', chatId));
       if (selectedChatId === chatId) setSelectedChatId(null);
-      setToastMessage("Chat deleted");
+      showToast("Chat deleted", "success");
     } catch (error) {
       console.error('Error deleting chat:', error);
-      setToastMessage("Error deleting chat");
+      showToast("Error deleting chat", "warning");
     }
   };
 
@@ -528,6 +718,10 @@ export default function Chat({ user }: ChatProps) {
       const tracker = localFocusTrackerRef.current;
       localFocusTrackerRef.current = null;
       trackerSourceRef.current = null;
+      if (trackerReleaseRef.current) {
+        trackerReleaseRef.current();
+        trackerReleaseRef.current = null;
+      }
       if (tracker) {
         try {
           await tracker.stop();
@@ -537,6 +731,7 @@ export default function Chat({ user }: ChatProps) {
       }
       setIsLocalTrackerRunning(false);
       setActiveTrackerLabel(null);
+      setLastPose(null);
       await signOut(auth);
       setCourses([]);
       setSessions([]);
@@ -566,11 +761,13 @@ export default function Chat({ user }: ChatProps) {
 
     setFocusBusy(true);
     try {
+      resetUiDistractionCounter();
       const res = await startFocusSession({
         userId: user.uid,
         courseId: pendingFocusStart.courseId,
         sessionId: pendingFocusStart.sessionId,
       });
+      focusStartLocalMsRef.current = Date.now();
 
       // Start server inference tracker first; fallback to local tracker if server is unavailable.
       try {
@@ -579,34 +776,106 @@ export default function Chat({ user }: ChatProps) {
         let label = 'Server ML inference';
 
         try {
-          const remoteTracker = new InferenceFocusTracker();
+          const acquired = await acquireWebcamStream();
+          trackerReleaseRef.current = acquired.release;
+          const remoteTracker = new InferenceFocusTracker({
+            stream: acquired.stream,
+            onPrediction: (p) => {
+              // 5 FPS updates are fine, but avoid extra renders if nothing changed
+              setLastPose((prev) => {
+                if (!prev) return p;
+                if (
+                  prev.smoothed_label !== p.smoothed_label ||
+                  prev.smoothed_confidence !== p.smoothed_confidence ||
+                  prev.state !== p.state
+                ) {
+                  return p;
+                }
+                return prev;
+              });
+
+              if (p.transitioned) {
+                if (p.state === 'distracted') {
+                  announceFocusState('distracted', 'transitioned');
+                } else if (p.state === 'focused') {
+                  announceFocusState('focused', 'transitioned');
+                }
+              }
+
+              // Fast UI-only detector (does NOT affect logged summaries):
+              // If the model's smoothed label is away/screen with sufficient confidence,
+              // notify after a short debounce so quick in/out still registers.
+              const conf = typeof p.smoothed_confidence === 'number' ? p.smoothed_confidence : 0;
+              const uiCandidate: 'focused' | 'distracted' | null =
+                conf >= 0.55 ? (p.smoothed_label === 'screen' ? 'focused' : 'distracted') : null;
+
+              const now = Date.now();
+              if (uiCandidate !== candidateFocusStateRef.current) {
+                candidateFocusStateRef.current = uiCandidate;
+                candidateSinceMsRef.current = uiCandidate ? now : null;
+              } else if (uiCandidate && candidateSinceMsRef.current != null) {
+                const elapsed = now - candidateSinceMsRef.current;
+                const requiredMs = uiCandidate === 'distracted' ? 600 : 300;
+                if (elapsed >= requiredMs) {
+                  // Use the fast UI detector for the distraction counter.
+                  applyUiFocusState(uiCandidate);
+                  announceFocusState(uiCandidate, 'fast');
+                  // Reset so it doesn't re-announce continuously.
+                  candidateFocusStateRef.current = null;
+                  candidateSinceMsRef.current = null;
+                }
+              }
+            },
+          });
           await remoteTracker.start();
           tracker = remoteTracker;
+          setLastPose(remoteTracker.getLastPrediction());
         } catch (remoteError) {
           console.warn('Could not start server inference tracker. Falling back to local webcam tracker.', remoteError);
-          const fallbackTracker = new LaptopFocusTracker();
+          let lastFocused: boolean | null = null;
+          const acquired = await acquireWebcamStream();
+          trackerReleaseRef.current = acquired.release;
+          const fallbackTracker = new LaptopFocusTracker({
+            stream: acquired.stream,
+            onSample: ({ isFocused }) => {
+              if (lastFocused == null) {
+                lastFocused = isFocused;
+                return;
+              }
+              if (lastFocused && !isFocused) {
+                showToast('You are distracted', 'warning');
+                playFocusTransitionSound('distracted');
+              } else if (!lastFocused && isFocused) {
+                showToast("You're back in focus", 'success');
+                playFocusTransitionSound('focused');
+              }
+              lastFocused = isFocused;
+            },
+          });
           await fallbackTracker.start();
           tracker = fallbackTracker;
           trackerSource = 'laptop_webcam';
           label = 'Laptop webcam (fallback)';
+          setLastPose(null);
         }
 
         localFocusTrackerRef.current = tracker;
         trackerSourceRef.current = trackerSource;
         setActiveTrackerLabel(label);
         setIsLocalTrackerRunning(true);
-        setToastMessage(`Focus tracking started (${res.focusSessionId.slice(0, 6)}...) via ${label}.`);
+        showToast(`Focus tracking started (${res.focusSessionId.slice(0, 6)}...) via ${label}.`, 'success');
       } catch (trackerError) {
         localFocusTrackerRef.current = null;
         trackerSourceRef.current = null;
         setActiveTrackerLabel(null);
+        setLastPose(null);
         setIsLocalTrackerRunning(false);
         console.warn('Could not start any focus tracker:', trackerError);
-        setToastMessage('Focus started, but tracking is unavailable on this device.');
+        showToast('Focus started, but tracking is unavailable on this device.', 'warning');
       }
     } catch (error) {
       console.error('Error starting focus session:', error);
-      setToastMessage("Error starting focus tracking");
+      showToast("Error starting focus tracking", 'warning');
     } finally {
       setFocusBusy(false);
       setPendingFocusStart(null);
@@ -620,7 +889,10 @@ export default function Chat({ user }: ChatProps) {
     const trackerSource = trackerSourceRef.current;
     localFocusTrackerRef.current = null;
     trackerSourceRef.current = null;
+      const releaseTrackerStream = trackerReleaseRef.current;
+      trackerReleaseRef.current = null;
     setActiveTrackerLabel(null);
+    setLastPose(null);
     setIsLocalTrackerRunning(false);
     let sessionStopped = false;
     try {
@@ -631,7 +903,17 @@ export default function Chat({ user }: ChatProps) {
       sessionStopped = true;
 
       if (tracker) {
+        // Capture before any possible async resets/races.
+        const uiDistractions = uiDistractionsRef.current;
         const summary = await tracker.stop();
+        const finalSummary =
+          trackerSource === 'ml_inference_api'
+            ? {
+                ...summary,
+                distractions: uiDistractions,
+                distractionsSource: 'ui_fast',
+              }
+            : summary;
         await setDoc(
           doc(db, 'focusSummaries', activeFocusSession.id),
           {
@@ -641,19 +923,23 @@ export default function Chat({ user }: ChatProps) {
             courseId: activeFocusSession.courseId || null,
             sessionId: activeFocusSession.sessionId || null,
             createdAt: serverTimestamp(),
-            ...summary,
+            ...finalSummary,
           },
           { merge: true }
         );
         const sourceText = trackerSource === 'ml_inference_api' ? 'server ML inference' : 'laptop webcam';
-        setToastMessage(`Focus tracking stopped. Summary saved from ${sourceText}.`);
+        showToast(`Focus tracking stopped. Summary saved from ${sourceText}.`, 'success');
+        resetUiDistractionCounter();
       } else {
-        setToastMessage('Focus tracking stopped. No tracking summary was captured.');
+        showToast('Focus tracking stopped. No tracking summary was captured.', 'info');
+        resetUiDistractionCounter();
       }
+      releaseTrackerStream?.();
     } catch (error) {
       if (tracker && !sessionStopped) {
         localFocusTrackerRef.current = tracker;
         trackerSourceRef.current = trackerSource;
+        trackerReleaseRef.current = releaseTrackerStream ?? null;
         if (trackerSource === 'ml_inference_api') {
           setActiveTrackerLabel('Server ML inference');
         } else if (trackerSource === 'laptop_webcam') {
@@ -662,7 +948,7 @@ export default function Chat({ user }: ChatProps) {
         setIsLocalTrackerRunning(true);
       }
       console.error('Error stopping focus session:', error);
-      setToastMessage("Error stopping focus tracking");
+      showToast("Error stopping focus tracking", 'warning');
     } finally {
       setFocusBusy(false);
     }
@@ -924,6 +1210,12 @@ export default function Chat({ user }: ChatProps) {
                   <div className="chat-header-meta">
                     <span className="chat-header-pill">Focus active</span>
                     <span>{activeTrackerLabel ?? 'Webcam tracking'}</span>
+                    <span>Duration: {formatDuration(focusElapsedMs)}</span>
+                    {lastPose && (
+                      <span>
+                        Pose: {lastPose.smoothed_label} ({Math.round(lastPose.smoothed_confidence * 100)}%)
+                      </span>
+                    )}
                   </div>
                 )}
               </div>
@@ -1023,11 +1315,13 @@ export default function Chat({ user }: ChatProps) {
 
           <div className="preview-sidebar-body">
             {isLocalTrackerRunning ? (
-              <div className="preview-sidebar-empty">
-                <p>
-                  Focus tracking is running in the background. Live preview pauses during tracking to avoid camera conflicts.
-                </p>
-              </div>
+              previewError ? (
+                <div className="preview-sidebar-empty">
+                  <p>Camera preview unavailable: {previewError}</p>
+                </div>
+              ) : (
+                <video ref={previewVideoRef} className="preview-video" playsInline muted />
+              )
             ) : !cameraPreviewAfterCalibration ? (
               <div className="preview-sidebar-empty">
                 <p>
@@ -1035,14 +1329,20 @@ export default function Chat({ user }: ChatProps) {
                 </p>
               </div>
             ) : (
-              <WebcamCalibrationPreview variant="embedded" mode="monitor" autoStart />
+              previewError ? (
+                <div className="preview-sidebar-empty">
+                  <p>Camera preview unavailable: {previewError}</p>
+                </div>
+              ) : (
+                <video ref={previewVideoRef} className="preview-video" playsInline muted />
+              )
             )}
           </div>
         </div>
       )}
       
       {toastMessage && (
-        <div className="toast-notification">
+        <div className={`toast-notification ${toastVariant === 'warning' ? 'toast-warning' : toastVariant === 'info' ? 'toast-info' : ''}`}>
           {toastMessage}
         </div>
       )}
