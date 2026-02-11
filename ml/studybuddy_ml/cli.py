@@ -237,6 +237,11 @@ def capstone_report(
         "--plots-dir",
         help="Output directory for PNG plots referenced in the report.",
     ),
+    run_dir: Path | None = typer.Option(
+        None,
+        "--run-dir",
+        help="Optional run directory. If set, report is written to <run-dir>/capstone_report.md and plots to <run-dir>/plots.",
+    ),
     criterion: str = typer.Option(
         "test_macro_f1",
         "--criterion",
@@ -261,6 +266,7 @@ def capstone_report(
         criterion=criterion,
         config_path=config_path,
         data_validation_json=data_validation_json,
+        run_dir=run_dir,
     )
     typer.echo(f"[capstone-report] Wrote: {meta['out_md']}")
     typer.echo(f"[capstone-report] Plots: {meta['plots_dir']}")

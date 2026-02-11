@@ -17,6 +17,7 @@ services:
       context: .
       dockerfile: Dockerfile
     working_dir: /app
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
     gpus: all
     environment:
       MLFLOW_TRACKING_URI: http://mlflow:5000
@@ -24,6 +25,7 @@ services:
     volumes:
       - ${PI_AGENT_DATA_ROOT:-/home/haghighi/Documents/pi-agent-data}:/datasets:ro,z
       - ./artifacts:/app/artifacts:z
+      - ./artifacts/mlflow:/mlflow:z
     depends_on:
       - mlflow
 
@@ -32,11 +34,11 @@ services:
       context: .
       dockerfile: Dockerfile
     working_dir: /app
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
     gpus: all
     environment:
       STUDYBUDDY_MODEL_PATH: /app/artifacts/export/best_model.keras
-      STUDYBUDDY_IMAGE_SIZE: 224
-      STUDYBUDDY_CORS_ORIGINS: ${STUDYBUDDY_CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      STUDYBUDDY_CORS_ORIGINS: ${STUDYBUDDY_CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174,http://localhost:5175,http://127.0.0.1:5175}
     command: uvicorn studybuddy_ml.serve_api:app --host 0.0.0.0 --port 8000
     ports:
       - "8001:8000"
