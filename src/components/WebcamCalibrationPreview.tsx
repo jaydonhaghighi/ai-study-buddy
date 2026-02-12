@@ -315,4 +315,3 @@ export default function WebcamCalibrationPreview({
     </div>
   );
 }
-
