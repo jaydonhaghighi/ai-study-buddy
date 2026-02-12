@@ -93,6 +93,7 @@ type TrackerSource = 'ml_inference_api' | 'laptop_webcam';
 const FAST_UI_CONFIDENCE_THRESHOLD = 0.45;
 const FAST_UI_DISTRACT_HOLD_MS = 450;
 const FAST_UI_REFOCUS_HOLD_MS = 250;
+const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 72;
 
 interface ChatProps {
   user: User | null;
@@ -324,6 +325,8 @@ export default function Chat({ user }: ChatProps) {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const autoScrollEnabledRef = useRef(true);
+  const wasLoadingRef = useRef(false);
 
   useEffect(() => {
     if (!settingsOpen) return;
@@ -352,13 +355,37 @@ export default function Chat({ user }: ChatProps) {
     }
   }, [toastMessage]);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  const isNearBottom = () => {
+    const container = messagesContainerRef.current;
+    if (!container) return true;
+    const distanceToBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight;
+    return distanceToBottom <= AUTO_SCROLL_BOTTOM_THRESHOLD_PX;
+  };
+
+  const handleMessagesScroll = () => {
+    autoScrollEnabledRef.current = isNearBottom();
+  };
+
+  const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
+    messagesEndRef.current?.scrollIntoView({ behavior });
   };
 
   useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
+    autoScrollEnabledRef.current = true;
+    const raf = window.requestAnimationFrame(() => {
+      scrollToBottom('auto');
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [selectedChatId, mainView]);
+
+  useEffect(() => {
+    const justFinishedGeneration = wasLoadingRef.current && !loading;
+    wasLoadingRef.current = loading;
+    if (justFinishedGeneration) return;
+    if (!autoScrollEnabledRef.current) return;
+    scrollToBottom(loading ? 'auto' : 'smooth');
+  }, [messages, loading]);
 
   // 1. Fetch Courses
   useEffect(() => {
@@ -625,6 +652,7 @@ export default function Chat({ user }: ChatProps) {
     const userMessage = input.trim();
     setInput('');
     setLoading(true);
+    autoScrollEnabledRef.current = true;
 
     try {
       // Save user message
@@ -1031,6 +1059,14 @@ export default function Chat({ user }: ChatProps) {
   }
 
   const currentChat = chats.find(c => c.id === selectedChatId);
+  const visibleMessages = messages.filter((m) => {
+    // Avoid rendering empty AI bubbles (e.g. streaming placeholder before first chunk).
+    if (m.isAI && (!m.text || m.text.trim().length === 0)) return false;
+    return true;
+  });
+  const hasStreamingAiText = messages.some(
+    (m) => m.isAI && m.id.startsWith('temp-') && !!m.text && m.text.trim().length > 0
+  );
 
   return (
     <div className={`chat-container ${cameraPreviewEnabled && mainView === 'chat' ? 'preview-sidebar-open' : ''}`}>
@@ -1264,7 +1300,7 @@ export default function Chat({ user }: ChatProps) {
           <FocusDashboard userId={user.uid} />
         ) : (
           <>
-            <div className="chat-messages" ref={messagesContainerRef}>
+            <div className="chat-messages" ref={messagesContainerRef} onScroll={handleMessagesScroll}>
               {!selectedChatId ? (
                 <div className="chat-welcome">
                   <div className="welcome-icon">💬</div>
@@ -1273,7 +1309,7 @@ export default function Chat({ user }: ChatProps) {
                 </div>
               ) : (
                 <>
-                  {messages.map((message) => (
+                  {visibleMessages.map((message) => (
                     <div key={message.id} className={`message ${!message.isAI ? 'message-user' : 'message-ai'}`}>
                       <div className="message-content">
                         <div className="message-header">
@@ -1316,7 +1352,15 @@ export default function Chat({ user }: ChatProps) {
                       </div>
                     </div>
                   ))}
-                  {loading && <div className="message message-ai"><div className="message-content"><div className="typing-indicator"><span></span><span></span><span></span></div></div></div>}
+                  {loading && !hasStreamingAiText && (
+                    <div className="message message-ai">
+                      <div className="message-content">
+                        <div className="typing-indicator">
+                          <span></span><span></span><span></span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                   <div ref={messagesEndRef} />
                 </>
               )}

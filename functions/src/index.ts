@@ -3,19 +3,18 @@ import { initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import crypto from "crypto";
 import { genkit, SessionStore, SessionData } from "genkit/beta";
-import { googleAI } from "@genkit-ai/googleai";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { openAI } from "@genkit-ai/compat-oai/openai";
 
 initializeApp();
 const db = getFirestore();
 
-const MODEL_NAME = "gemini-2.5-flash";
+const MODEL_NAME = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
 const ai = genkit({
-  plugins: [googleAI({
-    apiKey: process.env.GOOGLE_GENAI_API_KEY || "",
+  plugins: [openAI({
+    apiKey: process.env.OPENAI_API_KEY || "",
   })],
-  model: googleAI.model(MODEL_NAME),
+  model: openAI.model(MODEL_NAME),
 });
 
 interface StudyBuddyState {
@@ -114,7 +113,7 @@ Remember: Your goal is to help students learn effectively, not just provide answ
 const FUNCTION_CONFIG = {
   cors: true,
   region: "us-central1" as const,
-  secrets: ["GOOGLE_GENAI_API_KEY"],
+  secrets: ["OPENAI_API_KEY"],
 };
 
 function okJson(res: any, body: any) {
@@ -206,34 +205,38 @@ export const focusStop = onRequest(
   }
 );
 
-function getGenerativeModel(systemInstruction?: string) {
-  const apiKey = process.env.GOOGLE_GENAI_API_KEY || "";
-  const genAI = new GoogleGenerativeAI(apiKey);
-  return genAI.getGenerativeModel({ 
-    model: MODEL_NAME,
-    systemInstruction: systemInstruction,
-  });
-}
+type ChatHistoryMessage = {
+  role: "user" | "model";
+  content: string;
+};
 
-function getStudyBuddyModel() {
-  return getGenerativeModel(SYSTEM_INSTRUCTION);
-}
+type GenkitMessage = {
+  role: "user" | "model";
+  content: Array<{ text: string }>;
+};
 
-function convertHistoryToChatFormat(history: any[]): Array<{ role: string; parts: Array<{ text: string }> }> {
-  return history
-    .filter((h: any) => h && h.role && h.content && typeof h.content === "string")
-    .map((h: any) => ({
-      role: h.role === "user" ? "user" : "model",
-      parts: [{ text: h.content }],
-    }))
-    .filter((h: any) => h.parts[0].text.trim().length > 0);
-}
-
-function ensureHistoryStartsWithUser(chatHistory: Array<{ role: string; parts: Array<{ text: string }> }>) {
-  while (chatHistory.length > 0 && chatHistory[0].role !== "user") {
-    chatHistory.shift();
+function convertHistoryToMessages(history: any[]): ChatHistoryMessage[] {
+  const out: ChatHistoryMessage[] = [];
+  for (const h of history) {
+    if (!h || typeof h.content !== "string") continue;
+    const content = h.content.trim();
+    if (!content) continue;
+    const role: ChatHistoryMessage["role"] = h.role === "user" ? "user" : "model";
+    out.push({ role, content });
   }
-  return chatHistory;
+  return out;
+}
+
+function toGenkitMessages(history: ChatHistoryMessage[], userMessage: string): GenkitMessage[] {
+  const messages: GenkitMessage[] = history.map((h) => ({
+    role: h.role,
+    content: [{ text: h.content }],
+  }));
+  messages.push({
+    role: "user",
+    content: [{ text: userMessage }],
+  });
+  return messages;
 }
 
 function setSSEHeaders(res: any) {
@@ -293,13 +296,11 @@ export const chat = onRequest(
         return;
       }
 
-      const model = getStudyBuddyModel();
       const sessionDoc = await db.collection("genkit_sessions").doc(session.id).get();
       const sessionData = sessionDoc.data() as any;
       const history = sessionData?.history || [];
 
-      let chatHistory = convertHistoryToChatFormat(history);
-      chatHistory = ensureHistoryStartsWithUser(chatHistory);
+      const chatHistory = convertHistoryToMessages(history);
       setSSEHeaders(res);
 
       // Check if we need to generate a title (look in 'chats' collection now)
@@ -308,29 +309,53 @@ export const chat = onRequest(
       // Fallback to 'sessions' for backward compatibility if needed, but focusing on new structure
       const isNewChat = publicChatDoc.exists && publicChatDoc.data()?.name === "New Chat";
 
-      let fullText = '';
-      const streamingChat = model.startChat({
-        history: chatHistory,
-        generationConfig: { temperature: 0.7 },
-      });
-
-      const result = await streamingChat.sendMessageStream(message);
-      
-      for await (const chunk of result.stream) {
-        const chunkText = chunk.text();
-        if (chunkText) {
-          fullText += chunkText;
-          res.write(`data: ${JSON.stringify({ text: chunkText, done: false })}\n\n`);
-        }
+      let fullText = "";
+      const modelMessages = toGenkitMessages(chatHistory, message);
+      const finalResponse = await ai.generate({
+        model: openAI.model(MODEL_NAME),
+        system: SYSTEM_INSTRUCTION,
+        messages: modelMessages,
+        config: { temperature: 0.7 },
+        onChunk: (chunk: any) => {
+          const chunkText =
+            typeof (chunk as any).text === "string"
+              ? (chunk as any).text
+              : typeof (chunk as any).text === "function"
+                ? (chunk as any).text()
+                : "";
+          if (chunkText) {
+            fullText += chunkText;
+            res.write(`data: ${JSON.stringify({ text: chunkText, done: false })}\n\n`);
+          }
+        },
+      } as any);
+      const finalText =
+        typeof (finalResponse as any).text === "string"
+          ? (finalResponse as any).text
+          : typeof (finalResponse as any).text === "function"
+            ? (finalResponse as any).text()
+            : "";
+      if (typeof finalText === "string" && finalText.length >= fullText.length) {
+        fullText = finalText;
       }
 
       // Generate title if needed
       let newSessionName = null;
       if (isNewChat) {
         try {
-          const titleModel = getGenerativeModel("You are a helpful assistant that generates short, concise titles for chat sessions.");
-          const titleResult = await titleModel.generateContent(`Generate a short, concise title (max 6 words) for a chat based on this initial user message: "${message}". Do not use quotes.`);
-          const title = titleResult.response.text().trim();
+          const titleResult = await ai.generate({
+            model: openAI.model(MODEL_NAME),
+            system: "You are a helpful assistant that generates short, concise titles for chat sessions.",
+            prompt: `Generate a short, concise title (max 6 words) for a chat based on this initial user message: "${message}". Do not use quotes.`,
+            config: { temperature: 0.2, maxOutputTokens: 24 },
+          } as any);
+          const rawTitle =
+            typeof (titleResult as any).text === "string"
+              ? (titleResult as any).text
+              : typeof (titleResult as any).text === "function"
+                ? (titleResult as any).text()
+                : "";
+          const title = rawTitle.trim().replace(/^['"]+|['"]+$/g, "").trim();
           if (title) {
             await publicChatRef.update({ name: title });
             newSessionName = title;
@@ -341,7 +366,7 @@ export const chat = onRequest(
       }
 
       const updatedHistory = [
-        ...chatHistory.map((h: any) => ({ role: h.role, content: h.parts[0].text })),
+        ...chatHistory,
         { role: "user", content: message },
         { role: "model", content: fullText },
       ];
