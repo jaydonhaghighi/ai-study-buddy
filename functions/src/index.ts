@@ -4,9 +4,16 @@ import { getFirestore } from "firebase-admin/firestore";
 import crypto from "crypto";
 import { genkit, SessionStore, SessionData } from "genkit/beta";
 import { openAI } from "@genkit-ai/compat-oai/openai";
+import type {
+  GenerateOptions,
+  GenerateResponse,
+  GenerateResponseChunk,
+  MessageData,
+} from "genkit";
 
 initializeApp();
 const db = getFirestore();
+const MAIN_THREAD = "main";
 
 const MODEL_NAME = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
@@ -32,30 +39,42 @@ class FirestoreSessionStore<S = any> implements SessionStore<S> {
       if (!sessionDoc.exists) {
         return undefined;
       }
-      const data = sessionDoc.data();
-      const sessionData: any = {
+      const data = sessionDoc.data() as {
+        state?: S;
+        threads?: Record<string, MessageData[]>;
+        history?: Array<{ role?: unknown; content?: unknown }>;
+      };
+      const sessionData: SessionData<S> = {
         id: sessionId,
         state: (data?.state || {}) as S,
       };
-      if (data?.history) {
-        sessionData.history = data.history;
-        console.log("Loaded session with history:", {
-          sessionId,
-          messageCount: Array.isArray(data.history) ? data.history.length : 0,
-        });
-      } else if (data?.threads) {
-        const threads = data.threads;
-        const threadKeys = Object.keys(threads);
-        const firstThread = threadKeys.length > 0 ? threads[threadKeys[0]] : [];
-        sessionData.history = Array.isArray(firstThread) ? firstThread : [];
-        console.log("Migrated threads to history format:", {
-          sessionId,
-          messageCount: sessionData.history.length,
-        });
-      } else {
-        sessionData.history = [];
-        console.log("Loaded session without history:", sessionId);
+
+      if (data?.threads && typeof data.threads === "object") {
+        sessionData.threads = data.threads;
       }
+
+      // Back-compat: older sessions stored flat "history".
+      if (!sessionData.threads) {
+        const legacyThread: MessageData[] = Array.isArray(data?.history)
+          ? data.history
+              .filter((m): m is { role: unknown; content: unknown } => !!m)
+              .map((m) => {
+                const role: "user" | "model" = m.role === "user" ? "user" : "model";
+                return {
+                  role,
+                  content: [{ text: typeof m.content === "string" ? m.content : "" }],
+                };
+              })
+              .filter((m) => m.content[0].text.trim().length > 0)
+          : [];
+        sessionData.threads = { [MAIN_THREAD]: legacyThread };
+      }
+
+      console.log("Loaded session with history:", {
+        sessionId,
+        messageCount: sessionData.threads?.[MAIN_THREAD]?.length ?? 0,
+      });
+
       return sessionData as SessionData<S>;
     } catch (error) {
       console.error("Error loading session:", error);
@@ -65,18 +84,15 @@ class FirestoreSessionStore<S = any> implements SessionStore<S> {
 
   async save(sessionId: string, data: SessionData<S>): Promise<void> {
     try {
-      const saveData: any = {
+      const saveData: SessionData<S> & { updatedAt: Date } = {
         id: sessionId,
-        state: data.state || {},
+        state: data.state ?? ({} as S),
+        threads: data.threads || { [MAIN_THREAD]: [] },
         updatedAt: new Date(),
       };
-      const dataAny = data as any;
-      if (dataAny.history) {
-        saveData.history = dataAny.history;
-      }
       console.log("Saving session with history:", {
         sessionId,
-        messageCount: Array.isArray(dataAny.history) ? dataAny.history.length : 0,
+        messageCount: saveData.threads?.[MAIN_THREAD]?.length ?? 0,
       });
       await db.collection("genkit_sessions").doc(sessionId).set(saveData, { merge: true });
       console.log("Session saved successfully with history");
@@ -190,8 +206,8 @@ export const focusStop = onRequest(
         sendErrorResponse(res, 404, "Focus session not found");
         return;
       }
-      const fs = fsDoc.data() as any;
-      if (fs.userId !== userId) {
+      const fs = fsDoc.data() as { userId?: string } | undefined;
+      if (!fs || fs.userId !== userId) {
         sendErrorResponse(res, 403, "Not allowed");
         return;
       }
@@ -210,28 +226,29 @@ type ChatHistoryMessage = {
   content: string;
 };
 
-type GenkitMessage = {
-  role: "user" | "model";
-  content: Array<{ text: string }>;
-};
-
-function convertHistoryToMessages(history: any[]): ChatHistoryMessage[] {
+function fromThreadMessages(messages: MessageData[] | undefined): ChatHistoryMessage[] {
   const out: ChatHistoryMessage[] = [];
-  for (const h of history) {
-    if (!h || typeof h.content !== "string") continue;
-    const content = h.content.trim();
+  for (const message of messages || []) {
+    if (message.role !== "user" && message.role !== "model") continue;
+    const content = message.content
+      .map((part) => (typeof part.text === "string" ? part.text : ""))
+      .join("")
+      .trim();
     if (!content) continue;
-    const role: ChatHistoryMessage["role"] = h.role === "user" ? "user" : "model";
-    out.push({ role, content });
+    out.push({ role: message.role, content });
   }
   return out;
 }
 
-function toGenkitMessages(history: ChatHistoryMessage[], userMessage: string): GenkitMessage[] {
-  const messages: GenkitMessage[] = history.map((h) => ({
+function toThreadMessages(history: ChatHistoryMessage[]): MessageData[] {
+  return history.map((h) => ({
     role: h.role,
     content: [{ text: h.content }],
   }));
+}
+
+function toGenkitMessages(history: ChatHistoryMessage[], userMessage: string): MessageData[] {
+  const messages = toThreadMessages(history);
   messages.push({
     role: "user",
     content: [{ text: userMessage }],
@@ -257,15 +274,6 @@ function sendServerError(res: any, error: unknown) {
   });
 }
 
-async function loadSessionOrError(sessionId: string, res: any) {
-  const session = await ai.loadSession(sessionId, { store: sessionStore });
-  if (!session) {
-    sendErrorResponse(res, 404, "Session not found. The session may have been deleted or never created.");
-    return null;
-  }
-  return session;
-}
-
 export const chat = onRequest(
   FUNCTION_CONFIG,
   async (req, res) => {
@@ -287,7 +295,11 @@ export const chat = onRequest(
       // makes chat creation feel instant in the UI.
       let session = await ai.loadSession(sessionId, { store: sessionStore });
       if (!session) {
-        await sessionStore.save(sessionId, { id: sessionId, state: {}, history: [] } as any);
+        await sessionStore.save(sessionId, {
+          id: sessionId,
+          state: {},
+          threads: { [MAIN_THREAD]: [] },
+        });
         session = await ai.loadSession(sessionId, { store: sessionStore });
       }
       // If it still fails, treat as server error (store issues, etc).
@@ -296,11 +308,8 @@ export const chat = onRequest(
         return;
       }
 
-      const sessionDoc = await db.collection("genkit_sessions").doc(session.id).get();
-      const sessionData = sessionDoc.data() as any;
-      const history = sessionData?.history || [];
-
-      const chatHistory = convertHistoryToMessages(history);
+      const sessionData = await sessionStore.get(session.id);
+      const chatHistory = fromThreadMessages(sessionData?.threads?.[MAIN_THREAD]);
       setSSEHeaders(res);
 
       // Check if we need to generate a title (look in 'chats' collection now)
@@ -311,30 +320,21 @@ export const chat = onRequest(
 
       let fullText = "";
       const modelMessages = toGenkitMessages(chatHistory, message);
-      const finalResponse = await ai.generate({
+      const generationOptions: GenerateOptions = {
         model: openAI.model(MODEL_NAME),
         system: SYSTEM_INSTRUCTION,
         messages: modelMessages,
         config: { temperature: 0.7 },
-        onChunk: (chunk: any) => {
-          const chunkText =
-            typeof (chunk as any).text === "string"
-              ? (chunk as any).text
-              : typeof (chunk as any).text === "function"
-                ? (chunk as any).text()
-                : "";
+        onChunk: (chunk: GenerateResponseChunk) => {
+          const chunkText = chunk.text;
           if (chunkText) {
             fullText += chunkText;
             res.write(`data: ${JSON.stringify({ text: chunkText, done: false })}\n\n`);
           }
         },
-      } as any);
-      const finalText =
-        typeof (finalResponse as any).text === "string"
-          ? (finalResponse as any).text
-          : typeof (finalResponse as any).text === "function"
-            ? (finalResponse as any).text()
-            : "";
+      };
+      const finalResponse: GenerateResponse = await ai.generate(generationOptions);
+      const finalText = finalResponse.text;
       if (typeof finalText === "string" && finalText.length >= fullText.length) {
         fullText = finalText;
       }
@@ -343,18 +343,14 @@ export const chat = onRequest(
       let newSessionName = null;
       if (isNewChat) {
         try {
-          const titleResult = await ai.generate({
+          const titleOptions: GenerateOptions = {
             model: openAI.model(MODEL_NAME),
             system: "You are a helpful assistant that generates short, concise titles for chat sessions.",
             prompt: `Generate a short, concise title (max 6 words) for a chat based on this initial user message: "${message}". Do not use quotes.`,
             config: { temperature: 0.2, maxOutputTokens: 24 },
-          } as any);
-          const rawTitle =
-            typeof (titleResult as any).text === "string"
-              ? (titleResult as any).text
-              : typeof (titleResult as any).text === "function"
-                ? (titleResult as any).text()
-                : "";
+          };
+          const titleResult: GenerateResponse = await ai.generate(titleOptions);
+          const rawTitle = titleResult.text;
           const title = rawTitle.trim().replace(/^['"]+|['"]+$/g, "").trim();
           if (title) {
             await publicChatRef.update({ name: title });
@@ -365,7 +361,7 @@ export const chat = onRequest(
         }
       }
 
-      const updatedHistory = [
+      const updatedHistory: ChatHistoryMessage[] = [
         ...chatHistory,
         { role: "user", content: message },
         { role: "model", content: fullText },
@@ -374,77 +370,11 @@ export const chat = onRequest(
       await sessionStore.save(session.id, {
         id: session.id,
         state: sessionData?.state || {},
-        history: updatedHistory,
-      } as any);
+        threads: { [MAIN_THREAD]: toThreadMessages(updatedHistory) },
+      });
 
       res.write(`data: ${JSON.stringify({ text: '', done: true, model: MODEL_NAME, sessionId: session.id, fullText, newSessionName })}\n\n`);
       res.end();
-    } catch (error) {
-      sendServerError(res, error);
-    }
-  }
-);
-
-export const createChat = onRequest(
-  FUNCTION_CONFIG,
-  async (req, res) => {
-    if (req.method !== "POST") {
-      sendErrorResponse(res, 405, "Method not allowed");
-      return;
-    }
-
-    try {
-      const { userId, chatName, courseId, sessionId } = req.body;
-
-      if (!userId || !courseId || !sessionId) {
-        sendErrorResponse(res, 400, "Missing required fields: userId, courseId, sessionId");
-        return;
-      }
-
-      const session = ai.createSession({ store: sessionStore });
-      const name = chatName || "New Chat";
-      
-      await Promise.all([
-        sessionStore.save(session.id, { id: session.id, state: {} }),
-        db.collection("chats").doc(session.id).set({
-          id: session.id,
-          name,
-          userId,
-          courseId,
-          sessionId,
-          createdAt: new Date(),
-          lastMessageAt: new Date(),
-        })
-      ]);
-
-      res.json({ chatId: session.id, name });
-    } catch (error) {
-      sendServerError(res, error);
-    }
-  }
-);
-
-export const getSessionHistory = onRequest(
-  FUNCTION_CONFIG,
-  async (req, res) => {
-    if (req.method !== "GET") {
-      sendErrorResponse(res, 405, "Method not allowed");
-      return;
-    }
-
-    try {
-      const { sessionId } = req.query;
-
-      if (!sessionId || typeof sessionId !== "string") {
-        sendErrorResponse(res, 400, "Missing required query parameter: sessionId");
-        return;
-      }
-
-      const session = await loadSessionOrError(sessionId, res);
-      if (!session) return;
-
-      const sessionData = await sessionStore.get(sessionId);
-      res.json({ state: sessionData?.state || {} });
     } catch (error) {
       sendServerError(res, error);
     }
