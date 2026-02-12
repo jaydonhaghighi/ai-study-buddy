@@ -1,8 +1,4 @@
 import { useState, useEffect, useRef } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import rehypeHighlight from 'rehype-highlight';
-import 'highlight.js/styles/github.css';
 import { db, auth } from '../firebase-config';
 import { User, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { 
@@ -26,6 +22,10 @@ import { InferenceFocusTracker, type InferencePredictionPayload } from '../servi
 import { acquireWebcamStream } from '../services/webcam-manager';
 import WebcamCalibrationPreview from './WebcamCalibrationPreview';
 import FocusDashboard from './FocusDashboard';
+import ChatMainHeader from './chat/ChatMainHeader';
+import ChatMessageList from './chat/ChatMessageList';
+import ChatInput from './chat/ChatInput';
+import { useChatAutoScroll } from './chat/useChatAutoScroll';
 import settingsIcon from '../public/settings.svg';
 import './Chat.css';
 
@@ -93,7 +93,6 @@ type TrackerSource = 'ml_inference_api' | 'laptop_webcam';
 const FAST_UI_CONFIDENCE_THRESHOLD = 0.45;
 const FAST_UI_DISTRACT_HOLD_MS = 450;
 const FAST_UI_REFOCUS_HOLD_MS = 250;
-const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 72;
 
 interface ChatProps {
   user: User | null;
@@ -323,10 +322,17 @@ export default function Chat({ user }: ChatProps) {
     }
   }, [showCalibrationModal]);
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const messagesContainerRef = useRef<HTMLDivElement>(null);
-  const autoScrollEnabledRef = useRef(true);
-  const wasLoadingRef = useRef(false);
+  const {
+    messagesEndRef,
+    messagesContainerRef,
+    handleMessagesScroll,
+    enableAutoScroll,
+  } = useChatAutoScroll({
+    selectedChatId,
+    mainView,
+    messages,
+    loading,
+  });
 
   useEffect(() => {
     if (!settingsOpen) return;
@@ -354,38 +360,6 @@ export default function Chat({ user }: ChatProps) {
       return () => clearTimeout(timer);
     }
   }, [toastMessage]);
-
-  const isNearBottom = () => {
-    const container = messagesContainerRef.current;
-    if (!container) return true;
-    const distanceToBottom =
-      container.scrollHeight - container.scrollTop - container.clientHeight;
-    return distanceToBottom <= AUTO_SCROLL_BOTTOM_THRESHOLD_PX;
-  };
-
-  const handleMessagesScroll = () => {
-    autoScrollEnabledRef.current = isNearBottom();
-  };
-
-  const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
-    messagesEndRef.current?.scrollIntoView({ behavior });
-  };
-
-  useEffect(() => {
-    autoScrollEnabledRef.current = true;
-    const raf = window.requestAnimationFrame(() => {
-      scrollToBottom('auto');
-    });
-    return () => window.cancelAnimationFrame(raf);
-  }, [selectedChatId, mainView]);
-
-  useEffect(() => {
-    const justFinishedGeneration = wasLoadingRef.current && !loading;
-    wasLoadingRef.current = loading;
-    if (justFinishedGeneration) return;
-    if (!autoScrollEnabledRef.current) return;
-    scrollToBottom(loading ? 'auto' : 'smooth');
-  }, [messages, loading]);
 
   // 1. Fetch Courses
   useEffect(() => {
@@ -652,7 +626,7 @@ export default function Chat({ user }: ChatProps) {
     const userMessage = input.trim();
     setInput('');
     setLoading(true);
-    autoScrollEnabledRef.current = true;
+    enableAutoScroll();
 
     try {
       // Save user message
@@ -1198,191 +1172,48 @@ export default function Chat({ user }: ChatProps) {
 
       {/* Main Area */}
       <div className="chat-main">
-        <div className="chat-header">
-          <div className="chat-header-inner">
-            <div className="chat-header-left">
-              <h2 className="chat-header-title">
-                {mainView === 'dashboard' ? 'Focus dashboard' : (currentChat?.name || 'Select a Chat')}
-              </h2>
-              <p className="chat-header-subtitle">
-                {mainView === 'dashboard'
-                  ? 'Visualize focus sessions captured from your webcam.'
-                  : (currentChat ? 'AI Study Buddy' : 'Choose an existing chat or create a new one to get started')}
-              </p>
-            </div>
-
-            <div className="chat-header-right">
-              <div className="chat-header-controls">
-                <div className="chat-header-row">
-                  <button
-                    onClick={() => setMainView(mainView === 'dashboard' ? 'chat' : 'dashboard')}
-                    className="chat-header-btn"
-                    disabled={focusBusy}
-                    type="button"
-                  >
-                    {mainView === 'dashboard' ? 'Back to chat' : 'Dashboard'}
-                  </button>
-
-                  {!activeFocusSession ? (
-                    <button
-                      onClick={handleStartFocus}
-                      className="chat-header-btn chat-header-btn-primary"
-                      disabled={focusBusy}
-                    >
-                      Start Focus
-                    </button>
-                  ) : (
-                    <button
-                      onClick={handleStopFocus}
-                      className="chat-header-btn chat-header-btn-danger"
-                      disabled={focusBusy}
-                    >
-                      Stop Focus
-                    </button>
-                  )}
-
-                  <div className="chat-settings" ref={settingsRef}>
-                    <button
-                      className="chat-header-btn chat-settings-btn"
-                      type="button"
-                      aria-label="Settings"
-                      aria-haspopup="menu"
-                      aria-expanded={settingsOpen}
-                      onClick={() => setSettingsOpen((v) => !v)}
-                      disabled={focusBusy}
-                      title="Settings"
-                    >
-                      <img src={settingsIcon} alt="" className="chat-settings-icon" />
-                    </button>
-
-                    {settingsOpen && (
-                      <div className="chat-settings-menu" role="menu" aria-label="Settings menu">
-                        <button
-                          type="button"
-                          className="chat-settings-item"
-                          role="menuitem"
-                          onClick={() => setCameraPreviewEnabled((v) => !v)}
-                          disabled={focusBusy}
-                        >
-                          Camera preview: {cameraPreviewEnabled ? 'On' : 'Off'}
-                        </button>
-                        <button
-                          type="button"
-                          className="chat-settings-item chat-settings-item-danger"
-                          role="menuitem"
-                          onClick={handleSignOut}
-                        >
-                          Sign out
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {activeFocusSession && (
-                  <div className="chat-header-meta">
-                    <span className="chat-header-pill">Focus active</span>
-                    <span>{activeTrackerLabel ?? 'Webcam tracking'}</span>
-                    <span>Duration: {formatDuration(focusElapsedMs)}</span>
-                    {lastPose && (
-                      <span>
-                        Pose: {lastPose.smoothed_label} ({Math.round(lastPose.smoothed_confidence * 100)}%)
-                      </span>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
+        <ChatMainHeader
+          mainView={mainView}
+          currentChatName={currentChat?.name}
+          focusBusy={focusBusy}
+          isFocusActive={!!activeFocusSession}
+          activeTrackerLabel={activeTrackerLabel}
+          focusElapsedMs={focusElapsedMs}
+          lastPose={lastPose}
+          settingsOpen={settingsOpen}
+          cameraPreviewEnabled={cameraPreviewEnabled}
+          settingsRef={settingsRef}
+          settingsIconSrc={settingsIcon}
+          onToggleMainView={() => setMainView(mainView === 'dashboard' ? 'chat' : 'dashboard')}
+          onStartFocus={handleStartFocus}
+          onStopFocus={handleStopFocus}
+          onToggleSettings={() => setSettingsOpen((v) => !v)}
+          onToggleCameraPreview={() => setCameraPreviewEnabled((v) => !v)}
+          onSignOut={handleSignOut}
+          formatDuration={formatDuration}
+        />
 
         {mainView === 'dashboard' ? (
           <FocusDashboard userId={user.uid} />
         ) : (
           <>
-            <div className="chat-messages" ref={messagesContainerRef} onScroll={handleMessagesScroll}>
-              {!selectedChatId ? (
-                <div className="chat-welcome">
-                  <div className="welcome-icon">💬</div>
-                  <h3 className="welcome-title">Welcome to AI Study Buddy</h3>
-                  <p className="welcome-message">To get started, choose an existing chat or create a new one from the sidebar</p>
-                </div>
-              ) : (
-                <>
-                  {visibleMessages.map((message) => (
-                    <div key={message.id} className={`message ${!message.isAI ? 'message-user' : 'message-ai'}`}>
-                      <div className="message-content">
-                        <div className="message-header">
-                          <span className="message-name">{!message.isAI ? 'You' : (message.userName || 'AI Study Buddy')}</span>
-                          {message.model && message.isAI && <span className="message-model">{message.model}</span>}
-                        </div>
-                        <div className="message-text">
-                          {!message.isAI ? (
-                            <div className="plain-text">{message.text}</div>
-                          ) : (
-                            <div className="markdown">
-                              <ReactMarkdown
-                                remarkPlugins={[remarkGfm]}
-                                rehypePlugins={[rehypeHighlight]}
-                                components={{
-                                  a: ({ children, ...props }) => (
-                                    <a {...props} target="_blank" rel="noopener noreferrer">
-                                      {children}
-                                    </a>
-                                  ),
-                                  code: ({ children, className, ...props }) => {
-                                    const isBlock = !!className && className.includes('language-');
-                                    return isBlock ? (
-                                      <code className={className} {...props}>
-                                        {children}
-                                      </code>
-                                    ) : (
-                                      <code className="inline-code" {...props}>
-                                        {children}
-                                      </code>
-                                    );
-                                  },
-                                }}
-                              >
-                                {message.text}
-                              </ReactMarkdown>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                  {loading && !hasStreamingAiText && (
-                    <div className="message message-ai">
-                      <div className="message-content">
-                        <div className="typing-indicator">
-                          <span></span><span></span><span></span>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                  <div ref={messagesEndRef} />
-                </>
-              )}
-            </div>
+            <ChatMessageList
+              selectedChatId={selectedChatId}
+              visibleMessages={visibleMessages}
+              loading={loading}
+              hasStreamingAiText={hasStreamingAiText}
+              messagesContainerRef={messagesContainerRef}
+              messagesEndRef={messagesEndRef}
+              onMessagesScroll={handleMessagesScroll}
+            />
 
-            {selectedChatId && (
-              <form className="chat-input-form" onSubmit={handleSend}>
-                <div className="chat-input-wrapper">
-                  <input
-                    type="text"
-                    className="chat-input"
-                    placeholder="Type your message..."
-                    value={input}
-                    onChange={(e) => setInput(e.target.value)}
-                    disabled={loading}
-                  />
-                  <button type="submit" className="chat-send-button" disabled={!input.trim() || loading}>
-                    Send
-                  </button>
-                </div>
-              </form>
-            )}
+            <ChatInput
+              selectedChatId={selectedChatId}
+              input={input}
+              loading={loading}
+              onInputChange={setInput}
+              onSubmit={handleSend}
+            />
           </>
         )}
       </div>
