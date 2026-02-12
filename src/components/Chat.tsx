@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useRef } from 'react';
 import { auth } from '../firebase-config';
 import { User, signOut } from 'firebase/auth';
 import FocusDashboard from './FocusDashboard';
@@ -15,6 +15,7 @@ import { useChatCollections } from './chat/useChatCollections';
 import { useChatMutations } from './chat/useChatMutations';
 import { useChatAuth } from './chat/useChatAuth';
 import { useChatCameraPreview } from './chat/useChatCameraPreview';
+import { useChatUiState } from './chat/useChatUiState';
 import settingsIcon from '../public/settings.svg';
 import './Chat.css';
 
@@ -82,17 +83,15 @@ export default function Chat({ user }: ChatProps) {
   
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
   const [editChatName, setEditChatName] = useState('');
-  
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [toastVariant, setToastVariant] = useState<'success' | 'warning' | 'info'>('success');
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const settingsRef = useRef<HTMLDivElement>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
-
-  const showToast = (message: string, variant: 'success' | 'warning' | 'info' = 'success') => {
-    setToastVariant(variant);
-    setToastMessage(message);
-  };
+  const {
+    toastMessage,
+    toastVariant,
+    showToast,
+    settingsOpen,
+    setSettingsOpen,
+    settingsRef,
+  } = useChatUiState();
 
   const playBeep = (frequencyHz: number, durationMs: number, gain: number = 0.06) => {
     try {
@@ -175,33 +174,6 @@ export default function Chat({ user }: ChatProps) {
     messages,
     loading,
   });
-
-  useEffect(() => {
-    if (!settingsOpen) return;
-    const onMouseDown = (e: MouseEvent) => {
-      const el = settingsRef.current;
-      if (!el) return;
-      if (e.target instanceof Node && !el.contains(e.target)) {
-        setSettingsOpen(false);
-      }
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setSettingsOpen(false);
-    };
-    document.addEventListener('mousedown', onMouseDown);
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('mousedown', onMouseDown);
-      document.removeEventListener('keydown', onKeyDown);
-    };
-  }, [settingsOpen]);
-
-  useEffect(() => {
-    if (toastMessage) {
-      const timer = setTimeout(() => setToastMessage(null), 3000);
-      return () => clearTimeout(timer);
-    }
-  }, [toastMessage]);
 
   const {
     handleCreateCourse,

@@ -47,7 +47,3 @@ export async function acquireWebcamStream(): Promise<AcquireResult> {
   return { stream, release };
 }
 
-export function getActiveWebcamStream(): MediaStream | null {
-  return activeStream;
-}
-

@@ -4,6 +4,7 @@
  * This service communicates with Cloud Functions that use Genkit
  * for persistent chat sessions.
  */
+import { fetchFunctionsEndpoint } from './functions-http';
 
 export interface AIResponse {
   text: string;
@@ -15,32 +16,6 @@ interface ChatRequest {
   sessionId: string;
   message: string;
   userId: string;
-}
-
-const getFunctionsUrl = () => {
-  const projectId = import.meta.env.VITE_FIREBASE_PROJECT_ID;
-  if (!projectId) {
-    throw new Error('Firebase project ID is not configured');
-  }
-  return `https://us-central1-${projectId}.cloudfunctions.net`;
-};
-
-async function fetchFunction(endpoint: string, options: RequestInit = {}) {
-  const functionsUrl = getFunctionsUrl();
-  const response = await fetch(`${functionsUrl}${endpoint}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
-  });
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
-    throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
-  }
-
-  return response;
 }
 
 function handleError(error: unknown, defaultMessage: string): never {
@@ -57,7 +32,7 @@ export async function getAIResponse(
   onChunk?: (text: string) => void
 ): Promise<AIResponse> {
   try {
-    const response = await fetchFunction('/chat', {
+    const response = await fetchFunctionsEndpoint('/chat', {
       method: 'POST',
       body: JSON.stringify({ sessionId, message: userMessage, userId } as ChatRequest),
     });
