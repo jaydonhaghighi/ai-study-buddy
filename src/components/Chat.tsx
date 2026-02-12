@@ -16,16 +16,15 @@ import {
   doc
 } from 'firebase/firestore';
 import { getAIResponse } from '../services/genkit-service';
-import { startFocusSession, stopFocusSession } from '../services/focus-service';
-import { LaptopFocusTracker } from '../services/laptop-focus-tracker';
-import { InferenceFocusTracker, type InferencePredictionPayload } from '../services/inference-focus-tracker';
 import { acquireWebcamStream } from '../services/webcam-manager';
 import WebcamCalibrationPreview from './WebcamCalibrationPreview';
 import FocusDashboard from './FocusDashboard';
 import ChatMainHeader from './chat/ChatMainHeader';
 import ChatMessageList from './chat/ChatMessageList';
 import ChatInput from './chat/ChatInput';
+import ChatSidebar from './chat/ChatSidebar';
 import { useChatAutoScroll } from './chat/useChatAutoScroll';
+import { useFocusTracking } from './chat/useFocusTracking';
 import settingsIcon from '../public/settings.svg';
 import './Chat.css';
 
@@ -63,36 +62,6 @@ interface ChatSession {
   createdAt: Date | null;
   lastMessageAt: Date | null;
 }
-
-interface FocusSession {
-  id: string;
-  userId: string;
-  status: string;
-  courseId?: string | null;
-  sessionId?: string | null;
-  startedAt?: Date | null;
-}
-
-type FocusTrackerSummary = {
-  startTs: number;
-  endTs: number;
-  focusedMs: number;
-  distractedMs: number;
-  distractions: number;
-  focusPercent: number;
-  attentionLabelCounts: Record<string, number>;
-  [key: string]: unknown;
-};
-
-type FocusTrackerRuntime = {
-  start(): Promise<void>;
-  stop(): Promise<FocusTrackerSummary>;
-};
-
-type TrackerSource = 'ml_inference_api' | 'laptop_webcam';
-const FAST_UI_CONFIDENCE_THRESHOLD = 0.45;
-const FAST_UI_DISTRACT_HOLD_MS = 450;
-const FAST_UI_REFOCUS_HOLD_MS = 250;
 
 interface ChatProps {
   user: User | null;
@@ -147,12 +116,6 @@ export default function Chat({ user }: ChatProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsRef = useRef<HTMLDivElement>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
-  const announcedFocusStateRef = useRef<'focused' | 'distracted' | null>(null);
-  const candidateFocusStateRef = useRef<'focused' | 'distracted' | null>(null);
-  const candidateSinceMsRef = useRef<number | null>(null);
-  const lastAnnounceMsRef = useRef<number>(0);
-  const uiFocusStateRef = useRef<'focused' | 'distracted' | null>(null);
-  const uiDistractionsRef = useRef<number>(0);
 
   const showToast = (message: string, variant: 'success' | 'warning' | 'info' = 'success') => {
     setToastVariant(variant);
@@ -195,43 +158,6 @@ export default function Chat({ user }: ChatProps) {
     }
   };
 
-  const announceFocusState = (nextState: 'focused' | 'distracted', mode: 'fast' | 'transitioned') => {
-    // Prevent duplicate announcements
-    if (announcedFocusStateRef.current === nextState) return;
-
-    // Rate-limit to avoid spam when jittering
-    const now = Date.now();
-    if (now - lastAnnounceMsRef.current < 800) return;
-
-    announcedFocusStateRef.current = nextState;
-    lastAnnounceMsRef.current = now;
-
-    if (nextState === 'distracted') {
-      showToast(mode === 'fast' ? 'You are distracted' : 'You are distracted', 'warning');
-      playFocusTransitionSound('distracted');
-    } else {
-      showToast(mode === 'fast' ? "You're back in focus" : "You're back in focus", 'success');
-      playFocusTransitionSound('focused');
-    }
-  };
-
-  const resetUiDistractionCounter = () => {
-    uiFocusStateRef.current = null;
-    uiDistractionsRef.current = 0;
-    candidateFocusStateRef.current = null;
-    candidateSinceMsRef.current = null;
-    announcedFocusStateRef.current = null;
-    lastAnnounceMsRef.current = 0;
-  };
-
-  const applyUiFocusState = (nextState: 'focused' | 'distracted') => {
-    const prev = uiFocusStateRef.current;
-    if (prev === 'focused' && nextState === 'distracted') {
-      uiDistractionsRef.current += 1;
-    }
-    uiFocusStateRef.current = nextState;
-  };
-
   // Always-on camera preview (local webapp usage)
   const [cameraPreviewEnabled, setCameraPreviewEnabled] = useState(() => {
     // default ON for local usage
@@ -240,7 +166,6 @@ export default function Chat({ user }: ChatProps) {
   const [cameraPreviewAfterCalibration, setCameraPreviewAfterCalibration] = useState(false);
   const previewVideoRef = useRef<HTMLVideoElement | null>(null);
   const previewReleaseRef = useRef<null | (() => void)>(null);
-  const trackerReleaseRef = useRef<null | (() => void)>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -293,21 +218,27 @@ export default function Chat({ user }: ChatProps) {
     };
   }, [cameraPreviewEnabled, cameraPreviewAfterCalibration, mainView]);
 
-  // Focus Tracking State
-  const [activeFocusSession, setActiveFocusSession] = useState<FocusSession | null>(null);
-  const [focusBusy, setFocusBusy] = useState(false);
-  const [isLocalTrackerRunning, setIsLocalTrackerRunning] = useState(false);
-  const [activeTrackerLabel, setActiveTrackerLabel] = useState<string | null>(null);
-  const [lastPose, setLastPose] = useState<InferencePredictionPayload | null>(null);
-  const [focusElapsedMs, setFocusElapsedMs] = useState<number>(0);
-  const [showCalibrationModal, setShowCalibrationModal] = useState(false);
-  const [pendingFocusStart, setPendingFocusStart] = useState<{
-    courseId?: string;
-    sessionId?: string;
-  } | null>(null);
-  const localFocusTrackerRef = useRef<FocusTrackerRuntime | null>(null);
-  const trackerSourceRef = useRef<TrackerSource | null>(null);
-  const focusStartLocalMsRef = useRef<number | null>(null);
+  const {
+    activeFocusSession,
+    focusBusy,
+    isLocalTrackerRunning,
+    activeTrackerLabel,
+    lastPose,
+    focusElapsedMs,
+    showCalibrationModal,
+    handleStartFocus,
+    startFocusAfterCalibration,
+    handleStopFocus,
+    hideCalibrationModal,
+    cancelCalibration,
+    cleanupOnSignOut,
+  } = useFocusTracking({
+    user,
+    expandedCourseId,
+    expandedSessionId,
+    showToast,
+    playFocusTransitionSound,
+  });
 
   // Avoid camera conflicts: pause shared preview while calibration modal is open.
   useEffect(() => {
@@ -380,87 +311,6 @@ export default function Chat({ user }: ChatProps) {
 
     return () => unsubscribe();
   }, [user]);
-
-  // Active focus session (assume at most 1 active per user for MVP)
-  useEffect(() => {
-    if (!user) {
-      setActiveFocusSession(null);
-      return;
-    }
-
-    const q = query(
-      collection(db, 'focusSessions'),
-      where('userId', '==', user.uid),
-      where('status', '==', 'active')
-    );
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      if (snapshot.empty) {
-        setActiveFocusSession(null);
-        return;
-      }
-      const doc0 = snapshot.docs[0];
-      const data = doc0.data() as any;
-      setActiveFocusSession({
-        id: doc0.id,
-        ...data,
-        startedAt: data.startedAt instanceof Timestamp ? data.startedAt.toDate() : null,
-      } as FocusSession);
-    });
-
-    return () => unsubscribe();
-  }, [user]);
-
-  useEffect(() => {
-    return () => {
-      const tracker = localFocusTrackerRef.current;
-      localFocusTrackerRef.current = null;
-      if (trackerReleaseRef.current) {
-        trackerReleaseRef.current();
-        trackerReleaseRef.current = null;
-      }
-      if (previewReleaseRef.current) {
-        previewReleaseRef.current();
-        previewReleaseRef.current = null;
-      }
-      if (tracker) {
-        void tracker.stop().catch((error) => {
-          console.error('Error stopping local focus tracker during cleanup:', error);
-        });
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (activeFocusSession) return;
-    trackerSourceRef.current = null;
-    setActiveTrackerLabel(null);
-    setLastPose(null);
-    setFocusElapsedMs(0);
-    focusStartLocalMsRef.current = null;
-    const tracker = localFocusTrackerRef.current;
-    if (!tracker) return;
-    localFocusTrackerRef.current = null;
-    setIsLocalTrackerRunning(false);
-    void tracker.stop().catch((error) => {
-      console.error('Error stopping local focus tracker after session ended:', error);
-    });
-  }, [activeFocusSession]);
-
-  useEffect(() => {
-    if (!activeFocusSession) return;
-    const startMs =
-      activeFocusSession.startedAt?.getTime?.() ??
-      focusStartLocalMsRef.current ??
-      Date.now();
-
-    const tick = () => {
-      setFocusElapsedMs(Date.now() - startMs);
-    };
-    tick();
-    const id = window.setInterval(tick, 1000);
-    return () => window.clearInterval(id);
-  }, [activeFocusSession?.id, activeFocusSession?.startedAt]);
 
   // 2. Fetch Sessions (when a course is expanded)
   useEffect(() => {
@@ -731,265 +581,15 @@ export default function Chat({ user }: ChatProps) {
   const handleSignOut = async () => {
     try {
       setSettingsOpen(false);
-      const tracker = localFocusTrackerRef.current;
-      localFocusTrackerRef.current = null;
-      trackerSourceRef.current = null;
-      if (trackerReleaseRef.current) {
-        trackerReleaseRef.current();
-        trackerReleaseRef.current = null;
-      }
-      if (tracker) {
-        try {
-          await tracker.stop();
-        } catch (trackerError) {
-          console.warn('Error stopping tracker during sign out:', trackerError);
-        }
-      }
-      setIsLocalTrackerRunning(false);
-      setActiveTrackerLabel(null);
-      setLastPose(null);
+      await cleanupOnSignOut();
       await signOut(auth);
       setCourses([]);
       setSessions([]);
       setChats([]);
       setMessages([]);
       setSelectedChatId(null);
-      setActiveFocusSession(null);
     } catch (error) {
       console.error("Sign out error:", error);
-    }
-  };
-
-  const handleStartFocus = async () => {
-    if (!user) return;
-    // Optional: link focus session to the currently expanded course/session (chapter)
-    const courseId = expandedCourseId || undefined;
-    const sessionId = expandedSessionId || undefined;
-
-    // Calibration gate: do not start focus until calibration completes
-    setPendingFocusStart({ courseId, sessionId });
-    setShowCalibrationModal(true);
-  };
-
-  const startFocusAfterCalibration = async () => {
-    if (!user) return;
-    if (!pendingFocusStart) return;
-
-    setFocusBusy(true);
-    try {
-      resetUiDistractionCounter();
-      // Focus starts right after calibration alignment, so seed as focused.
-      // This ensures the first away transition is counted as a distraction.
-      uiFocusStateRef.current = 'focused';
-      const res = await startFocusSession({
-        userId: user.uid,
-        courseId: pendingFocusStart.courseId,
-        sessionId: pendingFocusStart.sessionId,
-      });
-      focusStartLocalMsRef.current = Date.now();
-
-      // Start server inference tracker first; fallback to local tracker if server is unavailable.
-      try {
-        let tracker: FocusTrackerRuntime | null = null;
-        let trackerSource: TrackerSource = 'ml_inference_api';
-        let label = 'Server ML inference';
-
-        try {
-          const acquired = await acquireWebcamStream();
-          trackerReleaseRef.current = acquired.release;
-          const remoteTracker = new InferenceFocusTracker({
-            stream: acquired.stream,
-            onPrediction: (p) => {
-              // 5 FPS updates are fine, but avoid extra renders if nothing changed
-              setLastPose((prev) => {
-                if (!prev) return p;
-                if (
-                  prev.smoothed_label !== p.smoothed_label ||
-                  prev.smoothed_confidence !== p.smoothed_confidence ||
-                  prev.state !== p.state
-                ) {
-                  return p;
-                }
-                return prev;
-              });
-
-              if (p.transitioned) {
-                const transitionedState: 'focused' | 'distracted' | null =
-                  p.state === 'distracted'
-                    ? 'distracted'
-                    : p.state === 'focused'
-                      ? 'focused'
-                      : null;
-                if (transitionedState) {
-                  // Keep counter behavior aligned with visible transitioned toasts.
-                  applyUiFocusState(transitionedState);
-                  announceFocusState(transitionedState, 'transitioned');
-                  candidateFocusStateRef.current = null;
-                  candidateSinceMsRef.current = null;
-                }
-              }
-
-              // Fast UI-only detector (does NOT affect logged summaries):
-              // If the model's smoothed label is away/screen with sufficient confidence,
-              // notify after a short debounce so quick in/out still registers.
-              const smoothedConf = typeof p.smoothed_confidence === 'number' ? p.smoothed_confidence : 0;
-              const rawConf = typeof p.raw_confidence === 'number' ? p.raw_confidence : 0;
-
-              const smoothedCandidate: 'focused' | 'distracted' | null =
-                smoothedConf >= FAST_UI_CONFIDENCE_THRESHOLD
-                  ? (p.smoothed_label === 'screen' ? 'focused' : 'distracted')
-                  : null;
-              const rawCandidate: 'focused' | 'distracted' | null =
-                rawConf >= FAST_UI_CONFIDENCE_THRESHOLD
-                  ? (p.raw_label === 'screen' ? 'focused' : 'distracted')
-                  : null;
-              const uiCandidate: 'focused' | 'distracted' | null = smoothedCandidate ?? rawCandidate;
-
-              const now = Date.now();
-              if (uiCandidate !== candidateFocusStateRef.current) {
-                candidateFocusStateRef.current = uiCandidate;
-                candidateSinceMsRef.current = uiCandidate ? now : null;
-              } else if (uiCandidate && candidateSinceMsRef.current != null) {
-                const elapsed = now - candidateSinceMsRef.current;
-                const requiredMs =
-                  uiCandidate === 'distracted'
-                    ? FAST_UI_DISTRACT_HOLD_MS
-                    : FAST_UI_REFOCUS_HOLD_MS;
-                if (elapsed >= requiredMs) {
-                  // Use the fast UI detector for the distraction counter.
-                  applyUiFocusState(uiCandidate);
-                  announceFocusState(uiCandidate, 'fast');
-                  // Reset so it doesn't re-announce continuously.
-                  candidateFocusStateRef.current = null;
-                  candidateSinceMsRef.current = null;
-                }
-              }
-            },
-          });
-          await remoteTracker.start();
-          tracker = remoteTracker;
-          setLastPose(remoteTracker.getLastPrediction());
-        } catch (remoteError) {
-          console.warn('Could not start server inference tracker. Falling back to local webcam tracker.', remoteError);
-          let lastFocused: boolean | null = null;
-          const acquired = await acquireWebcamStream();
-          trackerReleaseRef.current = acquired.release;
-          const fallbackTracker = new LaptopFocusTracker({
-            stream: acquired.stream,
-            onSample: ({ isFocused }) => {
-              if (lastFocused == null) {
-                lastFocused = isFocused;
-                return;
-              }
-              if (lastFocused && !isFocused) {
-                showToast('You are distracted', 'warning');
-                playFocusTransitionSound('distracted');
-              } else if (!lastFocused && isFocused) {
-                showToast("You're back in focus", 'success');
-                playFocusTransitionSound('focused');
-              }
-              lastFocused = isFocused;
-            },
-          });
-          await fallbackTracker.start();
-          tracker = fallbackTracker;
-          trackerSource = 'laptop_webcam';
-          label = 'Laptop webcam (fallback)';
-          setLastPose(null);
-        }
-
-        localFocusTrackerRef.current = tracker;
-        trackerSourceRef.current = trackerSource;
-        setActiveTrackerLabel(label);
-        setIsLocalTrackerRunning(true);
-        showToast(`Focus tracking started (${res.focusSessionId.slice(0, 6)}...) via ${label}.`, 'success');
-      } catch (trackerError) {
-        localFocusTrackerRef.current = null;
-        trackerSourceRef.current = null;
-        setActiveTrackerLabel(null);
-        setLastPose(null);
-        setIsLocalTrackerRunning(false);
-        console.warn('Could not start any focus tracker:', trackerError);
-        showToast('Focus started, but tracking is unavailable on this device.', 'warning');
-      }
-    } catch (error) {
-      console.error('Error starting focus session:', error);
-      showToast("Error starting focus tracking", 'warning');
-    } finally {
-      setFocusBusy(false);
-      setPendingFocusStart(null);
-    }
-  };
-
-  const handleStopFocus = async () => {
-    if (!user || !activeFocusSession) return;
-    setFocusBusy(true);
-    const tracker = localFocusTrackerRef.current;
-    const trackerSource = trackerSourceRef.current;
-    localFocusTrackerRef.current = null;
-    trackerSourceRef.current = null;
-      const releaseTrackerStream = trackerReleaseRef.current;
-      trackerReleaseRef.current = null;
-    setActiveTrackerLabel(null);
-    setLastPose(null);
-    setIsLocalTrackerRunning(false);
-    let sessionStopped = false;
-    try {
-      await stopFocusSession({
-        userId: user.uid,
-        focusSessionId: activeFocusSession.id,
-      });
-      sessionStopped = true;
-
-      if (tracker) {
-        // Capture before any possible async resets/races.
-        const uiDistractions = uiDistractionsRef.current;
-        const summary = await tracker.stop();
-        const finalSummary =
-          trackerSource === 'ml_inference_api'
-            ? {
-                ...summary,
-                distractions: uiDistractions,
-                distractionsSource: 'ui_fast',
-              }
-            : summary;
-        await setDoc(
-          doc(db, 'focusSummaries', activeFocusSession.id),
-          {
-            focusSessionId: activeFocusSession.id,
-            userId: user.uid,
-            source: trackerSource ?? 'laptop_webcam',
-            courseId: activeFocusSession.courseId || null,
-            sessionId: activeFocusSession.sessionId || null,
-            createdAt: serverTimestamp(),
-            ...finalSummary,
-          },
-          { merge: true }
-        );
-        const sourceText = trackerSource === 'ml_inference_api' ? 'server ML inference' : 'laptop webcam';
-        showToast(`Focus tracking stopped. Summary saved from ${sourceText}.`, 'success');
-        resetUiDistractionCounter();
-      } else {
-        showToast('Focus tracking stopped. No tracking summary was captured.', 'info');
-        resetUiDistractionCounter();
-      }
-      releaseTrackerStream?.();
-    } catch (error) {
-      if (tracker && !sessionStopped) {
-        localFocusTrackerRef.current = tracker;
-        trackerSourceRef.current = trackerSource;
-        trackerReleaseRef.current = releaseTrackerStream ?? null;
-        if (trackerSource === 'ml_inference_api') {
-          setActiveTrackerLabel('Server ML inference');
-        } else if (trackerSource === 'laptop_webcam') {
-          setActiveTrackerLabel('Laptop webcam (fallback)');
-        }
-        setIsLocalTrackerRunning(true);
-      }
-      console.error('Error stopping focus session:', error);
-      showToast("Error stopping focus tracking", 'warning');
-    } finally {
-      setFocusBusy(false);
     }
   };
 
@@ -1044,131 +644,34 @@ export default function Chat({ user }: ChatProps) {
 
   return (
     <div className={`chat-container ${cameraPreviewEnabled && mainView === 'chat' ? 'preview-sidebar-open' : ''}`}>
-      {/* Sidebar */}
-      <div className="chat-sidebar">
-        <div className="sidebar-header">
-          <h3>My Courses</h3>
-          <button onClick={() => setIsCreatingCourse(true)} className="add-button" title="Add Course">+</button>
-        </div>
-
-        {isCreatingCourse && (
-          <form onSubmit={handleCreateCourse} className="create-form">
-            <input 
-              autoFocus
-              value={newCourseName}
-              onChange={e => setNewCourseName(e.target.value)}
-              placeholder="Course Name"
-              onBlur={() => setIsCreatingCourse(false)}
-            />
-          </form>
-        )}
-
-        <div className="sidebar-content">
-          {courses.map(course => (
-            <div key={course.id} className="course-group">
-              <div 
-                className={`course-item ${expandedCourseId === course.id ? 'expanded' : ''}`}
-                onClick={() => setExpandedCourseId(expandedCourseId === course.id ? null : course.id)}
-              >
-                <span className="name">{course.name}</span>
-                <span className="dropdown-arrow">›</span>
-              </div>
-
-              {expandedCourseId === course.id && (
-                <div className="session-list">
-                  <div className="session-header">
-                    <small>Sessions</small>
-                    <button onClick={() => setIsCreatingSession(true)} className="add-button-small">+</button>
-                  </div>
-                  
-                  {isCreatingSession && (
-                    <form onSubmit={handleCreateSession} className="create-form-small">
-                      <input 
-                        autoFocus
-                        value={newSessionName}
-                        onChange={e => setNewSessionName(e.target.value)}
-                        placeholder="Session Name"
-                        onBlur={() => setIsCreatingSession(false)}
-                      />
-                    </form>
-                  )}
-
-                  {sessions.map(session => (
-                    <div key={session.id} className="session-group">
-                      <div 
-                        className={`session-item ${expandedSessionId === session.id ? 'expanded' : ''}`}
-                        onClick={() => setExpandedSessionId(expandedSessionId === session.id ? null : session.id)}
-                      >
-                        <div style={{ display: 'flex', alignItems: 'center' }}>
-                          <svg 
-                            xmlns="http://www.w3.org/2000/svg" 
-                            viewBox="0 0 24 24" 
-                            className="folder-icon"
-                          >
-                            <path d="M19,3H12.472a1.019,1.019,0,0,1-.447-.1L8.869,1.316A3.014,3.014,0,0,0,7.528,1H5A5.006,5.006,0,0,0,0,6V18a5.006,5.006,0,0,0,5,5H19a5.006,5.006,0,0,0,5-5V8A5.006,5.006,0,0,0,19,3ZM5,3H7.528a1.019,1.019,0,0,1,.447.1l3.156,1.579A3.014,3.014,0,0,0,12.472,5H19a3,3,0,0,1,2.779,1.882L2,6.994V6A3,3,0,0,1,5,3ZM19,21H5a3,3,0,0,1-3-3V8.994l20-.113V18A3,3,0,0,1,19,21Z"/>
-                          </svg>
-                          <span className="name">{session.name}</span>
-                        </div>
-                        <span className="dropdown-arrow">›</span>
-                      </div>
-
-                      {expandedSessionId === session.id && (
-                        <div className="chat-list">
-                          <button onClick={handleCreateChat} className="new-chat-button-small">+ New Chat</button>
-                          {chats.map(chat => (
-                            <div 
-                              key={chat.id} 
-                              className={`chat-item ${selectedChatId === chat.id ? 'active' : ''}`}
-                              onClick={() => setSelectedChatId(chat.id)}
-                            >
-                              {editingChatId === chat.id ? (
-                                <input
-                                  value={editChatName}
-                                  onChange={e => setEditChatName(e.target.value)}
-                                  onBlur={() => handleUpdateChatName(chat.id, editChatName)}
-                                  onKeyDown={e => {
-                                    if(e.key === 'Enter') handleUpdateChatName(chat.id, editChatName);
-                                    if(e.key === 'Escape') setEditingChatId(null);
-                                  }}
-                                  autoFocus
-                                  onClick={e => e.stopPropagation()}
-                                  className="chat-name-input"
-                                />
-                              ) : (
-                                <>
-                                  <span className="chat-name" onDoubleClick={(e) => {
-                                    e.stopPropagation();
-                                    setEditingChatId(chat.id);
-                                    setEditChatName(chat.name);
-                                  }}>{chat.name}</span>
-                                  <div className="chat-actions">
-                                    <button onClick={(e) => {
-                                      e.stopPropagation();
-                                      setEditingChatId(chat.id);
-                                      setEditChatName(chat.name);
-                                    }} className="action-btn">✎</button>
-                                    <button onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleDeleteChat(chat.id);
-                                    }} className="action-btn">×</button>
-                                  </div>
-                                </>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                  {sessions.length === 0 && !isCreatingSession && (
-                    <div className="empty-state-small">No sessions yet</div>
-                  )}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
+      <ChatSidebar
+        courses={courses}
+        sessions={sessions}
+        chats={chats}
+        expandedCourseId={expandedCourseId}
+        expandedSessionId={expandedSessionId}
+        selectedChatId={selectedChatId}
+        isCreatingCourse={isCreatingCourse}
+        newCourseName={newCourseName}
+        isCreatingSession={isCreatingSession}
+        newSessionName={newSessionName}
+        editingChatId={editingChatId}
+        editChatName={editChatName}
+        onSetCreatingCourse={setIsCreatingCourse}
+        onSetNewCourseName={setNewCourseName}
+        onCreateCourse={handleCreateCourse}
+        onToggleCourse={(courseId) => setExpandedCourseId(expandedCourseId === courseId ? null : courseId)}
+        onSetCreatingSession={setIsCreatingSession}
+        onSetNewSessionName={setNewSessionName}
+        onCreateSession={handleCreateSession}
+        onToggleSession={(sessionId) => setExpandedSessionId(expandedSessionId === sessionId ? null : sessionId)}
+        onCreateChat={handleCreateChat}
+        onSelectChat={setSelectedChatId}
+        onSetEditingChatId={setEditingChatId}
+        onSetEditChatName={setEditChatName}
+        onUpdateChatName={handleUpdateChatName}
+        onDeleteChat={handleDeleteChat}
+      />
 
       {/* Main Area */}
       <div className="chat-main">
@@ -1267,8 +770,7 @@ export default function Chat({ user }: ChatProps) {
           aria-label="Camera calibration"
           onMouseDown={(e) => {
             if (e.target === e.currentTarget) {
-              setShowCalibrationModal(false);
-              setPendingFocusStart(null);
+              cancelCalibration();
             }
           }}
         >
@@ -1281,8 +783,7 @@ export default function Chat({ user }: ChatProps) {
               <button
                 className="modal-close"
                 onClick={() => {
-                  setShowCalibrationModal(false);
-                  setPendingFocusStart(null);
+                  cancelCalibration();
                 }}
                 aria-label="Close"
                 type="button"
@@ -1299,11 +800,10 @@ export default function Chat({ user }: ChatProps) {
                 autoStopAfterAlignedSeconds={3}
                 stopOnAlignedStable={false}
                 onRequestClose={() => {
-                  setShowCalibrationModal(false);
-                  setPendingFocusStart(null);
+                  cancelCalibration();
                 }}
                 onAlignedStable={() => {
-                  setShowCalibrationModal(false);
+                  hideCalibrationModal();
                   setCameraPreviewAfterCalibration(true);
                   startFocusAfterCalibration();
                 }}
