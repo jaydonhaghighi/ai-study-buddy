@@ -279,8 +279,19 @@ export const chat = onRequest(
         return;
       }
 
-      const session = await loadSessionOrError(sessionId, res);
-      if (!session) return;
+      // Lazily initialize Genkit session state on first message.
+      // This removes the need for a separate "create chat" round trip and
+      // makes chat creation feel instant in the UI.
+      let session = await ai.loadSession(sessionId, { store: sessionStore });
+      if (!session) {
+        await sessionStore.save(sessionId, { id: sessionId, state: {}, history: [] } as any);
+        session = await ai.loadSession(sessionId, { store: sessionStore });
+      }
+      // If it still fails, treat as server error (store issues, etc).
+      if (!session) {
+        sendErrorResponse(res, 500, "Failed to initialize session");
+        return;
+      }
 
       const model = getStudyBuddyModel();
       const sessionDoc = await db.collection("genkit_sessions").doc(session.id).get();
