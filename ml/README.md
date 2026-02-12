@@ -25,18 +25,15 @@ The pipeline expects:
   - `away_up`
   - `away_down`
 
-Your provided dataset root:
-
-`/home/haghighi/Documents/pi-agent-data`
-
-is already compatible.
+**Data location:** By default the Makefile uses `ml/artifacts/data` as the dataset root (so your `run_*/face/...` data lives next to the manifest). To use a different folder, set `PI_AGENT_DATA_ROOT` when running make (e.g. `PI_AGENT_DATA_ROOT=/path/to/data make validate`).
 
 ## Quick start (from repo root)
 
-Set dataset path (optional if unchanged):
+Default dataset root is `ml/artifacts/data`. Override if needed:
 
 ```bash
-export PI_AGENT_DATA_ROOT=/home/haghighi/Documents/pi-agent-data
+# optional: use a different dataset root
+export PI_AGENT_DATA_ROOT=/path/to/your/run_*_data
 ```
 
 Then run:

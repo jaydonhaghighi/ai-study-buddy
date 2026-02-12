@@ -1,4 +1,5 @@
-PI_AGENT_DATA_ROOT ?= /home/haghighi/Documents/pi-agent-data
+# Dataset root: in-repo ml/artifacts/data (run_*/face/...) or override with PI_AGENT_DATA_ROOT
+PI_AGENT_DATA_ROOT ?= $(CURDIR)/ml/artifacts/data
 DOCKER_COMPOSE ?= docker compose
 LOCAL_UID ?= $(shell id -u)
 LOCAL_GID ?= $(shell id -g)
