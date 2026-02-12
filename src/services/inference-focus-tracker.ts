@@ -1,4 +1,5 @@
-import { FaceDetector, FilesetResolver } from '@mediapipe/tasks-vision';
+import type { FaceDetector } from '@mediapipe/tasks-vision';
+import { createFaceDetector } from './mediapipe-face-detector';
 
 type FocusPredictionSummary = {
   startTs: number;
@@ -13,7 +14,6 @@ type FocusPredictionSummary = {
 
 type SessionStartResponse = {
   session_id: string;
-  created_at_ms: number;
 };
 
 type SessionStopResponse = {
@@ -302,16 +302,7 @@ export class InferenceFocusTracker {
     if (this.detector) {
       return;
     }
-    const vision = await FilesetResolver.forVisionTasks(
-      'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
-    );
-    this.detector = await FaceDetector.createFromOptions(vision, {
-      baseOptions: {
-        modelAssetPath:
-          'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite',
-      },
-      runningMode: 'VIDEO',
-    });
+    this.detector = await createFaceDetector();
   }
 
   async stop(): Promise<FocusPredictionSummary> {
