@@ -3,16 +3,15 @@ import { initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import crypto from "crypto";
 import { genkit } from "genkit/beta";
-import { googleAI } from "@genkit-ai/googleai";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { openAI } from "@genkit-ai/compat-oai/openai";
 initializeApp();
 const db = getFirestore();
-const MODEL_NAME = "gemini-2.5-flash";
+const MODEL_NAME = process.env.OPENAI_MODEL || "gpt-4o-mini";
 const ai = genkit({
-    plugins: [googleAI({
-            apiKey: process.env.GOOGLE_GENAI_API_KEY || "",
+    plugins: [openAI({
+            apiKey: process.env.OPENAI_API_KEY || "",
         })],
-    model: googleAI.model(MODEL_NAME),
+    model: openAI.model(MODEL_NAME),
 });
 class FirestoreSessionStore {
     async get(sessionId) {
@@ -102,7 +101,7 @@ Remember: Your goal is to help students learn effectively, not just provide answ
 const FUNCTION_CONFIG = {
     cors: true,
     region: "us-central1",
-    secrets: ["GOOGLE_GENAI_API_KEY"],
+    secrets: ["OPENAI_API_KEY"],
 };
 function okJson(res, body) {
     res.status(200).json(body);
@@ -180,31 +179,29 @@ export const focusStop = onRequest(FUNCTION_CONFIG, async (req, res) => {
         sendServerError(res, error);
     }
 });
-function getGenerativeModel(systemInstruction) {
-    const apiKey = process.env.GOOGLE_GENAI_API_KEY || "";
-    const genAI = new GoogleGenerativeAI(apiKey);
-    return genAI.getGenerativeModel({
-        model: MODEL_NAME,
-        systemInstruction: systemInstruction,
-    });
-}
-function getStudyBuddyModel() {
-    return getGenerativeModel(SYSTEM_INSTRUCTION);
-}
-function convertHistoryToChatFormat(history) {
-    return history
-        .filter((h) => h && h.role && h.content && typeof h.content === "string")
-        .map((h) => ({
-        role: h.role === "user" ? "user" : "model",
-        parts: [{ text: h.content }],
-    }))
-        .filter((h) => h.parts[0].text.trim().length > 0);
-}
-function ensureHistoryStartsWithUser(chatHistory) {
-    while (chatHistory.length > 0 && chatHistory[0].role !== "user") {
-        chatHistory.shift();
+function convertHistoryToMessages(history) {
+    const out = [];
+    for (const h of history) {
+        if (!h || typeof h.content !== "string")
+            continue;
+        const content = h.content.trim();
+        if (!content)
+            continue;
+        const role = h.role === "user" ? "user" : "model";
+        out.push({ role, content });
     }
-    return chatHistory;
+    return out;
+}
+function toGenkitMessages(history, userMessage) {
+    const messages = history.map((h) => ({
+        role: h.role,
+        content: [{ text: h.content }],
+    }));
+    messages.push({
+        role: "user",
+        content: [{ text: userMessage }],
+    });
+    return messages;
 }
 function setSSEHeaders(res) {
     res.setHeader('Content-Type', 'text/event-stream');
@@ -240,41 +237,72 @@ export const chat = onRequest(FUNCTION_CONFIG, async (req, res) => {
             sendErrorResponse(res, 400, "Missing required fields: sessionId, message, userId");
             return;
         }
-        const session = await loadSessionOrError(sessionId, res);
-        if (!session)
+        // Lazily initialize Genkit session state on first message.
+        // This removes the need for a separate "create chat" round trip and
+        // makes chat creation feel instant in the UI.
+        let session = await ai.loadSession(sessionId, { store: sessionStore });
+        if (!session) {
+            await sessionStore.save(sessionId, { id: sessionId, state: {}, history: [] });
+            session = await ai.loadSession(sessionId, { store: sessionStore });
+        }
+        // If it still fails, treat as server error (store issues, etc).
+        if (!session) {
+            sendErrorResponse(res, 500, "Failed to initialize session");
             return;
-        const model = getStudyBuddyModel();
+        }
         const sessionDoc = await db.collection("genkit_sessions").doc(session.id).get();
         const sessionData = sessionDoc.data();
         const history = sessionData?.history || [];
-        let chatHistory = convertHistoryToChatFormat(history);
-        chatHistory = ensureHistoryStartsWithUser(chatHistory);
+        const chatHistory = convertHistoryToMessages(history);
         setSSEHeaders(res);
         // Check if we need to generate a title (look in 'chats' collection now)
         const publicChatRef = db.collection("chats").doc(sessionId);
         const publicChatDoc = await publicChatRef.get();
         // Fallback to 'sessions' for backward compatibility if needed, but focusing on new structure
         const isNewChat = publicChatDoc.exists && publicChatDoc.data()?.name === "New Chat";
-        let fullText = '';
-        const streamingChat = model.startChat({
-            history: chatHistory,
-            generationConfig: { temperature: 0.7 },
+        let fullText = "";
+        const modelMessages = toGenkitMessages(chatHistory, message);
+        const finalResponse = await ai.generate({
+            model: openAI.model(MODEL_NAME),
+            system: SYSTEM_INSTRUCTION,
+            messages: modelMessages,
+            config: { temperature: 0.7 },
+            onChunk: (chunk) => {
+                const chunkText = typeof chunk.text === "string"
+                    ? chunk.text
+                    : typeof chunk.text === "function"
+                        ? chunk.text()
+                        : "";
+                if (chunkText) {
+                    fullText += chunkText;
+                    res.write(`data: ${JSON.stringify({ text: chunkText, done: false })}\n\n`);
+                }
+            },
         });
-        const result = await streamingChat.sendMessageStream(message);
-        for await (const chunk of result.stream) {
-            const chunkText = chunk.text();
-            if (chunkText) {
-                fullText += chunkText;
-                res.write(`data: ${JSON.stringify({ text: chunkText, done: false })}\n\n`);
-            }
+        const finalText = typeof finalResponse.text === "string"
+            ? finalResponse.text
+            : typeof finalResponse.text === "function"
+                ? finalResponse.text()
+                : "";
+        if (typeof finalText === "string" && finalText.length >= fullText.length) {
+            fullText = finalText;
         }
         // Generate title if needed
         let newSessionName = null;
         if (isNewChat) {
             try {
-                const titleModel = getGenerativeModel("You are a helpful assistant that generates short, concise titles for chat sessions.");
-                const titleResult = await titleModel.generateContent(`Generate a short, concise title (max 6 words) for a chat based on this initial user message: "${message}". Do not use quotes.`);
-                const title = titleResult.response.text().trim();
+                const titleResult = await ai.generate({
+                    model: openAI.model(MODEL_NAME),
+                    system: "You are a helpful assistant that generates short, concise titles for chat sessions.",
+                    prompt: `Generate a short, concise title (max 6 words) for a chat based on this initial user message: "${message}". Do not use quotes.`,
+                    config: { temperature: 0.2, maxOutputTokens: 24 },
+                });
+                const rawTitle = typeof titleResult.text === "string"
+                    ? titleResult.text
+                    : typeof titleResult.text === "function"
+                        ? titleResult.text()
+                        : "";
+                const title = rawTitle.trim().replace(/^['"]+|['"]+$/g, "").trim();
                 if (title) {
                     await publicChatRef.update({ name: title });
                     newSessionName = title;
@@ -285,7 +313,7 @@ export const chat = onRequest(FUNCTION_CONFIG, async (req, res) => {
             }
         }
         const updatedHistory = [
-            ...chatHistory.map((h) => ({ role: h.role, content: h.parts[0].text })),
+            ...chatHistory,
             { role: "user", content: message },
             { role: "model", content: fullText },
         ];
