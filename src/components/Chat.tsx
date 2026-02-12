@@ -19,7 +19,7 @@ import {
   updateDoc,
   doc
 } from 'firebase/firestore';
-import { getAIResponse, createGenkitChat } from '../services/genkit-service';
+import { getAIResponse } from '../services/genkit-service';
 import { startFocusSession, stopFocusSession } from '../services/focus-service';
 import { LaptopFocusTracker } from '../services/laptop-focus-tracker';
 import { InferenceFocusTracker, type InferencePredictionPayload } from '../services/inference-focus-tracker';
@@ -600,8 +600,19 @@ export default function Chat({ user }: ChatProps) {
   const handleCreateChat = async () => {
     if (!user || !expandedCourseId || !expandedSessionId) return;
     try {
-      const chat = await createGenkitChat(user.uid, expandedCourseId, expandedSessionId, 'New Chat');
-      setSelectedChatId(chat.chatId);
+      // Create the chat doc directly for instant UI responsiveness.
+      // The Genkit session is initialized lazily on first message.
+      const chatRef = doc(collection(db, 'chats'));
+      await setDoc(chatRef, {
+        id: chatRef.id,
+        name: 'New Chat',
+        userId: user.uid,
+        courseId: expandedCourseId,
+        sessionId: expandedSessionId,
+        createdAt: serverTimestamp(),
+        lastMessageAt: serverTimestamp(),
+      });
+      setSelectedChatId(chatRef.id);
     } catch (error) {
       console.error("Error creating chat:", error);
     }
