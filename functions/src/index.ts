@@ -2,108 +2,40 @@ import { onRequest } from "firebase-functions/v2/https";
 import { initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import crypto from "crypto";
-import { genkit, SessionStore, SessionData } from "genkit/beta";
+import { genkit } from "genkit/beta";
 import { openAI } from "@genkit-ai/compat-oai/openai";
 import type {
   GenerateOptions,
   GenerateResponse,
   GenerateResponseChunk,
-  MessageData,
 } from "genkit";
+import { FirestoreSessionStore, type StudyBuddyState } from "./firestore-session-store.js";
+import { fromThreadMessages, toGenkitMessages, toThreadMessages, type ChatHistoryMessage } from "./chat-history.js";
+import {
+  asOptionalString,
+  asRequiredString,
+  badRequest,
+  okJson,
+  sendErrorResponse,
+  sendServerError,
+  setSSEHeaders,
+} from "./http-utils.js";
 
 initializeApp();
 const db = getFirestore();
 const MAIN_THREAD = "main";
 
 const MODEL_NAME = process.env.OPENAI_MODEL || "gpt-4o-mini";
+const CHAT_MODEL = openAI.model(MODEL_NAME);
 
 const ai = genkit({
   plugins: [openAI({
     apiKey: process.env.OPENAI_API_KEY || "",
   })],
-  model: openAI.model(MODEL_NAME),
+  model: CHAT_MODEL,
 });
 
-interface StudyBuddyState {
-  userName?: string;
-  preferences?: {
-    learningStyle?: string;
-    subject?: string;
-  };
-}
-
-class FirestoreSessionStore<S = any> implements SessionStore<S> {
-  async get(sessionId: string): Promise<SessionData<S> | undefined> {
-    try {
-      const sessionDoc = await db.collection("genkit_sessions").doc(sessionId).get();
-      if (!sessionDoc.exists) {
-        return undefined;
-      }
-      const data = sessionDoc.data() as {
-        state?: S;
-        threads?: Record<string, MessageData[]>;
-        history?: Array<{ role?: unknown; content?: unknown }>;
-      };
-      const sessionData: SessionData<S> = {
-        id: sessionId,
-        state: (data?.state || {}) as S,
-      };
-
-      if (data?.threads && typeof data.threads === "object") {
-        sessionData.threads = data.threads;
-      }
-
-      // Back-compat: older sessions stored flat "history".
-      if (!sessionData.threads) {
-        const legacyThread: MessageData[] = Array.isArray(data?.history)
-          ? data.history
-              .filter((m): m is { role: unknown; content: unknown } => !!m)
-              .map((m) => {
-                const role: "user" | "model" = m.role === "user" ? "user" : "model";
-                return {
-                  role,
-                  content: [{ text: typeof m.content === "string" ? m.content : "" }],
-                };
-              })
-              .filter((m) => m.content[0].text.trim().length > 0)
-          : [];
-        sessionData.threads = { [MAIN_THREAD]: legacyThread };
-      }
-
-      console.log("Loaded session with history:", {
-        sessionId,
-        messageCount: sessionData.threads?.[MAIN_THREAD]?.length ?? 0,
-      });
-
-      return sessionData as SessionData<S>;
-    } catch (error) {
-      console.error("Error loading session:", error);
-      return undefined;
-    }
-  }
-
-  async save(sessionId: string, data: SessionData<S>): Promise<void> {
-    try {
-      const saveData: SessionData<S> & { updatedAt: Date } = {
-        id: sessionId,
-        state: data.state ?? ({} as S),
-        threads: data.threads || { [MAIN_THREAD]: [] },
-        updatedAt: new Date(),
-      };
-      console.log("Saving session with history:", {
-        sessionId,
-        messageCount: saveData.threads?.[MAIN_THREAD]?.length ?? 0,
-      });
-      await db.collection("genkit_sessions").doc(sessionId).set(saveData, { merge: true });
-      console.log("Session saved successfully with history");
-    } catch (error) {
-      console.error("Error saving session:", error);
-      throw error;
-    }
-  }
-}
-
-const sessionStore = new FirestoreSessionStore<StudyBuddyState>();
+const sessionStore = new FirestoreSessionStore<StudyBuddyState>(db, MAIN_THREAD);
 
 const SYSTEM_INSTRUCTION = `You are an AI Study Buddy - a knowledgeable, patient, and encouraging learning companion designed to help students succeed academically.
 
@@ -132,14 +64,6 @@ const FUNCTION_CONFIG = {
   secrets: ["OPENAI_API_KEY"],
 };
 
-function okJson(res: any, body: any) {
-  res.status(200).json(body);
-}
-
-function badRequest(res: any, message: string) {
-  sendErrorResponse(res, 400, message);
-}
-
 /**
  * POST /focus/start
  * Body: { userId: string, courseId?: string, sessionId?: string }
@@ -152,8 +76,11 @@ export const focusStart = onRequest(
       return;
     }
     try {
-      const { userId, courseId, sessionId } = req.body || {};
-      if (!userId || typeof userId !== "string") {
+      const body = req.body || {};
+      const userId = asRequiredString(body.userId);
+      const courseId = asOptionalString(body.courseId);
+      const sessionId = asOptionalString(body.sessionId);
+      if (!userId) {
         badRequest(res, "Missing required field: userId");
         return;
       }
@@ -164,8 +91,8 @@ export const focusStart = onRequest(
         userId,
         source: "webcam",
         status: "active",
-        courseId: (typeof courseId === "string" ? courseId : null),
-        sessionId: (typeof sessionId === "string" ? sessionId : null),
+        courseId: courseId ?? null,
+        sessionId: sessionId ?? null,
         startedAt: new Date(),
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -190,12 +117,14 @@ export const focusStop = onRequest(
       return;
     }
     try {
-      const { userId, focusSessionId } = req.body || {};
-      if (!userId || typeof userId !== "string") {
+      const body = req.body || {};
+      const userId = asRequiredString(body.userId);
+      const focusSessionId = asRequiredString(body.focusSessionId);
+      if (!userId) {
         badRequest(res, "Missing required field: userId");
         return;
       }
-      if (!focusSessionId || typeof focusSessionId !== "string") {
+      if (!focusSessionId) {
         badRequest(res, "Missing required field: focusSessionId");
         return;
       }
@@ -221,59 +150,6 @@ export const focusStop = onRequest(
   }
 );
 
-type ChatHistoryMessage = {
-  role: "user" | "model";
-  content: string;
-};
-
-function fromThreadMessages(messages: MessageData[] | undefined): ChatHistoryMessage[] {
-  const out: ChatHistoryMessage[] = [];
-  for (const message of messages || []) {
-    if (message.role !== "user" && message.role !== "model") continue;
-    const content = message.content
-      .map((part) => (typeof part.text === "string" ? part.text : ""))
-      .join("")
-      .trim();
-    if (!content) continue;
-    out.push({ role: message.role, content });
-  }
-  return out;
-}
-
-function toThreadMessages(history: ChatHistoryMessage[]): MessageData[] {
-  return history.map((h) => ({
-    role: h.role,
-    content: [{ text: h.content }],
-  }));
-}
-
-function toGenkitMessages(history: ChatHistoryMessage[], userMessage: string): MessageData[] {
-  const messages = toThreadMessages(history);
-  messages.push({
-    role: "user",
-    content: [{ text: userMessage }],
-  });
-  return messages;
-}
-
-function setSSEHeaders(res: any) {
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-}
-
-function sendErrorResponse(res: any, status: number, message: string) {
-  res.status(status).json({ error: message });
-}
-
-function sendServerError(res: any, error: unknown) {
-  console.error("Error:", error);
-  res.status(500).json({
-    error: error instanceof Error ? error.message : "Internal server error",
-  });
-}
-
 export const chat = onRequest(
   FUNCTION_CONFIG,
   async (req, res) => {
@@ -283,8 +159,10 @@ export const chat = onRequest(
     }
 
     try {
-      const { sessionId, message, userId } = req.body;
-
+      const body = req.body || {};
+      const sessionId = asRequiredString(body.sessionId);
+      const message = asRequiredString(body.message);
+      const userId = asRequiredString(body.userId);
       if (!sessionId || !message || !userId) {
         sendErrorResponse(res, 400, "Missing required fields: sessionId, message, userId");
         return;
@@ -315,13 +193,12 @@ export const chat = onRequest(
       // Check if we need to generate a title (look in 'chats' collection now)
       const publicChatRef = db.collection("chats").doc(sessionId);
       const publicChatDoc = await publicChatRef.get();
-      // Fallback to 'sessions' for backward compatibility if needed, but focusing on new structure
       const isNewChat = publicChatDoc.exists && publicChatDoc.data()?.name === "New Chat";
 
       let fullText = "";
       const modelMessages = toGenkitMessages(chatHistory, message);
       const generationOptions: GenerateOptions = {
-        model: openAI.model(MODEL_NAME),
+        model: CHAT_MODEL,
         system: SYSTEM_INSTRUCTION,
         messages: modelMessages,
         config: { temperature: 0.7 },
@@ -344,7 +221,7 @@ export const chat = onRequest(
       if (isNewChat) {
         try {
           const titleOptions: GenerateOptions = {
-            model: openAI.model(MODEL_NAME),
+            model: CHAT_MODEL,
             system: "You are a helpful assistant that generates short, concise titles for chat sessions.",
             prompt: `Generate a short, concise title (max 6 words) for a chat based on this initial user message: "${message}". Do not use quotes.`,
             config: { temperature: 0.2, maxOutputTokens: 24 },
@@ -369,7 +246,7 @@ export const chat = onRequest(
 
       await sessionStore.save(session.id, {
         id: session.id,
-        state: sessionData?.state || {},
+        state: sessionData?.state ?? {},
         threads: { [MAIN_THREAD]: toThreadMessages(updatedHistory) },
       });
 
