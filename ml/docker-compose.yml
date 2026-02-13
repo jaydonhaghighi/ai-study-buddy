@@ -1,0 +1,46 @@
+services:
+  mlflow:
+    image: python:3.11-slim
+    working_dir: /mlflow
+    command: >
+      bash -lc "pip install --no-cache-dir mlflow==2.17.2 &&
+      mlflow server --host 0.0.0.0 --port 5000
+      --backend-store-uri sqlite:///mlflow.db
+      --default-artifact-root /mlflow/artifacts"
+    ports:
+      - "5001:5000"
+    volumes:
+      - ./artifacts/mlflow:/mlflow:z
+
+  trainer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    working_dir: /app
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
+    gpus: all
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    command: studybuddy-ml --help
+    volumes:
+      - ${PI_AGENT_DATA_ROOT:-/home/haghighi/Documents/pi-agent-data}:/datasets:ro,z
+      - ./artifacts:/app/artifacts:z
+      - ./artifacts/mlflow:/mlflow:z
+    depends_on:
+      - mlflow
+
+  inference:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    working_dir: /app
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
+    gpus: all
+    environment:
+      STUDYBUDDY_MODEL_PATH: /app/artifacts/export/best_model.keras
+      STUDYBUDDY_CORS_ORIGINS: ${STUDYBUDDY_CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174,http://localhost:5175,http://127.0.0.1:5175}
+    command: uvicorn studybuddy_ml.serve_api:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./artifacts:/app/artifacts:z

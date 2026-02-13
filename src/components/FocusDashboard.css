@@ -4,9 +4,17 @@
   overflow: auto;
 }
 
+.focusdash {
+  --fd-focus: #10B981;
+  --fd-focus-bg: #D1FAE5;
+  --fd-warn: #F87171;
+  --fd-warn-bg: #FEE2E2;
+  --fd-ink: #111827;
+}
+
 .focusdash-header {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   align-items: flex-start;
   gap: 16px;
   margin-bottom: 14px;
@@ -58,6 +66,22 @@
   background: #ffffff;
   border-radius: 12px;
   padding: 12px;
+  position: relative;
+  overflow: hidden;
+}
+
+.focusdash-metric::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: rgba(17, 24, 39, 0.18);
+}
+
+.focusdash-metric--focus::before {
+  background: var(--fd-focus);
 }
 
 .focusdash-metric-label {
@@ -121,6 +145,50 @@
   color: #111827;
 }
 
+.focusdash-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+  border: 1px solid rgba(17, 24, 39, 0.12);
+  color: var(--fd-ink);
+  background: #ffffff;
+}
+
+.focusdash-badge--high {
+  background: var(--fd-focus-bg);
+  border-color: rgba(16, 185, 129, 0.35);
+}
+
+.focusdash-badge--mid {
+  background: #FEF3C7;
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+.focusdash-badge--low {
+  background: var(--fd-warn-bg);
+  border-color: rgba(248, 113, 113, 0.35);
+}
+
+.focusdash-badge--na {
+  background: #F3F4F6;
+  border-color: rgba(17, 24, 39, 0.10);
+}
+
+.focusdash-away {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(17, 24, 39, 0.10);
+  font-size: 12px;
+  font-weight: 700;
+  color: #111827;
+}
+
 .focusdash-card {
   border: 1px solid rgba(17, 24, 39, 0.10);
   background: #ffffff;
@@ -159,7 +227,7 @@
 .focusdash-table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 820px;
+  min-width: 980px;
 }
 
 .focusdash-table th,
@@ -175,17 +243,18 @@
 .focusdash-table th {
   position: sticky;
   top: 0;
-  background: #111827;
+  background: #0B1220;
   color: #ffffff;
   z-index: 1;
   font-weight: 700;
 }
 
 .focusdash-empty {
-  border: 1px dashed rgba(255, 255, 255, 0.28);
-  background: rgba(0, 0, 0, 0.20);
+  border: 1px dashed rgba(17, 24, 39, 0.25);
+  background: rgba(255, 255, 255, 0.9);
   border-radius: 12px;
   padding: 18px;
+  color: #111827;
 }
 
 .focusdash-empty-title {

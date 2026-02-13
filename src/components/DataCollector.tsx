@@ -157,7 +157,6 @@ export default function DataCollector() {
     if (p) setParticipant(p);
     if (s === 'day' || s === 'night') setSession(s);
     // placement/fps/cycles/seconds are intentionally fixed
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Show instructions once per browser (and always in participant mode).
@@ -559,9 +558,11 @@ export default function DataCollector() {
           let lookGood = 0;
           while (true) {
             ensureNotCancelled();
+            // eslint-disable-next-line no-await-in-loop
             const { box } = await detectFace();
             drawOverlay(box);
 
+            // eslint-disable-next-line no-await-in-loop
             const pose = await detectPose();
             if (pose) {
               setPoseHud(`${poseGuidance('screen', pose)} • Good ${lookGood}/${MIN_GOOD_FRAMES_PER_SEGMENT}`);
@@ -590,6 +591,7 @@ export default function DataCollector() {
             if (lookGood >= MIN_GOOD_FRAMES_PER_SEGMENT) break;
 
             if (aligned) {
+              // eslint-disable-next-line no-await-in-loop
               const blob = await cropFaceToJpeg(box, 224);
               const ts = Date.now();
               const fname = `${ts}.jpg`;
@@ -644,9 +646,11 @@ export default function DataCollector() {
             let awayGood = 0;
             while (true) {
               ensureNotCancelled();
+              // eslint-disable-next-line no-await-in-loop
               const { box } = await detectFace();
               drawOverlay(box);
 
+              // eslint-disable-next-line no-await-in-loop
               const pose = await detectPose();
               if (pose) {
                 setPoseHud(
@@ -677,6 +681,7 @@ export default function DataCollector() {
               if (awayGood >= MIN_GOOD_FRAMES_PER_SEGMENT) break;
 
               if (aligned) {
+                // eslint-disable-next-line no-await-in-loop
                 const blob = await cropFaceToJpeg(box, 224);
                 const ts = Date.now();
                 const fname = `${ts}.jpg`;
