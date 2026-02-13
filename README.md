@@ -113,7 +113,7 @@ The backend uses Firebase Cloud Functions (HTTP functions) for chat and focus se
 - Required secret: `OPENAI_API_KEY`
 - Optional model override: `OPENAI_MODEL` (defaults to `gpt-4o-mini`)
 
-## ML Pipeline (In Depth)
+## ML Pipeline
 
 The ML subsystem has three parts: data collection, training/evaluation, and realtime inference.
 
