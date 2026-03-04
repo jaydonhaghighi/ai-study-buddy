@@ -11,7 +11,7 @@ import json
 import yaml
 
 
-zip_path = 'dataset.zip'
+zip_path = 'dataset.zip' #upload dataset zip to content folder
 extract_path = '/content/dataset'
 
 os.makedirs(extract_path, exist_ok=True)
