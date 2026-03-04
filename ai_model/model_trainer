@@ -1,0 +1,11 @@
+from ultralytics import YOLO
+
+model = YOLO('yolov8s.pt')  #n for nano, s for small
+results = model.train(
+    data='/content/dataset/data.yaml',
+    epochs=20,   #Use to change epoch amount
+    imgsz=640,
+    batch=16,
+    project='distraction_detection_v2',
+    name='yolov8s_custom'
+)
