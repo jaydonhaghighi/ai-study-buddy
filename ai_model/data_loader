@@ -1,0 +1,75 @@
+!pip install ultralytics
+
+# 1. Wipe the old dataset and cached memory
+!rm -rf /content/dataset
+!rm -rf /content/runs
+
+# 2. Extract fresh
+import zipfile
+import os
+import json
+import yaml
+
+
+zip_path = 'dataset.zip'
+extract_path = '/content/dataset'
+
+os.makedirs(extract_path, exist_ok=True)
+with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+    zip_ref.extractall(extract_path)
+
+# 3. Convert COCO to YOLO 
+def convert_coco_to_yolo(split_dir):
+    json_file = os.path.join(split_dir, '_annotations.coco.json')
+    if not os.path.exists(json_file): return []
+
+    with open(json_file, 'r') as f:
+        data = json.load(f)
+
+    # Extract class dictionary mapping COCO category ID to names
+    classes = {cat['id']: cat['name'] for cat in data['categories']}
+    sorted_cat_ids = sorted(classes.keys())
+    class_names = [classes[k] for k in sorted_cat_ids]
+    cat_to_yolo_id = {cat_id: i for i, cat_id in enumerate(sorted_cat_ids)}
+
+    images = {img['id']: img for img in data['images']}
+    labels_saved = 0
+
+    for ann in data['annotations']:
+        img = images[ann['image_id']]
+        img_w, img_h = img['width'], img['height']
+        bbox = ann['bbox']
+
+        yolo_id = cat_to_yolo_id[ann['category_id']]
+
+        x_center = (bbox[0] + bbox[2] / 2.0) / img_w
+        y_center = (bbox[1] + bbox[3] / 2.0) / img_h
+        w = bbox[2] / img_w
+        h = bbox[3] / img_h
+
+        txt_name = os.path.splitext(img['file_name'])[0] + '.txt'
+        with open(os.path.join(split_dir, txt_name), 'a') as f:
+            f.write(f"{yolo_id} {x_center} {y_center} {w} {h}\n")
+            labels_saved += 1
+
+    print(f"Saved {labels_saved} bounding boxes for {split_dir}")
+    return class_names
+
+base_dir = '/content/dataset'
+final_class_names = []
+
+for split in ['train', 'valid', 'test']:
+    names = convert_coco_to_yolo(os.path.join(base_dir, split))
+    if names and not final_class_names:
+        final_class_names = names
+
+yaml_content = {
+    'path': base_dir,
+    'train': 'train', 'val': 'valid', 'test': 'test',
+    'names': {i: name for i, name in enumerate(final_class_names)}
+}
+
+with open(os.path.join(base_dir, 'data.yaml'), 'w') as f:
+    yaml.dump(yaml_content, f, default_flow_style=False)
+
+print(f"\nDataset ready! Classes found: {final_class_names}")
