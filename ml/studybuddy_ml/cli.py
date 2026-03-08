@@ -10,15 +10,20 @@ from .pipeline import (
     aggregate_loso,
     build_manifest,
     export_best_model,
+    export_production_model,
     generate_loso_splits,
     load_participant_map,
     train_loso,
+    train_production,
     write_manifest_and_report,
 )
 from .capstone_report import generate_capstone_report
 
 app = typer.Typer(
-    help="StudyBuddy ML pipeline commands (validate, split, train, eval, export, serve).",
+    help=(
+        "StudyBuddy ML pipeline commands "
+        "(validate, split, train-loso, train-production, eval, export, serve)."
+    ),
     no_args_is_help=True,
 )
 
@@ -153,6 +158,40 @@ def eval_loso(
         )
 
 
+@app.command("train-production")
+def train_production_cmd(
+    manifest_csv: Path = typer.Option(
+        Path("artifacts/data/manifest.csv"),
+        "--manifest-csv",
+        exists=True,
+        help="Manifest CSV from validate step.",
+    ),
+    config_path: Path = typer.Option(
+        Path("configs/baseline.yaml"),
+        "--config-path",
+        exists=True,
+        help="Training config YAML path.",
+    ),
+    output_dir: Path = typer.Option(
+        Path("artifacts/training"),
+        "--output-dir",
+        help="Output directory for production checkpoints and reports.",
+    ),
+    tracking_uri: str | None = typer.Option(
+        None,
+        "--tracking-uri",
+        help="Optional MLflow tracking URI override.",
+    ),
+) -> None:
+    summary_json = train_production(
+        manifest_csv=manifest_csv,
+        config_path=config_path,
+        output_dir=output_dir,
+        tracking_uri=tracking_uri,
+    )
+    typer.echo(f"[train-production] Completed full-dataset training. Summary JSON: {summary_json}")
+
+
 @app.command("export-best")
 def export_best(
     summary_csv: Path = typer.Option(
@@ -167,16 +206,39 @@ def export_best(
         help="Output directory for exported model artifacts.",
     ),
     criterion: str = typer.Option(
-        "test_macro_f1",
+        "val_macro_f1",
         "--criterion",
-        help="Metric column from summary CSV used to pick best fold.",
+        help="Validation metric column from summary CSV used to pick best fold.",
+    ),
+    production_summary_json: Path = typer.Option(
+        Path("artifacts/training/production/production_summary.json"),
+        "--production-summary-json",
+        help=(
+            "Optional production training summary JSON. If present and "
+            "--prefer-production is enabled, this model is exported for deployment."
+        ),
+    ),
+    prefer_production: bool = typer.Option(
+        True,
+        "--prefer-production/--prefer-loso",
+        help="Prefer exporting the full-dataset production model when available.",
     ),
 ) -> None:
-    meta = export_best_model(
-        summary_csv=summary_csv,
-        export_dir=export_dir,
-        criterion=criterion,
-    )
+    if prefer_production and production_summary_json.exists():
+        meta = export_production_model(
+            production_summary_json=production_summary_json,
+            export_dir=export_dir,
+        )
+        typer.echo(f"[export-best] Source: {meta['source']}")
+        typer.echo(f"[export-best] Exported model to: {export_dir}")
+        if meta.get("train_macro_f1") is not None:
+            typer.echo(
+                "[export-best] train_macro_f1="
+                f"{float(meta['train_macro_f1']):.4f} rows={meta.get('num_training_rows')}"
+            )
+        return
+
+    meta = export_best_model(summary_csv=summary_csv, export_dir=export_dir, criterion=criterion)
     typer.echo(f"[export-best] Exported model to: {export_dir}")
     typer.echo(
         f"[export-best] fold={meta['best_fold_id']} "

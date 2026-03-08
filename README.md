@@ -133,7 +133,8 @@ The ML subsystem has three parts: data collection, training/evaluation, and real
   - generate LOSO (leave-one-subject-out) folds
   - train each fold with configurable experiments
   - evaluate metrics and aggregate fold results
-  - export the best model artifact
+  - retrain one production model on the full dataset
+  - export the deployment model artifact
 - MLflow tracks run metrics and artifacts.
 
 ### 3) Inference serving + app integration
@@ -145,6 +146,7 @@ The ML subsystem has three parts: data collection, training/evaluation, and real
 ### 4) Artifacts and outputs
 
 - Training outputs: `ml/artifacts/training/`
+- Production training summary: `ml/artifacts/training/production/production_summary.json`
 - Best export: `ml/artifacts/export/best_model.keras`
 - Reports: `ml/artifacts/reports/` and timestamped run reports
 - MLflow history: `ml/artifacts/mlflow/`
@@ -173,7 +175,7 @@ make ml-fresh-run        # ml-clean + ml-run
 make ml-clean-all        # remove all ML artifacts/history
 ```
 
-### 1) Train + evaluate + export best model
+### 1) Train + evaluate + train production + export deploy model
 
 ```bash
 make mlflow-up
@@ -181,8 +183,12 @@ make validate
 make split-loso
 make train-loso
 make eval-loso
+make train-production
 make export-best
 ```
+
+`make export-best` now exports the full-dataset production model when available, and falls
+back to the best LOSO fold checkpoint if production artifacts are missing.
 
 One-command alternatives:
 

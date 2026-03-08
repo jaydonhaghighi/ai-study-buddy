@@ -1,0 +1,63 @@
+@startuml
+title AI Study Buddy - System Architecture
+
+skinparam backgroundColor #FAFCFF
+skinparam shadowing false
+skinparam ArrowColor #3B5BDB
+skinparam defaultFontName Arial
+skinparam roundCorner 12
+skinparam packageStyle rectangle
+skinparam componentStyle rectangle
+skinparam component {
+  BackgroundColor #EAF2FF
+  BorderColor #5B7CFA
+  FontColor #1C2B4A
+}
+skinparam database {
+  BackgroundColor #FFF0DA
+  BorderColor #C9852F
+}
+
+actor "Student" as Student
+
+rectangle "Browser Client (React + Vite)" #EAF2FF {
+  component "Chat + Focus UI" as FE_UI
+  component "SSE Stream Client" as FE_SSE
+  component "MediaPipe\n(Face/Pose Signals)" as FE_MP #FFF7DB
+  component "Frame Uploader +\nFallback Tracker" as FE_TRACK #E6F7EA
+}
+
+cloud "Firebase Platform" #FFF6EA {
+  component "Cloud Functions\n/chat, /focus/start, /focus/stop" as FN #FFEED7
+  database "Firestore" as DB
+  component "Firebase Auth" as AUTH #FFEED7
+}
+
+node "Local ML Service (Docker/FastAPI)" #E8F7EC {
+  component "Inference API" as INF #DDF3E3
+  component "Temporal Logic\n(EMA + Hysteresis)" as TEMP #DDF3E3
+  component "Best Model\nbest_model.keras" as MODEL #DDF3E3
+}
+
+cloud "OpenAI Service" #F3E8FF {
+  component "LLM via Genkit" as OAI #F3E8FF
+}
+
+Student --> FE_UI : studies + asks questions
+
+FE_UI --> AUTH : sign in / sign up
+FE_UI --> FN : HTTPS requests
+FN --> OAI : prompt + context\nstream generation
+FN --> DB : chat + focus session records
+
+FE_UI --> DB : app data + focus summaries
+FE_UI --> FE_SSE : open EventSource
+FN --> FE_SSE : SSE chunks
+
+FE_MP --> FE_TRACK : landmarks + pose hints
+FE_TRACK --> INF : webcam frame stream
+INF --> MODEL : load weights
+INF --> TEMP : smooth per-frame predictions
+INF --> FE_TRACK : focus state + confidence
+
+@enduml

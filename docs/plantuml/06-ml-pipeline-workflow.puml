@@ -1,0 +1,57 @@
+@startuml
+title StudyBuddy ML Pipeline (LOSO Training + Production Export)
+
+skinparam backgroundColor #FAFCFF
+skinparam shadowing false
+skinparam ArrowColor #2E8B57
+skinparam defaultFontName Arial
+skinparam roundCorner 10
+skinparam rectangle {
+  BorderColor #4BA36B
+  FontColor #173B26
+  BackgroundColor #E6F7EA
+}
+
+rectangle "Data Source\n- Root: /datasets (container)\n- Pattern: run_*/meta.jsonl + face images\n- labels: screen, away_left, away_right, away_up, away_down" as data
+
+rectangle "Dataset Validation + Manifest\n(build_manifest + validate)\n- rows_seen: 10,640\n- rows_kept: 10,260\n- participants: 8\n- classes: 5\n- output: artifacts/data/manifest.csv\n- report: artifacts/reports/data_validation.json" as manifest
+
+rectangle "Split Generation (LOSO)\n(generate_loso_splits)\n- strategy: participant-level leave-one-subject-out\n- per fold: 1 test participant + 1 val participant + remaining train\n- folds: 8\n- train: 7,395-8,145 (mean 7,695)\n- val: 1,030-1,537 (mean 1,282.5)\n- test: 1,030-1,537 (mean 1,282.5)" as split
+
+rectangle "Dataset Loader + Preprocessing (tf.data)\n(_prepare_dataset)\n- decode JPEG -> RGB\n- resize -> image_size x image_size\n- cast float32\n- batch(batch_size), prefetch(AUTOTUNE)\n- train only aug: brightness, contrast, saturation,\n  optional gaussian noise\n- val/test: no augmentation" as preprocess
+
+rectangle "Model Builder (_build_model)\n- backbone: EfficientNetV2B0 or MobileNetV2\n- head: GAP -> Dropout -> Dense(5, softmax)\n- input: [image_size, image_size, 3]\n- output classes: 5" as model
+
+rectangle "Training Loop (train_loso)\n- optimizer: Adam\n- loss: SparseCategoricalCrossentropy\n  (or CategoricalCrossentropy with label_smoothing)\n- class_weight: balanced\n- stage 1: frozen backbone (freeze_epochs)\n- stage 2: optional fine-tune top N layers\n- EarlyStopping(val_accuracy)\n- ModelCheckpoint(best val_accuracy)\n- MLflow params/tags/artifacts per fold" as train
+
+rectangle "Validation + Test Evaluation\n- evaluate best checkpoint on val + held-out test participant\n- metrics: accuracy, macro_f1, macro_precision,\n  macro_recall, balanced_accuracy\n- artifacts: classification report + confusion matrix\n- output: artifacts/training/loso_summary.csv" as eval
+
+rectangle "Cross-Fold Aggregation (eval-loso)\n- mean/std/min/max over val_* and test_* metrics\n- output: artifacts/reports/loso_aggregate.json" as aggregate
+
+rectangle "Production Training (train_production)\n- train on full manifest (10,260 rows)\n- same config/hyperparameters\n- evaluation scope: train_only\n- output: artifacts/training/production/production_summary.json" as production
+
+rectangle "Model Export\n(export-best)\n- prefer production model when available\n- fallback: best LOSO fold by val metric\n- export: best_model.keras + SavedModel + model_meta.json" as export
+
+rectangle "Reproducibility Context\n- seed (default 42)\n- git SHA (tagged/logged)\n- manifest SHA256\n- config SHA256\n- split index SHA256 (LOSO)" as repro
+
+data --> manifest
+manifest --> split
+split --> preprocess
+preprocess --> model
+model --> train
+train --> eval
+eval --> aggregate
+aggregate --> production
+production --> export
+manifest --> repro
+split --> repro
+train --> repro
+production --> repro
+
+note bottom
+Default config path in Makefile: /app/configs/baseline.yaml
+Baseline defaults: image_size=224, batch_size=32, freeze_epochs=12, fine_tune_epochs=0, learning_rate=1e-3.
+Alternative experiment configs override these values (exp_stability_v1, exp_regularized_v2, exp_hires_v3, exp_v4).
+end note
+
+@enduml
