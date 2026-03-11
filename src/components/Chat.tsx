@@ -80,6 +80,9 @@ export default function Chat({ user }: ChatProps) {
   const [newCourseName, setNewCourseName] = useState('');
   const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [newSessionName, setNewSessionName] = useState('');
+
+  const [distractionTimeoutsMs, setDistractionTimeoutsMs] = useState(450);
+  const [refocusTimeoutMs, setRefocusTimeoutMs] = useState(250);
   
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
   const [editChatName, setEditChatName] = useState('');
@@ -147,6 +150,8 @@ export default function Chat({ user }: ChatProps) {
     user,
     expandedCourseId,
     expandedSessionId,
+    distractionTimeoutsMs,
+    refocusTimeoutMs,
     showToast,
     playFocusTransitionSound,
   });
@@ -296,6 +301,10 @@ export default function Chat({ user }: ChatProps) {
           onToggleCameraPreview={() => setCameraPreviewEnabled((v) => !v)}
           onSignOut={handleSignOut}
           formatDuration={formatDuration}
+          disrtactionTimeoutsMs={distractionTimeoutsMs}
+          refocusTimeoutMs={refocusTimeoutMs}
+          setDistractionTimeoutsMs={setDistractionTimeoutsMs}
+          setRefocusTimeoutMs={setRefocusTimeoutMs}
         />
 
         {mainView === 'dashboard' ? (

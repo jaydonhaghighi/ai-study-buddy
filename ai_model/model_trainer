@@ -1,3 +1,4 @@
+#Use in Google Colab
 from ultralytics import YOLO
 
 model = YOLO('yolov8s.pt')  #n for nano, s for small

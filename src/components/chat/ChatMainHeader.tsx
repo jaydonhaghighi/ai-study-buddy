@@ -19,6 +19,10 @@ type ChatMainHeaderProps = {
   onToggleCameraPreview: () => void;
   onSignOut: () => void;
   formatDuration: (ms: number) => string;
+  disrtactionTimeoutsMs: number;
+  refocusTimeoutMs: number;
+  setDistractionTimeoutsMs: (ms: number) => void;
+  setRefocusTimeoutMs: (ms: number) => void;
 };
 
 export default function ChatMainHeader({
@@ -40,6 +44,10 @@ export default function ChatMainHeader({
   onToggleCameraPreview,
   onSignOut,
   formatDuration,
+  disrtactionTimeoutsMs,
+  refocusTimeoutMs,
+  setDistractionTimeoutsMs,
+  setRefocusTimeoutMs,  
 }: ChatMainHeaderProps) {
   return (
     <div className="chat-header">
@@ -101,6 +109,23 @@ export default function ChatMainHeader({
 
                 {settingsOpen && (
                   <div className="chat-settings-menu" role="menu" aria-label="Settings menu">
+                    
+                    <div className="chat-settings-item" style={{flexDirection: 'column', alignItems: 'flex-start', padding: '10px'}}>
+                      <label htmlFor="timeout-slider" style={{marginBottom: '8px', fontSize: '14px'}}>
+                        Distraction Timeout: {disrtactionTimeoutsMs} ms
+                      </label>
+                      <input
+                        id="timeout-slider"
+                        type="range"
+                        min={450}
+                        max={10000}
+                        step={50}
+                        value={disrtactionTimeoutsMs}
+                        onChange={(e) => setDistractionTimeoutsMs(Number(e.target.value))}
+                        style={{width: '100%'}}
+                      />
+                    </div>
+
                     <button
                       type="button"
                       className="chat-settings-item"

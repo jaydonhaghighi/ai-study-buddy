@@ -48,13 +48,15 @@ export type FocusSession = {
 };
 
 const FAST_UI_CONFIDENCE_THRESHOLD = 0.45;
-const FAST_UI_DISTRACT_HOLD_MS = 450;
-const FAST_UI_REFOCUS_HOLD_MS = 250;
+//const FAST_UI_DISTRACT_HOLD_MS = 450;
+//const FAST_UI_REFOCUS_HOLD_MS = 250;
 
 type UseFocusTrackingParams = {
   user: User | null;
   expandedCourseId: string | null;
   expandedSessionId: string | null;
+  distractionTimeoutsMs: number;
+  refocusTimeoutMs: number;
   showToast: (message: string, variant?: ToastVariant) => void;
   playFocusTransitionSound: (nextState: 'focused' | 'distracted') => void;
 };
@@ -63,6 +65,8 @@ export function useFocusTracking({
   user,
   expandedCourseId,
   expandedSessionId,
+  distractionTimeoutsMs,
+  refocusTimeoutMs,
   showToast,
   playFocusTransitionSound,
 }: UseFocusTrackingParams) {
@@ -291,8 +295,8 @@ export function useFocusTracking({
                 const elapsed = now - candidateSinceMsRef.current;
                 const requiredMs =
                   uiCandidate === 'distracted'
-                    ? FAST_UI_DISTRACT_HOLD_MS
-                    : FAST_UI_REFOCUS_HOLD_MS;
+                    ? distractionTimeoutsMs
+                    : refocusTimeoutMs;
                 if (elapsed >= requiredMs) {
                   applyUiFocusState(uiCandidate);
                   announceFocusState(uiCandidate, 'fast');

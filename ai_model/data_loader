@@ -1,3 +1,4 @@
+#Use in Google Colab
 !pip install ultralytics
 
 # 1. Wipe the old dataset and cached memory
