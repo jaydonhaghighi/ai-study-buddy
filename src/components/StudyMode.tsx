@@ -7,7 +7,8 @@ import {
 import type { FocusSession, FocusStopResult } from './chat/useFocusTracking';
 import './StudyMode.css';
 
-const FOCUS_SPRINT_MS = 25 * 60 * 1000;
+const DEFAULT_FOCUS_MINUTES = 25;
+const MIN_FOCUS_MINUTES = 10;
 const BREAK_SPRINT_MS = 5 * 60 * 1000;
 const NUDGE_MIN_INTERVAL_MS = 45 * 1000;
 const MAX_NUDGE_CALLS_PER_SPRINT = 4;
@@ -44,13 +45,6 @@ function formatClock(ms: number): string {
   const min = Math.floor(totalSec / 60);
   const sec = totalSec % 60;
   return `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
-}
-
-function formatMmSsFromSec(sec: number | null): string {
-  if (sec == null || sec < 0) return '—';
-  const minutes = Math.floor(sec / 60);
-  const seconds = sec % 60;
-  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 }
 
 function phaseLabel(phase: StudyPhase): string {
@@ -96,9 +90,12 @@ export default function StudyMode({
   onStopFocus,
   showToast,
 }: StudyModeProps) {
+  const [focusDurationMin, setFocusDurationMin] = useState<number>(DEFAULT_FOCUS_MINUTES);
+  const focusDurationMs = focusDurationMin * 60 * 1000;
+
   const [phase, setPhase] = useState<StudyPhase>('idle');
   const [phaseEndAtMs, setPhaseEndAtMs] = useState<number | null>(null);
-  const [phaseRemainingMs, setPhaseRemainingMs] = useState<number>(FOCUS_SPRINT_MS);
+  const [phaseRemainingMs, setPhaseRemainingMs] = useState<number>(focusDurationMs);
   const [sprintIndex, setSprintIndex] = useState<number>(1);
   const [awaitingFocusStart, setAwaitingFocusStart] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
@@ -107,6 +104,7 @@ export default function StudyMode({
 
   const focusSessionIdRef = useRef<string | null>(null);
   const focusStartedAtMsRef = useRef<number | null>(null);
+  const activeFocusDurationMsRef = useRef<number>(focusDurationMs);
   const phaseRef = useRef<StudyPhase>('idle');
   const focusStateRef = useRef<FocusUiState>(currentFocusState);
   const previousFocusStateRef = useRef<FocusUiState>(null);
@@ -124,6 +122,12 @@ export default function StudyMode({
     focusStateRef.current = currentFocusState;
   }, [currentFocusState]);
 
+  useEffect(() => {
+    if (!activeFocusSession && phase !== 'focus_running') {
+      activeFocusDurationMsRef.current = focusDurationMs;
+    }
+  }, [activeFocusSession, focusDurationMs, phase]);
+
   const appendCoachMessage = useCallback((mode: StudyCoachMode, eventType: StudyCoachEventType, text: string) => {
     const now = Date.now();
     setCoachFeed((prev) => {
@@ -139,7 +143,8 @@ export default function StudyMode({
   }, []);
 
   const buildCoachMetrics = useCallback((remainingSec: number) => {
-    const elapsedSec = Math.max(0, Math.floor((FOCUS_SPRINT_MS - remainingSec * 1000) / 1000));
+    const totalMs = activeFocusDurationMsRef.current;
+    const elapsedSec = Math.max(0, Math.floor((totalMs - remainingSec * 1000) / 1000));
     return {
       elapsedSec,
       remainingSec,
@@ -216,7 +221,7 @@ export default function StudyMode({
 
   useEffect(() => {
     if (phaseEndAtMs == null) {
-      setPhaseRemainingMs(phase === 'break_running' ? BREAK_SPRINT_MS : FOCUS_SPRINT_MS);
+      setPhaseRemainingMs(phase === 'break_running' ? BREAK_SPRINT_MS : focusDurationMs);
       return;
     }
 
@@ -226,7 +231,7 @@ export default function StudyMode({
     tick();
     const timerId = window.setInterval(tick, 250);
     return () => window.clearInterval(timerId);
-  }, [phase, phaseEndAtMs]);
+  }, [phase, phaseEndAtMs, focusDurationMs]);
 
   useEffect(() => {
     if (!awaitingFocusStart) return;
@@ -246,7 +251,9 @@ export default function StudyMode({
     setAwaitingFocusStart(false);
     setLastStopResult(null);
     setPhase('focus_running');
-    setPhaseEndAtMs((focusStartedAtMsRef.current ?? Date.now()) + FOCUS_SPRINT_MS);
+
+    const sprintMs = activeFocusDurationMsRef.current;
+    setPhaseEndAtMs((focusStartedAtMsRef.current ?? Date.now()) + sprintMs);
     nudgeCallsRef.current = 0;
     lastNudgeAtMsRef.current = 0;
     lastMinuteNudgeSentRef.current = false;
@@ -254,7 +261,7 @@ export default function StudyMode({
 
     const remainingSec = Math.max(
       0,
-      Math.floor((((focusStartedAtMsRef.current ?? Date.now()) + FOCUS_SPRINT_MS) - Date.now()) / 1000)
+      Math.floor((((focusStartedAtMsRef.current ?? Date.now()) + sprintMs) - Date.now()) / 1000)
     );
     const timing = buildCoachMetrics(remainingSec);
     void requestCoachMessage({
@@ -385,12 +392,19 @@ export default function StudyMode({
 
   const stopDisabled = focusBusy || isStopping || !activeFocusSession;
   const startDisabled = focusBusy || isStopping || awaitingFocusStart || !!activeFocusSession;
+  const durationLocked =
+    phase === 'focus_running' ||
+    phase === 'break_running' ||
+    awaitingFocusStart ||
+    isStopping ||
+    !!activeFocusSession;
 
   const handleStartFocusSprint = (isNextSprint: boolean) => {
     if (startDisabled) return;
     if (isNextSprint) {
       setSprintIndex((prev) => prev + 1);
     }
+    activeFocusDurationMsRef.current = focusDurationMs;
     setAwaitingFocusStart(true);
     onStartFocus();
   };
@@ -405,6 +419,16 @@ export default function StudyMode({
     setPhaseEndAtMs(null);
   };
 
+  const handleDecreaseDuration = () => {
+    if (durationLocked) return;
+    setFocusDurationMin((prev) => Math.max(MIN_FOCUS_MINUTES, prev - 1));
+  };
+
+  const handleIncreaseDuration = () => {
+    if (durationLocked) return;
+    setFocusDurationMin((prev) => prev + 1);
+  };
+
   return (
     <section className={`study-mode ${variant === 'sidebar' ? 'study-mode--sidebar' : ''}`}>
       <div className="study-card study-card-main">
@@ -417,8 +441,34 @@ export default function StudyMode({
         </div>
 
         <div className="study-timer-block">
-          <div className="study-timer-label">{timerTitle}</div>
-          <div className="study-timer-value">{formatClock(phaseRemainingMs)}</div>
+          <div className="study-timer-main">
+            <div className="study-timer-label">{timerTitle}</div>
+            <div className="study-timer-value">{formatClock(phaseRemainingMs)}</div>
+          </div>
+          <div
+            className="study-timer-stepper"
+            aria-label={`Focus duration controls. Current duration ${focusDurationMin} minutes`}
+            title={`Focus duration: ${focusDurationMin} minutes`}
+          >
+            <button
+              className="study-step-btn"
+              type="button"
+              onClick={handleDecreaseDuration}
+              disabled={durationLocked || focusDurationMin <= MIN_FOCUS_MINUTES}
+              aria-label="Decrease focus timer"
+            >
+              -
+            </button>
+            <button
+              className="study-step-btn"
+              type="button"
+              onClick={handleIncreaseDuration}
+              disabled={durationLocked}
+              aria-label="Increase focus timer"
+            >
+              +
+            </button>
+          </div>
         </div>
 
         <div className="study-metrics-row">
