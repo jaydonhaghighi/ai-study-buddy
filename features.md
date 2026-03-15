@@ -34,7 +34,7 @@
    - Why it matters: converts passive reading into active recall quickly.
 
 5. **Upload/import course material, then chat with citations**
-   - "Drop your PDF/notes/slides, then ask questions grounded in your material."
+   - "Drop your PDF/DOCX/Excel/slides/TXT/images, then ask questions grounded in your material."
    - Even a basic retrieval flow with citations makes answers more trustworthy and course-specific.
 
 6. **Streaks + lightweight gamification tied to focus minutes**

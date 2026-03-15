@@ -1,24 +1,96 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /data/{documentId} {
-      allow read, write: if request.auth != null;
+    function isSignedIn() {
+      return request.auth != null;
     }
-    
-    match /messages/{messageId} {
-      allow read: if request.auth != null && request.auth.uid == resource.data.userId;
-      allow create: if request.auth != null && request.auth.uid == request.resource.data.userId;
-      allow update, delete: if request.auth != null && request.auth.uid == resource.data.userId;
+
+    function isOwner(userId) {
+      return isSignedIn() && userId is string && request.auth.uid == userId;
     }
-    
+
+    function isOwnerCreate() {
+      return isOwner(request.resource.data.userId);
+    }
+
+    function isOwnerRead() {
+      return isOwner(resource.data.userId);
+    }
+
+    function isOwnerUpdate() {
+      return isOwner(resource.data.userId) &&
+        request.resource.data.userId == resource.data.userId;
+    }
+
+    match /courses/{courseId} {
+      allow read: if isOwnerRead();
+      allow create: if isOwnerCreate();
+      allow update: if isOwnerUpdate();
+      allow delete: if isOwnerRead();
+    }
+
     match /sessions/{sessionId} {
-      allow read, write: if request.auth != null && request.auth.uid == resource.data.userId;
-      allow create: if request.auth != null && request.auth.uid == request.resource.data.userId;
+      allow read: if isOwnerRead();
+      allow create: if isOwnerCreate();
+      allow update: if isOwnerUpdate();
+      allow delete: if isOwnerRead();
     }
-    
+
+    match /chats/{chatId} {
+      allow read: if isOwnerRead();
+      allow create: if isOwnerCreate();
+      allow update: if isOwnerUpdate();
+      allow delete: if isOwnerRead();
+    }
+
+    match /messages/{messageId} {
+      allow read: if isOwnerRead();
+      allow create: if isOwnerCreate();
+      allow update: if isOwnerUpdate();
+      allow delete: if isOwnerRead();
+    }
+
+    // Created/updated by backend functions; readable by owner for active-session UI.
+    match /focusSessions/{focusSessionId} {
+      allow read: if isOwnerRead();
+      allow create, update, delete: if false;
+    }
+
+    // Frontend writes local summary details after tracker stop; owner-scoped.
+    match /focusSummaries/{focusSummaryId} {
+      allow read: if isOwnerRead();
+      allow create: if isOwnerCreate();
+      allow update: if isOwnerUpdate();
+      allow delete: if isOwnerRead();
+    }
+
+    match /courseMaterials/{materialId} {
+      allow read: if isOwnerRead();
+      allow create: if isOwnerCreate();
+      allow update: if isOwnerUpdate();
+      allow delete: if isOwnerRead();
+    }
+
+    // Retrieval index is backend-only; never exposed directly to clients.
+    match /material_chunks/{chunkId} {
+      allow read, write: if false;
+    }
+
+    // Backend-only Genkit session persistence.
+    match /genkit_sessions/{sessionId} {
+      allow read, write: if false;
+    }
+
+    // Legacy/testing collection retained as owner-scoped instead of open access.
+    match /data/{documentId} {
+      allow read: if isOwnerRead();
+      allow create: if isOwnerCreate();
+      allow update: if isOwnerUpdate();
+      allow delete: if isOwnerRead();
+    }
+
     match /{document=**} {
-      allow read, write: if request.auth != null;
+      allow read, write: if false;
     }
   }
 }
-

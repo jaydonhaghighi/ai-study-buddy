@@ -2,6 +2,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import 'highlight.js/styles/github.css';
+import type { Citation } from '../../types';
 
 type MessageLike = {
   id: string;
@@ -9,6 +10,7 @@ type MessageLike = {
   userName: string;
   isAI?: boolean;
   model?: string;
+  citations?: Citation[];
 };
 
 type ChatMessageListProps = {
@@ -77,6 +79,20 @@ export default function ChatMessageList({
                       >
                         {message.text}
                       </ReactMarkdown>
+
+                      {Array.isArray(message.citations) && message.citations.length > 0 && (
+                        <div className="message-citations">
+                          <div className="message-citations-title">Sources</div>
+                          {message.citations.map((citation) => (
+                            <div key={`${message.id}-${citation.id}`} className="message-citation-item">
+                              <div className="message-citation-label">
+                                [{citation.id}] {citation.fileName} ({citation.locationLabel})
+                              </div>
+                              <div className="message-citation-snippet">{citation.snippet}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

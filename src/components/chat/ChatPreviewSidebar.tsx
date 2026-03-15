@@ -3,6 +3,7 @@ import type { ReactNode, RefObject } from 'react';
 type ChatPreviewSidebarProps = {
   show: boolean;
   studyContent?: ReactNode;
+  materialsContent?: ReactNode;
   isLocalTrackerRunning: boolean;
   cameraPreviewEnabled: boolean;
   cameraPreviewAfterCalibration: boolean;
@@ -13,6 +14,7 @@ type ChatPreviewSidebarProps = {
 export default function ChatPreviewSidebar({
   show,
   studyContent,
+  materialsContent,
   isLocalTrackerRunning,
   cameraPreviewEnabled,
   cameraPreviewAfterCalibration,
@@ -70,6 +72,12 @@ export default function ChatPreviewSidebar({
 
       <div className="preview-sidebar-body">
         <div className="preview-sidebar-section">{studyContent}</div>
+        {materialsContent && (
+          <div className="preview-sidebar-section">
+            <h4 className="preview-sidebar-subtitle">Course Materials</h4>
+            {materialsContent}
+          </div>
+        )}
         <div className="preview-sidebar-section">
           <h4 className="preview-sidebar-subtitle">Camera Preview</h4>
           {renderCameraBody()}

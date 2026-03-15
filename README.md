@@ -62,6 +62,8 @@ The frontend is a React + TypeScript SPA built with Vite. It has two runtime mod
   - Organizes data as Course -> Session -> Chat and stores all entities in Firestore.
 - Streaming AI chat UX
   - Sends user prompts to backend chat endpoint and renders chunked SSE responses live.
+- Material-grounded chat with citations
+  - Uploads course files (`pdf`, `docx`, `xlsx/xls`, `pptx/ppt`, `txt`, images), indexes content, and displays source citations in AI answers.
 - Focus tracking UX
   - Starts with a webcam calibration step.
   - Sends webcam frames to local inference API for focus predictions.
@@ -104,11 +106,19 @@ The backend uses Firebase Cloud Functions (HTTP functions) for chat and focus se
 - `POST /studyCoach`
   - Input: `userId`, `mode`, `phase`, `eventType`, `sprintIndex`, `elapsedSec`, `remainingSec`, optional `focusPercent`, optional `distractionCount`, optional `firstDriftSec`
   - Output: `{ ok, message }`
+- `POST /materialIndex`
+  - Input: `userId`, `materialId`
+  - Output: `{ ok, materialId, chunkCount, fileType }`
+- `POST /materialDelete`
+  - Input: `userId`, `materialId`
+  - Output: `{ ok, materialId }`
 
 ### Chat backend behavior
 
 - Uses Genkit + OpenAI to generate answers with a teaching-oriented system prompt.
 - Streams response chunks over SSE so the frontend can render text progressively.
+- Performs retrieval over indexed material chunks tied to the active chat.
+- Returns citation metadata in the final SSE event (`citations[]`) for source display.
 - Persists chat context in Firestore (`genkit_sessions`) through a custom session store.
 - Auto-generates a chat title for newly created chats still named `New Chat`.
 

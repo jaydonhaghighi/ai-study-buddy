@@ -9,6 +9,7 @@ import ChatInput from './chat/ChatInput';
 import ChatSidebar from './chat/ChatSidebar';
 import ChatAuthView from './chat/ChatAuthView';
 import ChatPreviewSidebar from './chat/ChatPreviewSidebar';
+import ChatMaterialsPanel from './chat/ChatMaterialsPanel';
 import ChatCalibrationModal from './chat/ChatCalibrationModal';
 import { useChatAutoScroll } from './chat/useChatAutoScroll';
 import { useFocusTracking } from './chat/useFocusTracking';
@@ -17,6 +18,7 @@ import { useChatMutations } from './chat/useChatMutations';
 import { useChatAuth } from './chat/useChatAuth';
 import { useChatCameraPreview } from './chat/useChatCameraPreview';
 import { useChatUiState } from './chat/useChatUiState';
+import { useChatMaterials } from './chat/useChatMaterials';
 import settingsIcon from '../public/settings.svg';
 import './Chat.css';
 
@@ -209,6 +211,19 @@ export default function Chat({ user }: ChatProps) {
     showToast,
   });
 
+  const currentChat = chats.find((chat) => chat.id === selectedChatId) ?? null;
+  const {
+    materials,
+    materialsUploading,
+    handleUploadMaterialFiles,
+    handleDeleteMaterial,
+  } = useChatMaterials({
+    user,
+    selectedChatId,
+    currentChat,
+    showToast,
+  });
+
   const handleSignOut = async () => {
     try {
       setSettingsOpen(false);
@@ -239,7 +254,6 @@ export default function Chat({ user }: ChatProps) {
     );
   }
 
-  const currentChat = chats.find(c => c.id === selectedChatId);
   const visibleMessages = messages.filter((m) => {
     // Avoid rendering empty AI bubbles (e.g. streaming placeholder before first chunk).
     if (m.isAI && (!m.text || m.text.trim().length === 0)) return false;
@@ -342,6 +356,15 @@ export default function Chat({ user }: ChatProps) {
             onStartFocus={handleStartFocus}
             onStopFocus={handleStopFocus}
             showToast={showToast}
+          />
+        )}
+        materialsContent={(
+          <ChatMaterialsPanel
+            selectedChatId={selectedChatId}
+            materials={materials}
+            materialsUploading={materialsUploading}
+            onUploadFiles={handleUploadMaterialFiles}
+            onDeleteMaterial={handleDeleteMaterial}
           />
         )}
         isLocalTrackerRunning={isLocalTrackerRunning}

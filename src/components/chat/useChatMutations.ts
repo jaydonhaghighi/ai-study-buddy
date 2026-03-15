@@ -161,6 +161,7 @@ export function useChatMutations({
         createdAt: serverTimestamp(),
         isAI: true,
         model: response.model,
+        citations: response.citations,
       });
 
       await updateDoc(doc(db, 'chats', selectedChatId), {
