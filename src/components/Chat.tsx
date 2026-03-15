@@ -2,6 +2,7 @@ import { useState, useRef } from 'react';
 import { auth } from '../firebase-config';
 import { User, signOut } from 'firebase/auth';
 import FocusDashboard from './FocusDashboard';
+import StudyMode from './StudyMode';
 import ChatMainHeader from './chat/ChatMainHeader';
 import ChatMessageList from './chat/ChatMessageList';
 import ChatInput from './chat/ChatInput';
@@ -136,6 +137,9 @@ export default function Chat({ user }: ChatProps) {
     activeTrackerLabel,
     lastPose,
     focusElapsedMs,
+    currentFocusState,
+    studyDistractions,
+    firstDriftOffsetSec,
     showCalibrationModal,
     handleStartFocus,
     startFocusAfterCalibration,
@@ -160,6 +164,7 @@ export default function Chat({ user }: ChatProps) {
     previewError,
   } = useChatCameraPreview({
     mainView,
+    previewPanelVisible: mainView === 'chat',
     showCalibrationModal,
   });
 
@@ -243,9 +248,10 @@ export default function Chat({ user }: ChatProps) {
   const hasStreamingAiText = messages.some(
     (m) => m.isAI && m.id.startsWith('temp-') && !!m.text && m.text.trim().length > 0
   );
+  const showRightPanel = mainView === 'chat';
 
   return (
-    <div className={`chat-container ${cameraPreviewEnabled && mainView === 'chat' ? 'preview-sidebar-open' : ''}`}>
+    <div className={`chat-container ${showRightPanel ? 'preview-sidebar-open' : ''}`}>
       <ChatSidebar
         courses={courses}
         sessions={sessions}
@@ -289,9 +295,7 @@ export default function Chat({ user }: ChatProps) {
           cameraPreviewEnabled={cameraPreviewEnabled}
           settingsRef={settingsRef}
           settingsIconSrc={settingsIcon}
-          onToggleMainView={() => setMainView(mainView === 'dashboard' ? 'chat' : 'dashboard')}
-          onStartFocus={handleStartFocus}
-          onStopFocus={handleStopFocus}
+          onChangeMainView={setMainView}
           onToggleSettings={() => setSettingsOpen((v) => !v)}
           onToggleCameraPreview={() => setCameraPreviewEnabled((v) => !v)}
           onSignOut={handleSignOut}
@@ -324,8 +328,24 @@ export default function Chat({ user }: ChatProps) {
       </div>
 
       <ChatPreviewSidebar
-        show={cameraPreviewEnabled && mainView === 'chat'}
+        show={showRightPanel}
+        studyContent={(
+          <StudyMode
+            variant="sidebar"
+            userId={user.uid}
+            activeFocusSession={activeFocusSession}
+            focusBusy={focusBusy}
+            currentFocusState={currentFocusState}
+            studyDistractions={studyDistractions}
+            firstDriftOffsetSec={firstDriftOffsetSec}
+            showCalibrationModal={showCalibrationModal}
+            onStartFocus={handleStartFocus}
+            onStopFocus={handleStopFocus}
+            showToast={showToast}
+          />
+        )}
         isLocalTrackerRunning={isLocalTrackerRunning}
+        cameraPreviewEnabled={cameraPreviewEnabled}
         cameraPreviewAfterCalibration={cameraPreviewAfterCalibration}
         previewError={previewError}
         previewVideoRef={previewVideoRef}

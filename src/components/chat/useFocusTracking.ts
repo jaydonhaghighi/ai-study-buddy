@@ -22,7 +22,7 @@ import { acquireWebcamStream } from '../../services/webcam-manager';
 type ToastVariant = 'success' | 'warning' | 'info';
 type TrackerSource = 'ml_inference_api' | 'laptop_webcam';
 
-type FocusTrackerSummary = {
+export type FocusTrackerSummary = {
   startTs: number;
   endTs: number;
   focusedMs: number;
@@ -31,6 +31,15 @@ type FocusTrackerSummary = {
   focusPercent: number;
   attentionLabelCounts: Record<string, number>;
   [key: string]: unknown;
+};
+
+export type FocusStopResult = {
+  ok: boolean;
+  focusSessionId: string;
+  source: TrackerSource | null;
+  summary: FocusTrackerSummary | null;
+  uiDistractions: number;
+  firstDriftOffsetSec: number | null;
 };
 
 type FocusTrackerRuntime = {
@@ -72,6 +81,9 @@ export function useFocusTracking({
   const [activeTrackerLabel, setActiveTrackerLabel] = useState<string | null>(null);
   const [lastPose, setLastPose] = useState<InferencePredictionPayload | null>(null);
   const [focusElapsedMs, setFocusElapsedMs] = useState<number>(0);
+  const [currentFocusState, setCurrentFocusState] = useState<'focused' | 'distracted' | null>(null);
+  const [studyDistractions, setStudyDistractions] = useState<number>(0);
+  const [firstDriftOffsetSec, setFirstDriftOffsetSec] = useState<number | null>(null);
   const [showCalibrationModal, setShowCalibrationModal] = useState(false);
   const [pendingFocusStart, setPendingFocusStart] = useState<{
     courseId?: string;
@@ -89,6 +101,7 @@ export function useFocusTracking({
   const lastAnnounceMsRef = useRef<number>(0);
   const uiFocusStateRef = useRef<'focused' | 'distracted' | null>(null);
   const uiDistractionsRef = useRef<number>(0);
+  const firstDriftOffsetSecRef = useRef<number | null>(null);
 
   const announceFocusState = (nextState: 'focused' | 'distracted', mode: 'fast' | 'transitioned') => {
     if (announcedFocusStateRef.current === nextState) return;
@@ -110,6 +123,10 @@ export function useFocusTracking({
   const resetUiDistractionCounter = () => {
     uiFocusStateRef.current = null;
     uiDistractionsRef.current = 0;
+    firstDriftOffsetSecRef.current = null;
+    setCurrentFocusState(null);
+    setStudyDistractions(0);
+    setFirstDriftOffsetSec(null);
     candidateFocusStateRef.current = null;
     candidateSinceMsRef.current = null;
     announcedFocusStateRef.current = null;
@@ -120,8 +137,16 @@ export function useFocusTracking({
     const prev = uiFocusStateRef.current;
     if (prev === 'focused' && nextState === 'distracted') {
       uiDistractionsRef.current += 1;
+      setStudyDistractions(uiDistractionsRef.current);
+      if (firstDriftOffsetSecRef.current == null) {
+        const startedAtMs = activeFocusSession?.startedAt?.getTime?.() ?? focusStartLocalMsRef.current ?? Date.now();
+        const offsetSec = Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000));
+        firstDriftOffsetSecRef.current = offsetSec;
+        setFirstDriftOffsetSec(offsetSec);
+      }
     }
     uiFocusStateRef.current = nextState;
+    setCurrentFocusState(nextState);
   };
 
   useEffect(() => {
@@ -175,6 +200,16 @@ export function useFocusTracking({
     setActiveTrackerLabel(null);
     setLastPose(null);
     setFocusElapsedMs(0);
+    uiFocusStateRef.current = null;
+    uiDistractionsRef.current = 0;
+    firstDriftOffsetSecRef.current = null;
+    setCurrentFocusState(null);
+    setStudyDistractions(0);
+    setFirstDriftOffsetSec(null);
+    candidateFocusStateRef.current = null;
+    candidateSinceMsRef.current = null;
+    announcedFocusStateRef.current = null;
+    lastAnnounceMsRef.current = 0;
     focusStartLocalMsRef.current = null;
     const tracker = localFocusTrackerRef.current;
     if (!tracker) return;
@@ -198,7 +233,7 @@ export function useFocusTracking({
     tick();
     const id = window.setInterval(tick, 1000);
     return () => window.clearInterval(id);
-  }, [activeFocusSession?.id, activeFocusSession?.startedAt]);
+  }, [activeFocusSession]);
 
   const handleStartFocus = () => {
     if (!user) return;
@@ -225,6 +260,7 @@ export function useFocusTracking({
     try {
       resetUiDistractionCounter();
       uiFocusStateRef.current = 'focused';
+      setCurrentFocusState('focused');
       const res = await startFocusSession({
         userId: user.uid,
         courseId: pendingFocusStart.courseId,
@@ -313,16 +349,15 @@ export function useFocusTracking({
           const fallbackTracker = new LaptopFocusTracker({
             stream: acquired.stream,
             onSample: ({ isFocused }) => {
+              const nextState: 'focused' | 'distracted' = isFocused ? 'focused' : 'distracted';
               if (lastFocused == null) {
                 lastFocused = isFocused;
+                applyUiFocusState(nextState);
                 return;
               }
-              if (lastFocused && !isFocused) {
-                showToast('You are distracted', 'warning');
-                playFocusTransitionSound('distracted');
-              } else if (!lastFocused && isFocused) {
-                showToast("You're back in focus", 'success');
-                playFocusTransitionSound('focused');
+              if (lastFocused !== isFocused) {
+                applyUiFocusState(nextState);
+                announceFocusState(nextState, 'fast');
               }
               lastFocused = isFocused;
             },
@@ -357,8 +392,8 @@ export function useFocusTracking({
     }
   };
 
-  const handleStopFocus = async () => {
-    if (!user || !activeFocusSession) return;
+  const handleStopFocus = async (): Promise<FocusStopResult | null> => {
+    if (!user || !activeFocusSession) return null;
     setFocusBusy(true);
     const tracker = localFocusTrackerRef.current;
     const trackerSource = trackerSourceRef.current;
@@ -370,6 +405,16 @@ export function useFocusTracking({
     setLastPose(null);
     setIsLocalTrackerRunning(false);
     let sessionStopped = false;
+    const uiDistractions = uiDistractionsRef.current;
+    const firstDriftSec = firstDriftOffsetSecRef.current;
+    let stopResult: FocusStopResult = {
+      ok: false,
+      focusSessionId: activeFocusSession.id,
+      source: trackerSource ?? null,
+      summary: null,
+      uiDistractions,
+      firstDriftOffsetSec: firstDriftSec,
+    };
     try {
       await stopFocusSession({
         userId: user.uid,
@@ -403,12 +448,29 @@ export function useFocusTracking({
         );
         const sourceText = trackerSource === 'ml_inference_api' ? 'server ML inference' : 'laptop webcam';
         showToast(`Focus tracking stopped. Summary saved from ${sourceText}.`, 'success');
+        stopResult = {
+          ok: true,
+          focusSessionId: activeFocusSession.id,
+          source: trackerSource ?? null,
+          summary: finalSummary,
+          uiDistractions,
+          firstDriftOffsetSec: firstDriftSec,
+        };
         resetUiDistractionCounter();
       } else {
         showToast('Focus tracking stopped. No tracking summary was captured.', 'info');
+        stopResult = {
+          ok: true,
+          focusSessionId: activeFocusSession.id,
+          source: trackerSource ?? null,
+          summary: null,
+          uiDistractions,
+          firstDriftOffsetSec: firstDriftSec,
+        };
         resetUiDistractionCounter();
       }
       releaseTrackerStream?.();
+      return stopResult;
     } catch (error) {
       if (tracker && !sessionStopped) {
         localFocusTrackerRef.current = tracker;
@@ -423,6 +485,7 @@ export function useFocusTracking({
       }
       console.error('Error stopping focus session:', error);
       showToast("Error stopping focus tracking", 'warning');
+      return stopResult;
     } finally {
       setFocusBusy(false);
     }
@@ -447,6 +510,7 @@ export function useFocusTracking({
     setActiveTrackerLabel(null);
     setLastPose(null);
     setFocusElapsedMs(0);
+    resetUiDistractionCounter();
     setActiveFocusSession(null);
     setPendingFocusStart(null);
     setShowCalibrationModal(false);
@@ -459,6 +523,9 @@ export function useFocusTracking({
     activeTrackerLabel,
     lastPose,
     focusElapsedMs,
+    currentFocusState,
+    studyDistractions,
+    firstDriftOffsetSec,
     showCalibrationModal,
     handleStartFocus,
     startFocusAfterCalibration,

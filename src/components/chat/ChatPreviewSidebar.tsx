@@ -1,8 +1,10 @@
-import type { RefObject } from 'react';
+import type { ReactNode, RefObject } from 'react';
 
 type ChatPreviewSidebarProps = {
   show: boolean;
+  studyContent?: ReactNode;
   isLocalTrackerRunning: boolean;
+  cameraPreviewEnabled: boolean;
   cameraPreviewAfterCalibration: boolean;
   previewError: string | null;
   previewVideoRef: RefObject<HTMLVideoElement>;
@@ -10,43 +12,68 @@ type ChatPreviewSidebarProps = {
 
 export default function ChatPreviewSidebar({
   show,
+  studyContent,
   isLocalTrackerRunning,
+  cameraPreviewEnabled,
   cameraPreviewAfterCalibration,
   previewError,
   previewVideoRef,
 }: ChatPreviewSidebarProps) {
   if (!show) return null;
 
+  const renderCameraBody = () => {
+    if (!cameraPreviewEnabled) {
+      return (
+        <div className="preview-sidebar-empty">
+          <p>Camera preview is off. Enable it from Settings when you want live video here.</p>
+        </div>
+      );
+    }
+
+    if (isLocalTrackerRunning) {
+      if (previewError) {
+        return (
+          <div className="preview-sidebar-empty">
+            <p>Camera preview unavailable: {previewError}</p>
+          </div>
+        );
+      }
+      return <video ref={previewVideoRef} className="preview-video" playsInline muted />;
+    }
+
+    if (!cameraPreviewAfterCalibration) {
+      return (
+        <div className="preview-sidebar-empty">
+          <p>
+            Start Focus to calibrate your webcam. Once calibration is complete, the live preview will appear here.
+          </p>
+        </div>
+      );
+    }
+
+    if (previewError) {
+      return (
+        <div className="preview-sidebar-empty">
+          <p>Camera preview unavailable: {previewError}</p>
+        </div>
+      );
+    }
+
+    return <video ref={previewVideoRef} className="preview-video" playsInline muted />;
+  };
+
   return (
-    <div className="preview-sidebar" aria-label="Camera preview sidebar">
+    <div className="preview-sidebar" aria-label="Right side panel">
       <div className="preview-sidebar-header">
-        <h3>Camera</h3>
+        <h3>Study Panel</h3>
       </div>
 
       <div className="preview-sidebar-body">
-        {isLocalTrackerRunning ? (
-          previewError ? (
-            <div className="preview-sidebar-empty">
-              <p>Camera preview unavailable: {previewError}</p>
-            </div>
-          ) : (
-            <video ref={previewVideoRef} className="preview-video" playsInline muted />
-          )
-        ) : !cameraPreviewAfterCalibration ? (
-          <div className="preview-sidebar-empty">
-            <p>
-              Start Focus to calibrate your webcam. Once calibration is complete, the live preview will stay here while you study.
-            </p>
-          </div>
-        ) : (
-          previewError ? (
-            <div className="preview-sidebar-empty">
-              <p>Camera preview unavailable: {previewError}</p>
-            </div>
-          ) : (
-            <video ref={previewVideoRef} className="preview-video" playsInline muted />
-          )
-        )}
+        <div className="preview-sidebar-section">{studyContent}</div>
+        <div className="preview-sidebar-section">
+          <h4 className="preview-sidebar-subtitle">Camera Preview</h4>
+          {renderCameraBody()}
+        </div>
       </div>
     </div>
   );

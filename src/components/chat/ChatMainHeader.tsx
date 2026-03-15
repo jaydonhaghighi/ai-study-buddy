@@ -1,7 +1,9 @@
 import type { InferencePredictionPayload } from '../../services/inference-focus-tracker';
 
+type MainView = 'chat' | 'dashboard';
+
 type ChatMainHeaderProps = {
-  mainView: 'chat' | 'dashboard';
+  mainView: MainView;
   currentChatName?: string;
   focusBusy: boolean;
   isFocusActive: boolean;
@@ -12,9 +14,7 @@ type ChatMainHeaderProps = {
   cameraPreviewEnabled: boolean;
   settingsRef: React.RefObject<HTMLDivElement>;
   settingsIconSrc: string;
-  onToggleMainView: () => void;
-  onStartFocus: () => void;
-  onStopFocus: () => void;
+  onChangeMainView: (nextView: MainView) => void;
   onToggleSettings: () => void;
   onToggleCameraPreview: () => void;
   onSignOut: () => void;
@@ -33,14 +33,15 @@ export default function ChatMainHeader({
   cameraPreviewEnabled,
   settingsRef,
   settingsIconSrc,
-  onToggleMainView,
-  onStartFocus,
-  onStopFocus,
+  onChangeMainView,
   onToggleSettings,
   onToggleCameraPreview,
   onSignOut,
   formatDuration,
 }: ChatMainHeaderProps) {
+  const navBtnClass = (view: MainView) =>
+    `chat-header-btn ${mainView === view ? 'chat-header-btn-primary' : ''}`;
+
   return (
     <div className="chat-header">
       <div className="chat-header-inner">
@@ -59,31 +60,21 @@ export default function ChatMainHeader({
           <div className="chat-header-controls">
             <div className="chat-header-row">
               <button
-                onClick={onToggleMainView}
-                className="chat-header-btn"
+                onClick={() => onChangeMainView('chat')}
+                className={navBtnClass('chat')}
                 disabled={focusBusy}
                 type="button"
               >
-                {mainView === 'dashboard' ? 'Back to chat' : 'Dashboard'}
+                Chat
               </button>
-
-              {!isFocusActive ? (
-                <button
-                  onClick={onStartFocus}
-                  className="chat-header-btn chat-header-btn-primary"
-                  disabled={focusBusy}
-                >
-                  Start Focus
-                </button>
-              ) : (
-                <button
-                  onClick={onStopFocus}
-                  className="chat-header-btn chat-header-btn-danger"
-                  disabled={focusBusy}
-                >
-                  Stop Focus
-                </button>
-              )}
+              <button
+                onClick={() => onChangeMainView('dashboard')}
+                className={navBtnClass('dashboard')}
+                disabled={focusBusy}
+                type="button"
+              >
+                Dashboard
+              </button>
 
               <div className="chat-settings" ref={settingsRef}>
                 <button

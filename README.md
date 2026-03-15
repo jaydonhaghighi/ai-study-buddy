@@ -26,11 +26,14 @@ This app provides:
 
 ### High-Level System Design
 
-![High-level design](src/public/high-level-design.png)
+![High-level design](docs/high-level-design.png)
 
 ### ML Pipeline Design
 
-![ML pipeline design](src/public/ml-pipeline-design.png)
+![ML pipeline design](docs/ml-pipeline-design.png)
+
+### Database Design
+![Database Design](docs/database-model.png)
 
 ## Start Frontend Web App
 
@@ -48,7 +51,7 @@ Open the local URL shown by Vite (usually `http://localhost:5173`).
 
 The frontend is a React + TypeScript SPA built with Vite. It has two runtime modes:
 
-- Main app mode (`/`): chat, focus tracking, and dashboard
+- Main app mode (`/`): chat, study mode (Pomodoro), focus tracking, and dashboard
 - Data collection mode (`/collect`): guided capture of labeled webcam samples for model training
 
 ### Main frontend responsibilities
@@ -63,16 +66,22 @@ The frontend is a React + TypeScript SPA built with Vite. It has two runtime mod
   - Starts with a webcam calibration step.
   - Sends webcam frames to local inference API for focus predictions.
   - Falls back to a local laptop webcam heuristic tracker if inference API is unavailable.
+- Study mode UX
+  - Runs fixed 25-minute focus sprints and 5-minute breaks.
+  - Displays live focus state, distraction counters, AI coach nudges, and sprint recap cards.
+  - Persists sprint recap metadata into `focusSummaries.studyMode`.
 - Focus analytics dashboard
   - Reads saved focus summaries and renders trends and session-level metrics.
 
 ### Core frontend modules
 
 - `src/components/Chat.tsx`: top-level app shell and chat/focus orchestration
+- `src/components/StudyMode.tsx`: Pomodoro state machine + live coach + recap UI
 - `src/components/chat/useChatCollections.ts`: Firestore listeners for courses/sessions/chats/messages
 - `src/components/chat/useChatMutations.ts`: create/update/delete and send-message logic
 - `src/components/chat/useFocusTracking.ts`: focus lifecycle, calibration handoff, tracker fallback
 - `src/services/genkit-service.ts`: SSE chat stream client
+- `src/services/study-coach-service.ts`: client wrapper for AI coaching endpoint
 - `src/services/inference-focus-tracker.ts`: frame capture + upload + prediction handling
 - `src/services/laptop-focus-tracker.ts`: local fallback focus classification
 - `src/components/DataCollector.tsx`: dataset collection workflow
@@ -92,6 +101,9 @@ The backend uses Firebase Cloud Functions (HTTP functions) for chat and focus se
 - `POST /focusStop`
   - Input: `userId`, `focusSessionId`
   - Output: `{ ok }`
+- `POST /studyCoach`
+  - Input: `userId`, `mode`, `phase`, `eventType`, `sprintIndex`, `elapsedSec`, `remainingSec`, optional `focusPercent`, optional `distractionCount`, optional `firstDriftSec`
+  - Output: `{ ok, message }`
 
 ### Chat backend behavior
 
@@ -105,6 +117,18 @@ The backend uses Firebase Cloud Functions (HTTP functions) for chat and focus se
 - `focusStart` creates active records in `focusSessions`.
 - `focusStop` validates ownership and marks the session as ended.
 - Frontend stores final tracking summaries in `focusSummaries` after tracker stop.
+- Frontend merges Study Mode recap metadata into `focusSummaries/{focusSessionId}.studyMode`.
+
+### Study Mode behavior
+
+- Fixed cycle: 25-minute focus sprint + 5-minute break (manual transitions).
+- Live coach calls `POST /studyCoach` for:
+  - `sprint_start`
+  - `distracted_sustained_20s`
+  - `back_in_focus`
+  - `last_minute`
+  - `sprint_end_recap`
+- Sprint recap includes focused time, first drift timestamp, and AI-generated guidance.
 
 ### Backend + platform dependencies
 

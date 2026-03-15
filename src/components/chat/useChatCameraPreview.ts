@@ -3,11 +3,13 @@ import { acquireWebcamStream } from '../../services/webcam-manager';
 
 type UseChatCameraPreviewParams = {
   mainView: 'chat' | 'dashboard';
+  previewPanelVisible: boolean;
   showCalibrationModal: boolean;
 };
 
 export function useChatCameraPreview({
   mainView,
+  previewPanelVisible,
   showCalibrationModal,
 }: UseChatCameraPreviewParams) {
   const [cameraPreviewEnabled, setCameraPreviewEnabled] = useState(() => {
@@ -23,7 +25,11 @@ export function useChatCameraPreview({
   }, [cameraPreviewEnabled]);
 
   useEffect(() => {
-    const shouldShowPreview = cameraPreviewEnabled && cameraPreviewAfterCalibration && mainView === 'chat';
+    const shouldShowPreview =
+      cameraPreviewEnabled &&
+      cameraPreviewAfterCalibration &&
+      mainView === 'chat' &&
+      previewPanelVisible;
     let cancelled = false;
 
     const stopPreview = () => {
@@ -64,7 +70,7 @@ export function useChatCameraPreview({
       cancelled = true;
       stopPreview();
     };
-  }, [cameraPreviewEnabled, cameraPreviewAfterCalibration, mainView]);
+  }, [cameraPreviewEnabled, cameraPreviewAfterCalibration, mainView, previewPanelVisible]);
 
   useEffect(() => {
     if (!showCalibrationModal) return;

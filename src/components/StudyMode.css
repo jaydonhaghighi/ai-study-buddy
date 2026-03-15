@@ -1,0 +1,263 @@
+.study-mode {
+  padding: 24px;
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 16px;
+  overflow-y: auto;
+}
+
+.study-mode--sidebar {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.study-mode--sidebar .study-card {
+  border-radius: 12px;
+  padding: 14px;
+}
+
+.study-mode--sidebar .study-card-main,
+.study-mode--sidebar .study-card-coach,
+.study-mode--sidebar .study-card-recap {
+  grid-column: 1 / -1;
+}
+
+.study-mode--sidebar .study-timer-value {
+  font-size: 2.2rem;
+}
+
+.study-mode--sidebar .study-recap-grid {
+  grid-template-columns: 1fr;
+}
+
+.study-card {
+  background: #FFFFFF;
+  border: 1px solid var(--color-stone);
+  border-radius: 14px;
+  padding: 18px;
+}
+
+.study-card-main {
+  grid-column: 1 / 2;
+}
+
+.study-card-coach {
+  grid-column: 2 / 3;
+}
+
+.study-card-recap {
+  grid-column: 1 / -1;
+}
+
+.study-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.study-head h3 {
+  margin: 0;
+  font-size: 1.3rem;
+}
+
+.study-head p {
+  margin: 6px 0 0 0;
+  color: var(--color-graphite);
+}
+
+.study-phase-chip {
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--color-stone);
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.study-timer-block {
+  margin-top: 16px;
+  background: var(--color-mist);
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.study-timer-label {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-graphite);
+}
+
+.study-timer-value {
+  font-size: 3rem;
+  font-weight: 700;
+  line-height: 1;
+  margin-top: 6px;
+  letter-spacing: 0.04em;
+}
+
+.study-phase-meta {
+  margin-top: 8px;
+  color: var(--color-graphite);
+  font-size: 0.88rem;
+}
+
+.study-metrics-row {
+  margin-top: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.study-pill {
+  border-radius: 999px;
+  padding: 7px 12px;
+  border: 1px solid var(--color-stone);
+  font-size: 0.86rem;
+  font-weight: 600;
+  background: #FFFFFF;
+}
+
+.study-pill-success {
+  border-color: #A7F3D0;
+  background: #ECFDF5;
+}
+
+.study-pill-warning {
+  border-color: #FECACA;
+  background: #FEF2F2;
+}
+
+.study-actions {
+  margin-top: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.study-btn {
+  border: 1px solid var(--color-stone);
+  background: #FFFFFF;
+  color: var(--color-charcoal);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 0.93rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.study-btn:hover:not(:disabled) {
+  border-color: var(--color-charcoal);
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.study-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.study-btn-primary {
+  background: var(--color-charcoal);
+  border-color: var(--color-charcoal);
+  color: #FFFFFF;
+}
+
+.study-btn-primary:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.85);
+  border-color: rgba(0, 0, 0, 0.85);
+}
+
+.study-btn-danger {
+  border-color: #FCA5A5;
+  background: #FEF2F2;
+  color: #7F1D1D;
+}
+
+.study-btn-danger:hover:not(:disabled) {
+  background: #FEE2E2;
+}
+
+.study-card-coach h4,
+.study-card-recap h4 {
+  margin: 0 0 10px 0;
+  font-size: 1.08rem;
+}
+
+.study-muted {
+  color: var(--color-graphite);
+  margin: 0;
+}
+
+.study-coach-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.study-coach-item {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--color-mist);
+  border: 1px solid var(--color-stone);
+  font-size: 0.93rem;
+}
+
+.study-coach-item-meta {
+  font-size: 0.75rem;
+  color: var(--color-graphite);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+
+.study-recap-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.study-recap-stat {
+  border: 1px solid var(--color-stone);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--color-mist);
+}
+
+.study-recap-stat span {
+  display: block;
+  font-size: 0.78rem;
+  color: var(--color-graphite);
+  margin-bottom: 4px;
+}
+
+.study-recap-stat strong {
+  font-size: 1.03rem;
+}
+
+.study-recap-text {
+  margin: 0;
+  color: var(--color-charcoal);
+  line-height: 1.45;
+}
+
+@media (max-width: 980px) {
+  .study-mode {
+    grid-template-columns: 1fr;
+    padding: 16px;
+  }
+
+  .study-card-main,
+  .study-card-coach,
+  .study-card-recap {
+    grid-column: 1 / -1;
+  }
+
+  .study-recap-grid {
+    grid-template-columns: 1fr;
+  }
+}

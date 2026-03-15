@@ -64,6 +64,16 @@ const FUNCTION_CONFIG = {
   secrets: ["OPENAI_API_KEY"],
 };
 
+type StudyCoachMode = "nudge" | "recap";
+
+function asRequiredNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function asOptionalNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 /**
  * POST /focus/start
  * Body: { userId: string, courseId?: string, sessionId?: string }
@@ -144,6 +154,118 @@ export const focusStop = onRequest(
       await fsRef.set({ status: "ended", endedAt: new Date(), updatedAt: new Date() }, { merge: true });
 
       okJson(res, { ok: true });
+    } catch (error) {
+      sendServerError(res, error);
+    }
+  }
+);
+
+/**
+ * POST /studyCoach
+ * Body:
+ * {
+ *   userId: string,
+ *   mode: "nudge" | "recap",
+ *   phase: string,
+ *   eventType: string,
+ *   sprintIndex: number,
+ *   elapsedSec: number,
+ *   remainingSec: number,
+ *   focusPercent?: number,
+ *   distractionCount?: number,
+ *   firstDriftSec?: number
+ * }
+ */
+export const studyCoach = onRequest(
+  FUNCTION_CONFIG,
+  async (req, res) => {
+    if (req.method !== "POST") {
+      sendErrorResponse(res, 405, "Method not allowed");
+      return;
+    }
+    try {
+      const body = req.body || {};
+      const userId = asRequiredString(body.userId);
+      const mode = asRequiredString(body.mode) as StudyCoachMode | null;
+      const phase = asRequiredString(body.phase);
+      const eventType = asRequiredString(body.eventType);
+      const sprintIndex = asRequiredNumber(body.sprintIndex);
+      const elapsedSec = asRequiredNumber(body.elapsedSec);
+      const remainingSec = asRequiredNumber(body.remainingSec);
+      const focusPercent = asOptionalNumber(body.focusPercent);
+      const distractionCount = asOptionalNumber(body.distractionCount);
+      const firstDriftSec = asOptionalNumber(body.firstDriftSec);
+
+      if (!userId) {
+        badRequest(res, "Missing required field: userId");
+        return;
+      }
+      if (!mode || (mode !== "nudge" && mode !== "recap")) {
+        badRequest(res, "Missing or invalid required field: mode");
+        return;
+      }
+      if (!phase) {
+        badRequest(res, "Missing required field: phase");
+        return;
+      }
+      if (!eventType) {
+        badRequest(res, "Missing required field: eventType");
+        return;
+      }
+      if (sprintIndex == null) {
+        badRequest(res, "Missing required field: sprintIndex");
+        return;
+      }
+      if (elapsedSec == null) {
+        badRequest(res, "Missing required field: elapsedSec");
+        return;
+      }
+      if (remainingSec == null) {
+        badRequest(res, "Missing required field: remainingSec");
+        return;
+      }
+
+      const instruction =
+        mode === "nudge"
+          ? "Write one short real-time coaching nudge. Keep it under 22 words."
+          : "Write one short sprint recap. Mention performance and one concrete next goal in under 40 words.";
+
+      const prompt = [
+        instruction,
+        "Tone: supportive, direct, non-judgmental, no emojis, no markdown.",
+        `eventType=${eventType}`,
+        `phase=${phase}`,
+        `sprintIndex=${sprintIndex}`,
+        `elapsedSec=${elapsedSec}`,
+        `remainingSec=${remainingSec}`,
+        `focusPercent=${focusPercent == null ? "unknown" : focusPercent.toFixed(1)}`,
+        `distractionCount=${distractionCount == null ? "unknown" : distractionCount}`,
+        `firstDriftSec=${firstDriftSec == null ? "unknown" : firstDriftSec}`,
+      ].join("\n");
+
+      const coachResponse: GenerateResponse = await ai.generate({
+        model: CHAT_MODEL,
+        system:
+          "You are an AI study coach for Pomodoro sessions. Be concise, specific, and actionable. Return plain text only.",
+        prompt,
+        config: {
+          temperature: 0.5,
+          maxOutputTokens: mode === "nudge" ? 64 : 96,
+        },
+      });
+
+      const rawMessage = coachResponse.text ?? "";
+      const cleaned = rawMessage
+        .replace(/\s+/g, " ")
+        .replace(/^["']+|["']+$/g, "")
+        .trim();
+
+      const fallback =
+        mode === "nudge"
+          ? "Stay with this sprint. One small focused step right now."
+          : "Solid effort this sprint. Keep the next sprint focused and aim to improve your focused minutes.";
+
+      okJson(res, { ok: true, message: cleaned.length > 0 ? cleaned : fallback });
     } catch (error) {
       sendServerError(res, error);
     }
@@ -257,4 +379,3 @@ export const chat = onRequest(
     }
   }
 );
-
