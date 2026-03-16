@@ -102,3 +102,81 @@ export type StudySet = {
   createdAt: Date | null;
   updatedAt: Date | null;
 };
+
+export type GamificationBadgeId =
+  | 'first_focus_day'
+  | 'streak_3'
+  | 'streak_7'
+  | 'streak_14'
+  | 'streak_30'
+  | 'weekly_goal_1'
+  | 'focus_300m'
+  | 'focus_1000m';
+
+export type GamificationProfile = {
+  currentStreakDays: number;
+  longestStreakDays: number;
+  lastQualifiedDayKey: string | null;
+  totalXp: number;
+  level: number;
+  levelProgressXp: number;
+  xpToNextLevel: number;
+  totalFocusedMinutes: number;
+  weeklyGoal: {
+    targetMinutes: number;
+    weekKey: string;
+    weekStartDayKey: string;
+    focusedMinutes: number;
+    completedAt: string | null;
+  };
+  unlockedBadges: GamificationBadgeId[];
+};
+
+export type GamificationDailyStat = {
+  id: string;
+  userId: string;
+  dayKey: string;
+  weekKey: string;
+  weekStartDayKey: string;
+  timezone: string;
+  focusedMinutes: number;
+  sessionCount: number;
+  qualified: boolean;
+  qualifiedAt: Date | null;
+  createdAt: Date | null;
+  updatedAt: Date | null;
+};
+
+export type GamificationWeeklyStat = {
+  id: string;
+  userId: string;
+  weekKey: string;
+  weekStartDayKey: string;
+  timezone: string;
+  targetMinutes: number;
+  focusedMinutes: number;
+  sessionCount: number;
+  completed: boolean;
+  completedAt: Date | null;
+  createdAt: Date | null;
+  updatedAt: Date | null;
+};
+
+export type GamificationSessionAward = {
+  focusSessionId: string;
+  dayKey: string;
+  weekKey: string;
+  focusedMinutes: number;
+  baseXp: number;
+  qualityMultiplier: number;
+  xpGain: number;
+  focusPercent: number;
+  badgeUnlocks: GamificationBadgeId[];
+};
+
+export type GamificationApplyResponse = {
+  ok: boolean;
+  alreadyProcessed: boolean;
+  award: GamificationSessionAward;
+  profile: GamificationProfile;
+};

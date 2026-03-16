@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode, RefObject } from 'react';
+import { BookOpenCheck, Camera, Files, PanelRightClose, Timer } from 'lucide-react';
 
 type ChatPreviewSidebarProps = {
   show: boolean;
@@ -11,6 +12,7 @@ type ChatPreviewSidebarProps = {
   cameraPreviewAfterCalibration: boolean;
   previewError: string | null;
   previewVideoRef: RefObject<HTMLVideoElement>;
+  onClose: () => void;
 };
 
 export default function ChatPreviewSidebar({
@@ -23,6 +25,7 @@ export default function ChatPreviewSidebar({
   cameraPreviewAfterCalibration,
   previewError,
   previewVideoRef,
+  onClose,
 }: ChatPreviewSidebarProps) {
   const [activeTabId, setActiveTabId] = useState<string>('study');
 
@@ -69,11 +72,12 @@ export default function ChatPreviewSidebar({
 
   const cameraContent = renderCameraBody();
 
-  const tabs: Array<{ id: string; title: string; content: ReactNode }> = [];
+  const tabs: Array<{ id: string; title: string; content: ReactNode; icon: ReactNode }> = [];
   if (studyContent) {
     tabs.push({
       id: 'study',
       title: 'Study Mode',
+      icon: <Timer size={15} aria-hidden="true" />,
       content: (
         <>
           {studyContent}
@@ -84,13 +88,13 @@ export default function ChatPreviewSidebar({
       ),
     });
   } else {
-    tabs.push({ id: 'camera', title: 'Camera', content: cameraContent });
+    tabs.push({ id: 'camera', title: 'Camera', icon: <Camera size={15} aria-hidden="true" />, content: cameraContent });
   }
   if (materialsContent) {
-    tabs.push({ id: 'materials', title: 'Materials', content: materialsContent });
+    tabs.push({ id: 'materials', title: 'Materials', icon: <Files size={15} aria-hidden="true" />, content: materialsContent });
   }
   if (activeRecallContent) {
-    tabs.push({ id: 'recall', title: 'Active Recall', content: activeRecallContent });
+    tabs.push({ id: 'recall', title: 'Active Recall', icon: <BookOpenCheck size={15} aria-hidden="true" />, content: activeRecallContent });
   }
 
   const firstTabId = tabs[0]?.id || 'study';
@@ -110,6 +114,15 @@ export default function ChatPreviewSidebar({
     <div className="preview-sidebar" aria-label="Right side panel">
       <div className="preview-sidebar-header">
         <h3>Study Panel</h3>
+        <button
+          type="button"
+          className="preview-sidebar-close-btn"
+          onClick={onClose}
+          aria-label="Close right panel"
+          title="Close right panel"
+        >
+          <PanelRightClose size={16} aria-hidden="true" />
+        </button>
       </div>
 
       <div className="preview-sidebar-tabs" role="tablist" aria-label="Study panel sections">
@@ -122,7 +135,8 @@ export default function ChatPreviewSidebar({
             className={`preview-sidebar-tab-btn ${tab.id === activeTab?.id ? 'active' : ''}`}
             onClick={() => setActiveTabId(tab.id)}
           >
-            {tab.title}
+            <span className="preview-sidebar-tab-icon" aria-hidden="true">{tab.icon}</span>
+            <span>{tab.title}</span>
           </button>
         ))}
       </div>

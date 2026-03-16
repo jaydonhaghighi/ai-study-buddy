@@ -64,6 +64,30 @@ service cloud.firestore {
       allow delete: if isOwnerRead();
     }
 
+    // Backend-managed progress profile for streaks, levels, and badges.
+    match /gamificationProfiles/{profileId} {
+      allow read: if isSignedIn() && request.auth.uid == profileId;
+      allow create, update, delete: if false;
+    }
+
+    // Backend-managed daily progress aggregates.
+    match /gamificationDailyStats/{dailyId} {
+      allow read: if isOwnerRead();
+      allow create, update, delete: if false;
+    }
+
+    // Backend-managed weekly progress aggregates.
+    match /gamificationWeeklyStats/{weeklyId} {
+      allow read: if isOwnerRead();
+      allow create, update, delete: if false;
+    }
+
+    // Immutable backend ledger for idempotent session awards.
+    match /gamificationSessionAwards/{awardId} {
+      allow read: if isOwnerRead();
+      allow create, update, delete: if false;
+    }
+
     match /courseMaterials/{materialId} {
       allow read: if isOwnerRead();
       allow create: if isOwnerCreate();

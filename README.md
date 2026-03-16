@@ -74,6 +74,7 @@ The frontend is a React + TypeScript SPA built with Vite. It has two runtime mod
   - Persists sprint recap metadata into `focusSummaries.studyMode`.
 - Focus analytics dashboard
   - Reads saved focus summaries and renders trends and session-level metrics.
+  - Shows gamified focus progress: streaks, weekly goal completion, level/XP, and badge unlocks.
 
 ### Core frontend modules
 
@@ -103,6 +104,9 @@ The backend uses Firebase Cloud Functions (HTTP functions) for chat and focus se
 - `POST /focusStop`
   - Input: `userId`, `focusSessionId`
   - Output: `{ ok }`
+- `POST /gamificationApplyFocusSession`
+  - Input: `userId`, `focusSessionId`, `timezone`
+  - Output: `{ ok, alreadyProcessed, award, profile }`
 - `POST /studyCoach`
   - Input: `userId`, `mode`, `phase`, `eventType`, `sprintIndex`, `elapsedSec`, `remainingSec`, optional `focusPercent`, optional `distractionCount`, optional `firstDriftSec`
   - Output: `{ ok, message }`
@@ -128,6 +132,11 @@ The backend uses Firebase Cloud Functions (HTTP functions) for chat and focus se
 - `focusStop` validates ownership and marks the session as ended.
 - Frontend stores final tracking summaries in `focusSummaries` after tracker stop.
 - Frontend merges Study Mode recap metadata into `focusSummaries/{focusSessionId}.studyMode`.
+- `gamificationApplyFocusSession` consumes ended session summaries and updates backend-owned progression docs.
+  - Daily streak qualification: `>= 25` focused minutes/day.
+  - Weekly goal: `180` focused minutes/week (week starts Monday).
+  - XP + level: `baseXp=floor(focusedMs/60000)` with focus-quality multiplier (`1.25`/`1.10`/`1.00`), level formula `floor(totalXp/100)+1`.
+  - Rollout policy: starts fresh at launch (no historical backfill).
 
 ### Study Mode behavior
 

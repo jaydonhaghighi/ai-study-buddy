@@ -1,4 +1,13 @@
 import { useRef, useState } from 'react';
+import {
+  FileImage,
+  FileQuestion,
+  FileSpreadsheet,
+  FileText,
+  Presentation,
+  Trash2,
+  UploadCloud,
+} from 'lucide-react';
 import type { CourseMaterial } from '../../types';
 import {
   ACCEPTED_MATERIAL_FILE_TYPES,
@@ -30,22 +39,22 @@ function statusLabel(material: CourseMaterial): string {
   }
 }
 
-function fileIcon(material: CourseMaterial): string {
+function fileIcon(material: CourseMaterial) {
   switch (material.fileType) {
     case 'pdf':
-      return 'PDF';
+      return <FileText size={16} aria-hidden="true" />;
     case 'docx':
-      return 'DOC';
+      return <FileText size={16} aria-hidden="true" />;
     case 'spreadsheet':
-      return 'XLS';
+      return <FileSpreadsheet size={16} aria-hidden="true" />;
     case 'slides':
-      return 'PPT';
+      return <Presentation size={16} aria-hidden="true" />;
     case 'txt':
-      return 'TXT';
+      return <FileText size={16} aria-hidden="true" />;
     case 'image':
-      return 'IMG';
+      return <FileImage size={16} aria-hidden="true" />;
     default:
-      return 'FILE';
+      return <FileQuestion size={16} aria-hidden="true" />;
   }
 }
 
@@ -102,7 +111,9 @@ export default function ChatMaterialsPanel({
           disabled={materialsUploading}
         />
         <div className="drop-zone-content">
-          <div className="drop-zone-icon">Upload</div>
+          <div className="drop-zone-icon" aria-hidden="true">
+            <UploadCloud size={36} strokeWidth={1.7} />
+          </div>
           <p className="drop-zone-text">
             Drop files here or click to upload
             <br />
@@ -149,7 +160,8 @@ export default function ChatMaterialsPanel({
                   onClick={() => onDeleteMaterial(material.id)}
                   disabled={materialsUploading}
                 >
-                  Delete
+                  <Trash2 size={14} aria-hidden="true" />
+                  <span>Delete</span>
                 </button>
               </div>
             </div>

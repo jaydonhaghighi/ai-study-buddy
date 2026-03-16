@@ -12,6 +12,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '../../firebase-config';
 import { startFocusSession, stopFocusSession } from '../../services/focus-service';
+import { applyGamificationForFocusSession } from '../../services/gamification-service';
 import { LaptopFocusTracker } from '../../services/laptop-focus-tracker';
 import {
   InferenceFocusTracker,
@@ -446,6 +447,14 @@ export function useFocusTracking({
           },
           { merge: true }
         );
+        const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+        void applyGamificationForFocusSession({
+          userId: user.uid,
+          focusSessionId: activeFocusSession.id,
+          timezone,
+        }).catch((gamificationError) => {
+          console.warn('Gamification update failed for focus session:', gamificationError);
+        });
         const sourceText = trackerSource === 'ml_inference_api' ? 'server ML inference' : 'laptop webcam';
         showToast(`Focus tracking stopped. Summary saved from ${sourceText}.`, 'success');
         stopResult = {

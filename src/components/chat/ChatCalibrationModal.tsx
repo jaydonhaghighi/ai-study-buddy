@@ -1,3 +1,4 @@
+import { X } from 'lucide-react';
 import WebcamCalibrationPreview from '../WebcamCalibrationPreview';
 
 type ChatCalibrationModalProps = {
@@ -37,7 +38,7 @@ export default function ChatCalibrationModal({
             aria-label="Close"
             type="button"
           >
-            ×
+            <X size={18} aria-hidden="true" />
           </button>
         </div>
 

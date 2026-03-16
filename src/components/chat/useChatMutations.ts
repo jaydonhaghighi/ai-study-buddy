@@ -140,7 +140,7 @@ export function useChatMutations({
         id: tempId,
         text: '',
         userId: user.uid,
-        userName: 'AI Study Buddy',
+        userName: 'Echelon',
         sessionId: selectedChatId,
         createdAt: new Date(),
         isAI: true,
@@ -156,7 +156,7 @@ export function useChatMutations({
       await addDoc(collection(db, 'messages'), {
         text: response.text,
         userId: user.uid,
-        userName: 'AI Study Buddy',
+        userName: 'Echelon',
         sessionId: selectedChatId,
         createdAt: serverTimestamp(),
         isAI: true,

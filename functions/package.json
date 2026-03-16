@@ -9,6 +9,7 @@
     "serve": "npm run build && firebase emulators:start --only functions",
     "shell": "npm run build && firebase functions:shell",
     "start": "npm run shell",
+    "test:gamification:emulator": "npm run build && firebase emulators:exec --config ../firebase.json --project demo-ai-study-buddy --only firestore,functions \"node scripts/gamification-emulator-tests.mjs\"",
     "deploy": "firebase deploy --only functions",
     "logs": "firebase functions:log"
   },

@@ -51,6 +51,68 @@ type StudyDifficulty = "easy" | "medium" | "hard";
 type StudySourceType = "chat" | "material";
 type StudyQuizQuestionType = "mcq" | "short";
 type FlashcardReviewRating = "again" | "hard" | "good" | "easy";
+type GamificationBadgeId =
+  | "first_focus_day"
+  | "streak_3"
+  | "streak_7"
+  | "streak_14"
+  | "streak_30"
+  | "weekly_goal_1"
+  | "focus_300m"
+  | "focus_1000m";
+
+type FocusSessionDoc = {
+  id: string;
+  userId: string;
+  status: string;
+  startedAt: Date | null;
+  endedAt: Date | null;
+};
+
+type FocusSummaryDoc = {
+  userId: string;
+  focusedMs: number;
+  distractedMs: number;
+  focusPercent: number;
+  endTs: number | null;
+  createdAt: Date | null;
+};
+
+type GamificationProfileDoc = {
+  id: string;
+  userId: string;
+  currentStreakDays: number;
+  longestStreakDays: number;
+  lastQualifiedDayKey: string | null;
+  totalXp: number;
+  level: number;
+  totalFocusedMinutes: number;
+  weeklyGoalTargetMinutes: number;
+  currentWeekKey: string;
+  currentWeekStartDayKey: string;
+  currentWeekFocusedMinutes: number;
+  currentWeekCompletedAt: Date | null;
+  unlockedBadges: GamificationBadgeId[];
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+type GamificationSessionAwardDoc = {
+  id: string;
+  focusSessionId: string;
+  userId: string;
+  dayKey: string;
+  weekKey: string;
+  weekStartDayKey: string;
+  timezone: string;
+  focusedMinutes: number;
+  baseXp: number;
+  qualityMultiplier: number;
+  xpGain: number;
+  focusPercent: number;
+  badgeUnlocks: GamificationBadgeId[];
+  createdAt: Date | null;
+};
 
 type CourseMaterialDoc = {
   id: string;
@@ -197,6 +259,20 @@ const MAX_STUDY_TRANSCRIPT_CHARS = 14000;
 const DEFAULT_QUIZ_COUNT = 10;
 const DEFAULT_FLASHCARD_COUNT = 14;
 const DEFAULT_EXAM_COUNT = 4;
+const DAILY_STREAK_TARGET_MINUTES = 25;
+const WEEKLY_GOAL_TARGET_MINUTES = 180;
+const XP_PER_LEVEL = 100;
+const MAX_FOCUSED_MINUTES_PER_SESSION = 12 * 60;
+const GAMIFICATION_BADGE_IDS: GamificationBadgeId[] = [
+  "first_focus_day",
+  "streak_3",
+  "streak_7",
+  "streak_14",
+  "streak_30",
+  "weekly_goal_1",
+  "focus_300m",
+  "focus_1000m",
+];
 
 const SUPPORTED_EXTENSIONS = new Set(["pdf", "docx", "xlsx", "xls", "pptx", "ppt", "txt", "png", "jpg", "jpeg", "webp"]);
 
@@ -236,6 +312,298 @@ function asDate(value: unknown): Date | null {
 
 function asString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.max(min, Math.min(max, value));
+}
+
+function normalizeTimeZone(value: string | null): string {
+  const candidate = value?.trim();
+  if (!candidate) return "UTC";
+  try {
+    // Throws if IANA timezone is invalid.
+    new Intl.DateTimeFormat("en-US", { timeZone: candidate }).format(new Date());
+    return candidate;
+  } catch {
+    return "UTC";
+  }
+}
+
+function formatDayKey(year: number, month: number, day: number): string {
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function parseDayKey(dayKey: string): { year: number; month: number; day: number } | null {
+  const match = dayKey.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const year = Number.parseInt(match[1], 10);
+  const month = Number.parseInt(match[2], 10);
+  const day = Number.parseInt(match[3], 10);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
+  if (month < 1 || month > 12) return null;
+  if (day < 1 || day > 31) return null;
+  return { year, month, day };
+}
+
+function dayKeyToUtcDate(dayKey: string): Date | null {
+  const parsed = parseDayKey(dayKey);
+  if (!parsed) return null;
+  return new Date(Date.UTC(parsed.year, parsed.month - 1, parsed.day));
+}
+
+function isNextDayKey(previousDayKey: string, nextDayKey: string): boolean {
+  const previous = dayKeyToUtcDate(previousDayKey);
+  const next = dayKeyToUtcDate(nextDayKey);
+  if (!previous || !next) return false;
+  const diffDays = Math.round((next.getTime() - previous.getTime()) / (24 * 60 * 60 * 1000));
+  return diffDays === 1;
+}
+
+function getDayKeyForTimeZone(date: Date, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+
+  const year = Number.parseInt(parts.find((part) => part.type === "year")?.value || "0", 10);
+  const month = Number.parseInt(parts.find((part) => part.type === "month")?.value || "0", 10);
+  const day = Number.parseInt(parts.find((part) => part.type === "day")?.value || "0", 10);
+
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day) || year <= 0 || month <= 0 || day <= 0) {
+    const fallback = dayKeyToUtcDate(formatDayKey(date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate()));
+    if (!fallback) {
+      return "1970-01-01";
+    }
+    return formatDayKey(fallback.getUTCFullYear(), fallback.getUTCMonth() + 1, fallback.getUTCDate());
+  }
+
+  return formatDayKey(year, month, day);
+}
+
+function getWeekInfoFromDayKey(dayKey: string): { weekKey: string; weekStartDayKey: string } {
+  const dayDate = dayKeyToUtcDate(dayKey);
+  if (!dayDate) {
+    return { weekKey: "1970-W01", weekStartDayKey: "1970-01-01" };
+  }
+
+  const isoDay = dayDate.getUTCDay() === 0 ? 7 : dayDate.getUTCDay();
+  const weekStartDate = new Date(dayDate.getTime());
+  weekStartDate.setUTCDate(weekStartDate.getUTCDate() - (isoDay - 1));
+  const weekStartDayKey = formatDayKey(
+    weekStartDate.getUTCFullYear(),
+    weekStartDate.getUTCMonth() + 1,
+    weekStartDate.getUTCDate(),
+  );
+
+  const thursday = new Date(dayDate.getTime());
+  thursday.setUTCDate(thursday.getUTCDate() + (4 - isoDay));
+  const weekYear = thursday.getUTCFullYear();
+  const yearStart = new Date(Date.UTC(weekYear, 0, 1));
+  const weekNo = Math.ceil((((thursday.getTime() - yearStart.getTime()) / (24 * 60 * 60 * 1000)) + 1) / 7);
+  const weekKey = `${weekYear}-W${String(weekNo).padStart(2, "0")}`;
+
+  return { weekKey, weekStartDayKey };
+}
+
+function getWeekInfoForDate(date: Date, timeZone: string): { dayKey: string; weekKey: string; weekStartDayKey: string } {
+  const dayKey = getDayKeyForTimeZone(date, timeZone);
+  const weekInfo = getWeekInfoFromDayKey(dayKey);
+  return { dayKey, weekKey: weekInfo.weekKey, weekStartDayKey: weekInfo.weekStartDayKey };
+}
+
+function getQualityMultiplier(focusPercent: number): number {
+  if (focusPercent >= 85) return 1.25;
+  if (focusPercent >= 70) return 1.1;
+  return 1.0;
+}
+
+function getLevelFromTotalXp(totalXp: number): number {
+  return Math.floor(Math.max(0, totalXp) / XP_PER_LEVEL) + 1;
+}
+
+function isGamificationBadgeId(value: string): value is GamificationBadgeId {
+  return (GAMIFICATION_BADGE_IDS as string[]).includes(value);
+}
+
+function normalizeBadgeIds(value: unknown): GamificationBadgeId[] {
+  if (!Array.isArray(value)) return [];
+  const out: GamificationBadgeId[] = [];
+  const seen = new Set<GamificationBadgeId>();
+  for (const row of value) {
+    const badgeId = asString(row);
+    if (!badgeId || !isGamificationBadgeId(badgeId)) continue;
+    if (seen.has(badgeId)) continue;
+    seen.add(badgeId);
+    out.push(badgeId);
+  }
+  return out;
+}
+
+function asTimestampMs(value: unknown): number | null {
+  const date = asDate(value);
+  if (date) return date.getTime();
+  const numeric = asOptionalNumber(value);
+  return numeric == null ? null : numeric;
+}
+
+function parseFocusSessionDoc(docId: string, data: Record<string, unknown>): FocusSessionDoc {
+  return {
+    id: docId,
+    userId: asString(data.userId),
+    status: asString(data.status),
+    startedAt: asDate(data.startedAt),
+    endedAt: asDate(data.endedAt),
+  };
+}
+
+function parseFocusSummaryDoc(data: Record<string, unknown>): FocusSummaryDoc {
+  const focusedMs = Math.max(0, asOptionalNumber(data.focusedMs) ?? 0);
+  const distractedMs = Math.max(0, asOptionalNumber(data.distractedMs) ?? 0);
+  const computedFocusPercent = focusedMs + distractedMs > 0 ? (focusedMs / (focusedMs + distractedMs)) * 100 : 0;
+  const focusPercent = clampNumber(asOptionalNumber(data.focusPercent) ?? computedFocusPercent, 0, 100);
+  return {
+    userId: asString(data.userId),
+    focusedMs,
+    distractedMs,
+    focusPercent: Math.round(focusPercent * 10) / 10,
+    endTs: asOptionalNumber(data.endTs),
+    createdAt: asDate(data.createdAt),
+  };
+}
+
+function parseGamificationProfileDoc(
+  userId: string,
+  data: Record<string, unknown> | null,
+  now: Date,
+  fallbackWeekKey: string,
+  fallbackWeekStartDayKey: string,
+): GamificationProfileDoc {
+  if (!data) {
+    return {
+      id: userId,
+      userId,
+      currentStreakDays: 0,
+      longestStreakDays: 0,
+      lastQualifiedDayKey: null,
+      totalXp: 0,
+      level: 1,
+      totalFocusedMinutes: 0,
+      weeklyGoalTargetMinutes: WEEKLY_GOAL_TARGET_MINUTES,
+      currentWeekKey: fallbackWeekKey,
+      currentWeekStartDayKey: fallbackWeekStartDayKey,
+      currentWeekFocusedMinutes: 0,
+      currentWeekCompletedAt: null,
+      unlockedBadges: [],
+      createdAt: now,
+      updatedAt: now,
+    };
+  }
+
+  return {
+    id: userId,
+    userId,
+    currentStreakDays: Math.max(0, clampInteger(asOptionalNumber(data.currentStreakDays), 0, 0, 100000)),
+    longestStreakDays: Math.max(0, clampInteger(asOptionalNumber(data.longestStreakDays), 0, 0, 100000)),
+    lastQualifiedDayKey: asString(data.lastQualifiedDayKey) || null,
+    totalXp: Math.max(0, clampInteger(asOptionalNumber(data.totalXp), 0, 0, 100000000)),
+    level: Math.max(1, clampInteger(asOptionalNumber(data.level), 1, 1, 1000000)),
+    totalFocusedMinutes: Math.max(0, clampInteger(asOptionalNumber(data.totalFocusedMinutes), 0, 0, 100000000)),
+    weeklyGoalTargetMinutes: Math.max(1, clampInteger(asOptionalNumber(data.weeklyGoalTargetMinutes), WEEKLY_GOAL_TARGET_MINUTES, 1, 1000000)),
+    currentWeekKey: asString(data.currentWeekKey) || fallbackWeekKey,
+    currentWeekStartDayKey: asString(data.currentWeekStartDayKey) || fallbackWeekStartDayKey,
+    currentWeekFocusedMinutes: Math.max(0, clampInteger(asOptionalNumber(data.currentWeekFocusedMinutes), 0, 0, 1000000)),
+    currentWeekCompletedAt: asDate(data.currentWeekCompletedAt),
+    unlockedBadges: normalizeBadgeIds(data.unlockedBadges),
+    createdAt: asDate(data.createdAt) || now,
+    updatedAt: asDate(data.updatedAt) || now,
+  };
+}
+
+function parseSessionAwardDoc(focusSessionId: string, userId: string, data: Record<string, unknown>): GamificationSessionAwardDoc {
+  return {
+    id: focusSessionId,
+    focusSessionId,
+    userId: asString(data.userId) || userId,
+    dayKey: asString(data.dayKey),
+    weekKey: asString(data.weekKey),
+    weekStartDayKey: asString(data.weekStartDayKey),
+    timezone: asString(data.timezone) || "UTC",
+    focusedMinutes: Math.max(0, clampInteger(asOptionalNumber(data.focusedMinutes), 0, 0, 1000000)),
+    baseXp: Math.max(0, clampInteger(asOptionalNumber(data.baseXp), 0, 0, 1000000)),
+    qualityMultiplier: clampNumber(asOptionalNumber(data.qualityMultiplier) ?? 1, 1, 2),
+    xpGain: Math.max(0, clampInteger(asOptionalNumber(data.xpGain), 0, 0, 10000000)),
+    focusPercent: clampNumber(asOptionalNumber(data.focusPercent) ?? 0, 0, 100),
+    badgeUnlocks: normalizeBadgeIds(data.badgeUnlocks),
+    createdAt: asDate(data.createdAt),
+  };
+}
+
+function toGamificationAwardResponse(award: GamificationSessionAwardDoc): {
+  focusSessionId: string;
+  dayKey: string;
+  weekKey: string;
+  focusedMinutes: number;
+  baseXp: number;
+  qualityMultiplier: number;
+  xpGain: number;
+  focusPercent: number;
+  badgeUnlocks: GamificationBadgeId[];
+} {
+  return {
+    focusSessionId: award.focusSessionId,
+    dayKey: award.dayKey,
+    weekKey: award.weekKey,
+    focusedMinutes: award.focusedMinutes,
+    baseXp: award.baseXp,
+    qualityMultiplier: award.qualityMultiplier,
+    xpGain: award.xpGain,
+    focusPercent: award.focusPercent,
+    badgeUnlocks: award.badgeUnlocks,
+  };
+}
+
+function toGamificationProfileResponse(profile: GamificationProfileDoc): {
+  currentStreakDays: number;
+  longestStreakDays: number;
+  lastQualifiedDayKey: string | null;
+  totalXp: number;
+  level: number;
+  levelProgressXp: number;
+  xpToNextLevel: number;
+  totalFocusedMinutes: number;
+  weeklyGoal: {
+    targetMinutes: number;
+    weekKey: string;
+    weekStartDayKey: string;
+    focusedMinutes: number;
+    completedAt: string | null;
+  };
+  unlockedBadges: GamificationBadgeId[];
+} {
+  const levelProgressXp = profile.totalXp % XP_PER_LEVEL;
+  const xpToNextLevel = XP_PER_LEVEL - levelProgressXp;
+  return {
+    currentStreakDays: profile.currentStreakDays,
+    longestStreakDays: profile.longestStreakDays,
+    lastQualifiedDayKey: profile.lastQualifiedDayKey,
+    totalXp: profile.totalXp,
+    level: profile.level,
+    levelProgressXp,
+    xpToNextLevel: xpToNextLevel === 0 ? XP_PER_LEVEL : xpToNextLevel,
+    totalFocusedMinutes: profile.totalFocusedMinutes,
+    weeklyGoal: {
+      targetMinutes: profile.weeklyGoalTargetMinutes,
+      weekKey: profile.currentWeekKey,
+      weekStartDayKey: profile.currentWeekStartDayKey,
+      focusedMinutes: profile.currentWeekFocusedMinutes,
+      completedAt: profile.currentWeekCompletedAt ? profile.currentWeekCompletedAt.toISOString() : null,
+    },
+    unlockedBadges: profile.unlockedBadges,
+  };
 }
 
 function normalizeDifficulty(value: unknown): StudyDifficulty {
@@ -1230,6 +1598,310 @@ export const focusStop = onRequest(
       sendServerError(res, error);
     }
   }
+);
+
+/**
+ * POST /gamificationApplyFocusSession
+ * Body: { userId: string, focusSessionId: string, timezone?: string }
+ */
+export const gamificationApplyFocusSession = onRequest(
+  FUNCTION_CONFIG,
+  async (req, res) => {
+    if (req.method !== "POST") {
+      sendErrorResponse(res, 405, "Method not allowed");
+      return;
+    }
+
+    try {
+      const body = req.body || {};
+      const userId = asRequiredString(body.userId);
+      const focusSessionId = asRequiredString(body.focusSessionId);
+      const timezone = normalizeTimeZone(asOptionalString(body.timezone));
+
+      if (!userId) {
+        badRequest(res, "Missing required field: userId");
+        return;
+      }
+      if (!focusSessionId) {
+        badRequest(res, "Missing required field: focusSessionId");
+        return;
+      }
+
+      const focusSessionRef = db.collection("focusSessions").doc(focusSessionId);
+      const focusSummaryRef = db.collection("focusSummaries").doc(focusSessionId);
+
+      const [focusSessionSnap, focusSummarySnap] = await Promise.all([
+        focusSessionRef.get(),
+        focusSummaryRef.get(),
+      ]);
+
+      if (!focusSessionSnap.exists) {
+        sendErrorResponse(res, 404, "Focus session not found");
+        return;
+      }
+      if (!focusSummarySnap.exists) {
+        sendErrorResponse(res, 404, "Focus summary not found");
+        return;
+      }
+
+      const focusSession = parseFocusSessionDoc(
+        focusSessionSnap.id,
+        (focusSessionSnap.data() || {}) as Record<string, unknown>,
+      );
+      if (!focusSession.userId || focusSession.userId !== userId) {
+        sendErrorResponse(res, 403, "Not allowed");
+        return;
+      }
+      if (focusSession.status !== "ended") {
+        sendErrorResponse(res, 409, "Focus session is not ended");
+        return;
+      }
+
+      const focusSummary = parseFocusSummaryDoc((focusSummarySnap.data() || {}) as Record<string, unknown>);
+      if (focusSummary.userId && focusSummary.userId !== userId) {
+        sendErrorResponse(res, 403, "Not allowed");
+        return;
+      }
+
+      const anchorDate =
+        focusSession.endedAt ||
+        (focusSummary.endTs != null ? new Date(focusSummary.endTs * 1000) : null) ||
+        focusSummary.createdAt ||
+        new Date();
+      const weekInfo = getWeekInfoForDate(anchorDate, timezone);
+
+      const startedAtMs = asTimestampMs(focusSession.startedAt);
+      const endedAtMs = asTimestampMs(focusSession.endedAt);
+      const measuredDurationMs =
+        startedAtMs != null && endedAtMs != null && endedAtMs >= startedAtMs
+          ? endedAtMs - startedAtMs
+          : null;
+      const maxAllowedFocusedMs = Math.max(
+        0,
+        Math.min(
+          MAX_FOCUSED_MINUTES_PER_SESSION * 60 * 1000,
+          measuredDurationMs ?? MAX_FOCUSED_MINUTES_PER_SESSION * 60 * 1000,
+        ),
+      );
+      const focusedMs = Math.max(0, Math.min(focusSummary.focusedMs, maxAllowedFocusedMs));
+      const focusedMinutes = Math.floor(focusedMs / 60000);
+      const baseXp = focusedMinutes;
+      const qualityMultiplier = getQualityMultiplier(focusSummary.focusPercent);
+      const xpGain = Math.round(baseXp * qualityMultiplier);
+      const now = new Date();
+
+      const profileRef = db.collection("gamificationProfiles").doc(userId);
+      const dailyRef = db.collection("gamificationDailyStats").doc(`${userId}_${weekInfo.dayKey}`);
+      const weeklyRef = db.collection("gamificationWeeklyStats").doc(`${userId}_${weekInfo.weekKey}`);
+      const awardRef = db.collection("gamificationSessionAwards").doc(focusSessionId);
+
+      const transactionResult = await db.runTransaction(async (tx) => {
+        const awardSnap = await tx.get(awardRef);
+        const profileSnap = await tx.get(profileRef);
+
+        if (awardSnap.exists) {
+          const existingAward = parseSessionAwardDoc(
+            focusSessionId,
+            userId,
+            (awardSnap.data() || {}) as Record<string, unknown>,
+          );
+          const existingProfile = parseGamificationProfileDoc(
+            userId,
+            profileSnap.exists ? (profileSnap.data() as Record<string, unknown>) : null,
+            now,
+            weekInfo.weekKey,
+            weekInfo.weekStartDayKey,
+          );
+
+          return {
+            alreadyProcessed: true,
+            award: existingAward,
+            profile: existingProfile,
+          };
+        }
+
+        const dailySnap = await tx.get(dailyRef);
+        const weeklySnap = await tx.get(weeklyRef);
+
+        const profile = parseGamificationProfileDoc(
+          userId,
+          profileSnap.exists ? (profileSnap.data() as Record<string, unknown>) : null,
+          now,
+          weekInfo.weekKey,
+          weekInfo.weekStartDayKey,
+        );
+
+        const dailyData = (dailySnap.data() || {}) as Record<string, unknown>;
+        const dailyFocusedMinutesBefore = Math.max(0, clampInteger(asOptionalNumber(dailyData.focusedMinutes), 0, 0, 10000000));
+        const dailySessionCountBefore = Math.max(0, clampInteger(asOptionalNumber(dailyData.sessionCount), 0, 0, 10000000));
+        const dailyQualifiedBefore = Boolean(dailyData.qualified);
+
+        const dailyFocusedMinutesAfter = dailyFocusedMinutesBefore + focusedMinutes;
+        const dailyQualifiedAfter = dailyFocusedMinutesAfter >= DAILY_STREAK_TARGET_MINUTES;
+        const newlyQualifiedToday = dailyQualifiedAfter && !dailyQualifiedBefore;
+        const dailyQualifiedAtBefore = asDate(dailyData.qualifiedAt);
+        const dailyQualifiedAtAfter = dailyQualifiedAfter
+          ? (dailyQualifiedAtBefore || now)
+          : null;
+
+        const weeklyData = (weeklySnap.data() || {}) as Record<string, unknown>;
+        const weeklyTargetMinutes = Math.max(
+          1,
+          clampInteger(asOptionalNumber(weeklyData.targetMinutes), profile.weeklyGoalTargetMinutes, 1, 1000000),
+        );
+        const weeklyFocusedMinutesBefore = Math.max(0, clampInteger(asOptionalNumber(weeklyData.focusedMinutes), 0, 0, 10000000));
+        const weeklySessionCountBefore = Math.max(0, clampInteger(asOptionalNumber(weeklyData.sessionCount), 0, 0, 10000000));
+        const weeklyCompletedBefore = Boolean(weeklyData.completed);
+        const weeklyCompletedAtBefore = asDate(weeklyData.completedAt);
+
+        const weeklyFocusedMinutesAfter = weeklyFocusedMinutesBefore + focusedMinutes;
+        const weeklyCompletedAfter = weeklyFocusedMinutesAfter >= weeklyTargetMinutes;
+        const newlyCompletedWeeklyGoal = weeklyCompletedAfter && !weeklyCompletedBefore;
+        const weeklyCompletedAtAfter = weeklyCompletedBefore
+          ? (weeklyCompletedAtBefore || now)
+          : (weeklyCompletedAfter ? now : null);
+
+        let currentStreakDays = profile.currentStreakDays;
+        let longestStreakDays = profile.longestStreakDays;
+        let lastQualifiedDayKey = profile.lastQualifiedDayKey;
+        if (newlyQualifiedToday) {
+          if (lastQualifiedDayKey !== weekInfo.dayKey) {
+            if (lastQualifiedDayKey && isNextDayKey(lastQualifiedDayKey, weekInfo.dayKey)) {
+              currentStreakDays += 1;
+            } else {
+              currentStreakDays = 1;
+            }
+            lastQualifiedDayKey = weekInfo.dayKey;
+          }
+          longestStreakDays = Math.max(longestStreakDays, currentStreakDays);
+        }
+
+        const totalXpAfter = profile.totalXp + xpGain;
+        const totalFocusedMinutesAfter = profile.totalFocusedMinutes + focusedMinutes;
+        const levelAfter = getLevelFromTotalXp(totalXpAfter);
+
+        const unlockedBadgeSet = new Set<GamificationBadgeId>(profile.unlockedBadges);
+        const newBadgeUnlocks: GamificationBadgeId[] = [];
+        const unlockBadge = (badgeId: GamificationBadgeId, shouldUnlock: boolean) => {
+          if (!shouldUnlock || unlockedBadgeSet.has(badgeId)) return;
+          unlockedBadgeSet.add(badgeId);
+          newBadgeUnlocks.push(badgeId);
+        };
+
+        unlockBadge("first_focus_day", newlyQualifiedToday);
+        unlockBadge("streak_3", newlyQualifiedToday && currentStreakDays >= 3);
+        unlockBadge("streak_7", newlyQualifiedToday && currentStreakDays >= 7);
+        unlockBadge("streak_14", newlyQualifiedToday && currentStreakDays >= 14);
+        unlockBadge("streak_30", newlyQualifiedToday && currentStreakDays >= 30);
+        unlockBadge("weekly_goal_1", newlyCompletedWeeklyGoal);
+        unlockBadge("focus_300m", profile.totalFocusedMinutes < 300 && totalFocusedMinutesAfter >= 300);
+        unlockBadge("focus_1000m", profile.totalFocusedMinutes < 1000 && totalFocusedMinutesAfter >= 1000);
+
+        let currentWeekKey = profile.currentWeekKey;
+        let currentWeekStartDayKey = profile.currentWeekStartDayKey;
+        let currentWeekFocusedMinutes = profile.currentWeekFocusedMinutes;
+        let currentWeekCompletedAt = profile.currentWeekCompletedAt;
+        const shouldUpdateCurrentWeek =
+          !currentWeekStartDayKey || weekInfo.weekStartDayKey >= currentWeekStartDayKey;
+        if (shouldUpdateCurrentWeek) {
+          currentWeekKey = weekInfo.weekKey;
+          currentWeekStartDayKey = weekInfo.weekStartDayKey;
+          currentWeekFocusedMinutes = weeklyFocusedMinutesAfter;
+          currentWeekCompletedAt = weeklyCompletedAtAfter;
+        }
+
+        const updatedProfile: GamificationProfileDoc = {
+          ...profile,
+          currentStreakDays,
+          longestStreakDays,
+          lastQualifiedDayKey,
+          totalXp: totalXpAfter,
+          level: levelAfter,
+          totalFocusedMinutes: totalFocusedMinutesAfter,
+          weeklyGoalTargetMinutes: weeklyTargetMinutes,
+          currentWeekKey,
+          currentWeekStartDayKey,
+          currentWeekFocusedMinutes,
+          currentWeekCompletedAt,
+          unlockedBadges: Array.from(unlockedBadgeSet),
+          updatedAt: now,
+        };
+
+        const awardDoc: GamificationSessionAwardDoc = {
+          id: focusSessionId,
+          focusSessionId,
+          userId,
+          dayKey: weekInfo.dayKey,
+          weekKey: weekInfo.weekKey,
+          weekStartDayKey: weekInfo.weekStartDayKey,
+          timezone,
+          focusedMinutes,
+          baseXp,
+          qualityMultiplier: Math.round(qualityMultiplier * 100) / 100,
+          xpGain,
+          focusPercent: focusSummary.focusPercent,
+          badgeUnlocks: newBadgeUnlocks,
+          createdAt: now,
+        };
+
+        tx.set(profileRef, {
+          ...updatedProfile,
+          id: userId,
+        }, { merge: true });
+
+        tx.set(dailyRef, {
+          id: dailyRef.id,
+          userId,
+          dayKey: weekInfo.dayKey,
+          weekKey: weekInfo.weekKey,
+          weekStartDayKey: weekInfo.weekStartDayKey,
+          timezone,
+          focusedMinutes: dailyFocusedMinutesAfter,
+          sessionCount: dailySessionCountBefore + 1,
+          qualified: dailyQualifiedAfter,
+          qualifiedAt: dailyQualifiedAtAfter,
+          createdAt: asDate(dailyData.createdAt) || now,
+          updatedAt: now,
+        }, { merge: true });
+
+        tx.set(weeklyRef, {
+          id: weeklyRef.id,
+          userId,
+          weekKey: weekInfo.weekKey,
+          weekStartDayKey: weekInfo.weekStartDayKey,
+          timezone,
+          targetMinutes: weeklyTargetMinutes,
+          focusedMinutes: weeklyFocusedMinutesAfter,
+          sessionCount: weeklySessionCountBefore + 1,
+          completed: weeklyCompletedAfter,
+          completedAt: weeklyCompletedAtAfter,
+          createdAt: asDate(weeklyData.createdAt) || now,
+          updatedAt: now,
+        }, { merge: true });
+
+        tx.set(awardRef, {
+          ...awardDoc,
+          createdAt: now,
+          updatedAt: now,
+        }, { merge: false });
+
+        return {
+          alreadyProcessed: false,
+          award: awardDoc,
+          profile: updatedProfile,
+        };
+      });
+
+      okJson(res, {
+        ok: true,
+        alreadyProcessed: transactionResult.alreadyProcessed,
+        award: toGamificationAwardResponse(transactionResult.award),
+        profile: toGamificationProfileResponse(transactionResult.profile),
+      });
+    } catch (error) {
+      sendServerError(res, error);
+    }
+  },
 );
 
 /**

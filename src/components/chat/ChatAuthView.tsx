@@ -34,7 +34,7 @@ export default function ChatAuthView({
       <div className="chat-header chat-header-auth">
         <div className="chat-header-inner">
           <div className="chat-header-left">
-            <h2 className="chat-header-title">AI Study Buddy</h2>
+            <h2 className="chat-header-title">Echelon</h2>
             <p className="chat-header-subtitle">Sign in to start learning.</p>
           </div>
         </div>
