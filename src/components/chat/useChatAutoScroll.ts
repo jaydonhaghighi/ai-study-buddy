@@ -4,7 +4,7 @@ const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 72;
 
 type UseChatAutoScrollParams = {
   selectedChatId: string | null;
-  mainView: 'chat' | 'dashboard' | 'exams';
+  mainView: 'chat' | 'dashboard';
   messages: unknown[];
   loading: boolean;
 };

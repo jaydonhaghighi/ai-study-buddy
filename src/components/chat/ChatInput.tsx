@@ -1,3 +1,5 @@
+import { SendHorizontal } from 'lucide-react';
+
 type ChatInputProps = {
   selectedChatId: string | null;
   input: string;
@@ -27,7 +29,8 @@ export default function ChatInput({
           disabled={loading}
         />
         <button type="submit" className="chat-send-button" disabled={!input.trim() || loading}>
-          Send
+          <SendHorizontal size={18} aria-hidden="true" />
+          <span>Send</span>
         </button>
       </div>
     </form>

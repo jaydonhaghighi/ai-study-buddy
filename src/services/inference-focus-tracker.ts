@@ -314,6 +314,7 @@ export class InferenceFocusTracker {
     // Let one in-flight request finish before stop.
     const waitStart = Date.now();
     while (this.sampleInFlight && Date.now() - waitStart < this.requestTimeoutMs) {
+      // eslint-disable-next-line no-await-in-loop
       await new Promise((resolve) => window.setTimeout(resolve, 50));
     }
 
@@ -373,4 +374,3 @@ export class InferenceFocusTracker {
     }
   }
 }
-

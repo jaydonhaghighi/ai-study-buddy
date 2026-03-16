@@ -9,6 +9,7 @@ import {
   where,
 } from 'firebase/firestore';
 import { db } from '../../firebase-config';
+import type { Citation } from '../../types';
 
 export type Message = {
   id: string;
@@ -19,6 +20,7 @@ export type Message = {
   createdAt: Date | null;
   isAI?: boolean;
   model?: string;
+  citations?: Citation[];
 };
 
 export type Course = {
@@ -50,7 +52,7 @@ type UseChatCollectionsParams = {
   expandedCourseId: string | null;
   expandedSessionId: string | null;
   selectedChatId: string | null;
-  mainView: 'chat' | 'dashboard' | 'exams';
+  mainView: 'chat' | 'dashboard';
 };
 
 export function useChatCollections({
@@ -164,6 +166,37 @@ export function useChatCollections({
         if (typeof messageText === 'object' && messageText !== null) {
           messageText = messageText.text || messageText.content || JSON.stringify(messageText);
         }
+        const citations: Citation[] = Array.isArray(data.citations)
+          ? data.citations
+              .map((item) => {
+                if (!item || typeof item !== 'object') return null;
+                const row = item as Record<string, unknown>;
+                if (
+                  typeof row.id !== 'string' ||
+                  typeof row.materialId !== 'string' ||
+                  typeof row.fileName !== 'string' ||
+                  typeof row.fileType !== 'string' ||
+                  typeof row.locationType !== 'string' ||
+                  typeof row.locationLabel !== 'string' ||
+                  typeof row.snippet !== 'string'
+                ) {
+                  return null;
+                }
+
+                return {
+                  id: row.id,
+                  materialId: row.materialId,
+                  fileName: row.fileName,
+                  fileType: row.fileType,
+                  locationType: row.locationType,
+                  locationLabel: row.locationLabel,
+                  snippet: row.snippet,
+                  score: typeof row.score === 'number' ? row.score : undefined,
+                } as Citation;
+              })
+              .filter((citation): citation is Citation => citation !== null)
+          : [];
+
         msgs.push({
           id: doc.id,
           text: String(messageText || ''),
@@ -173,6 +206,7 @@ export function useChatCollections({
           createdAt: data.createdAt instanceof Timestamp ? data.createdAt.toDate() : null,
           isAI: data.isAI || false,
           model: data.model,
+          citations,
         });
       });
       setMessages(msgs);

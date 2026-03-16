@@ -3,6 +3,7 @@ import { auth } from './firebase-config';
 import { User, onAuthStateChanged } from 'firebase/auth';
 import Chat from './components/Chat';
 import DataCollector from './components/DataCollector';
+import logo from './public/logo.png';
 import './App.css';
 
 function App() {
@@ -23,24 +24,32 @@ function App() {
     return () => unsubscribe();
   }, [isCollector]);
 
+  let content: JSX.Element;
   if (loading) {
-    return (
+    content = (
       <div className="container">
         <div className="loading">Loading...</div>
       </div>
     );
-  }
-
-  if (isCollector) {
-    return <DataCollector />;
+  } else if (isCollector) {
+    content = <DataCollector />;
+  } else {
+    content = (
+      <div className="app-container">
+        <Chat user={user} />
+      </div>
+    );
   }
 
   return (
-    <div className="app-container">
-      <Chat user={user} />
-    </div>
+    <>
+      <div className="app-brandmark" aria-label="Echelon logo">
+        <img src={logo} alt="Echelon logo" className="app-brandmark-logo" />
+        <span className="app-brandmark-text">Echelon</span>
+      </div>
+      {content}
+    </>
   );
 }
 
 export default App;
-

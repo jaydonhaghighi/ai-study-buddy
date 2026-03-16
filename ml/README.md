@@ -6,8 +6,9 @@ This directory contains a Dockerized TensorFlow/Keras pipeline for:
 2. LOSO (participant-held-out) split generation
 3. Baseline training with MLflow tracking
 4. Core metrics evaluation (macro-F1, precision/recall, confusion matrix)
-5. Best checkpoint export
-6. Local GPU inference API with temporal logic
+5. Full-dataset production training (post-LOSO)
+6. Deployment model export
+7. Local GPU inference API with temporal logic
 
 ## Dataset expectations
 
@@ -42,7 +43,7 @@ Then run:
 make ml-run
 ```
 
-`make ml-run` performs build, validation, LOSO split, training, evaluation, best-model export,
+`make ml-run` performs build, validation, LOSO split/eval, full-dataset production training, deployment-model export,
 starts inference in detached mode, and runs a tiny inference smoke test.
 
 If you prefer step-by-step execution:
@@ -54,6 +55,7 @@ make validate
 make split-loso
 make train-loso
 make eval-loso
+make train-production
 make export-best
 make serve-gpu
 ```
@@ -135,11 +137,14 @@ studybuddy-ml validate
 studybuddy-ml split-loso
 studybuddy-ml train-loso
 studybuddy-ml eval-loso
+studybuddy-ml train-production
 studybuddy-ml export-best
 studybuddy-ml serve
 ```
 
 Use `studybuddy-ml --help` for full options.
+`export-best` now prefers `artifacts/training/production/production_summary.json` (full-dataset model)
+and falls back to best LOSO fold if that file is missing.
 
 ## Artifacts produced
 
@@ -148,6 +153,8 @@ Use `studybuddy-ml --help` for full options.
 - `ml/artifacts/splits/fold_*.json`
 - `ml/artifacts/training/folds/fold_*/best_model.keras`
 - `ml/artifacts/training/loso_summary.csv`
+- `ml/artifacts/training/production/best_model.keras`
+- `ml/artifacts/training/production/production_summary.json`
 - `ml/artifacts/reports/loso_aggregate.json`
 - `ml/artifacts/export/best_model.keras`
 - `ml/artifacts/export/saved_model/`

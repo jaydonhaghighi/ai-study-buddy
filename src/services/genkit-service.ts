@@ -5,17 +5,53 @@
  * for persistent chat sessions.
  */
 import { fetchFunctionsEndpoint } from './functions-http';
+import type { Citation } from '../types';
 
 export interface AIResponse {
   text: string;
   model: string;
   sessionId: string;
+  citations: Citation[];
 }
 
 interface ChatRequest {
   sessionId: string;
   message: string;
   userId: string;
+}
+
+function parseCitations(input: unknown): Citation[] {
+  if (!Array.isArray(input)) return [];
+  const out: Citation[] = [];
+
+  for (const entry of input) {
+    if (!entry || typeof entry !== 'object') continue;
+    const row = entry as Record<string, unknown>;
+    if (
+      typeof row.id !== 'string' ||
+      typeof row.materialId !== 'string' ||
+      typeof row.fileName !== 'string' ||
+      typeof row.fileType !== 'string' ||
+      typeof row.locationType !== 'string' ||
+      typeof row.locationLabel !== 'string' ||
+      typeof row.snippet !== 'string'
+    ) {
+      continue;
+    }
+
+    out.push({
+      id: row.id,
+      materialId: row.materialId,
+      fileName: row.fileName,
+      fileType: row.fileType as Citation['fileType'],
+      locationType: row.locationType as Citation['locationType'],
+      locationLabel: row.locationLabel,
+      snippet: row.snippet,
+      score: typeof row.score === 'number' ? row.score : undefined,
+    });
+  }
+
+  return out;
 }
 
 function handleError(error: unknown, defaultMessage: string): never {
@@ -44,6 +80,7 @@ export async function getAIResponse(
       let buffer = '';
       let finalModel: string | null = null;
       let finalSessionId: string | null = null;
+      let finalCitations: Citation[] = [];
 
       if (!reader) {
         throw new Error('Response body is not readable');
@@ -59,11 +96,15 @@ export async function getAIResponse(
           if (data?.model && typeof data.model === 'string') {
             finalModel = data.model;
           }
+          if (Array.isArray(data?.citations)) {
+            finalCitations = parseCitations(data.citations);
+          }
           if (data?.done) {
             return {
               text: (typeof data.fullText === 'string' && data.fullText.trim().length > 0) ? data.fullText : fullText,
               model: finalModel ?? 'unknown',
               sessionId: finalSessionId ?? sessionId,
+              citations: finalCitations,
             } satisfies AIResponse;
           }
           if (data?.text && typeof data.text === 'string') {
@@ -101,7 +142,7 @@ export async function getAIResponse(
 
       // If we received text but no final metadata, return what we have instead of throwing.
       if (fullText.trim().length > 0) {
-        return { text: fullText, model: finalModel ?? 'unknown', sessionId: finalSessionId ?? sessionId };
+        return { text: fullText, model: finalModel ?? 'unknown', sessionId: finalSessionId ?? sessionId, citations: finalCitations };
       }
 
       throw new Error('Stream ended without any content');
@@ -114,10 +155,10 @@ export async function getAIResponse(
         text: data.text,
         model: data.model,
         sessionId: data.sessionId || sessionId,
+        citations: parseCitations(data.citations),
       };
     }
   } catch (error) {
     handleError(error, 'Failed to get AI response');
   }
 }
-

@@ -1,13 +1,22 @@
-import { useState, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { auth } from '../firebase-config';
 import { User, signOut } from 'firebase/auth';
+import {
+  FolderPlus,
+  PanelLeftOpen,
+  Search,
+  X,
+} from 'lucide-react';
 import FocusDashboard from './FocusDashboard';
+import StudyMode from './StudyMode';
 import ChatMainHeader from './chat/ChatMainHeader';
 import ChatMessageList from './chat/ChatMessageList';
 import ChatInput from './chat/ChatInput';
 import ChatSidebar from './chat/ChatSidebar';
 import ChatAuthView from './chat/ChatAuthView';
 import ChatPreviewSidebar from './chat/ChatPreviewSidebar';
+import ChatMaterialsPanel from './chat/ChatMaterialsPanel';
+import ChatStudySetsPanel from './chat/ChatStudySetsPanel';
 import ChatCalibrationModal from './chat/ChatCalibrationModal';
 import { useChatAutoScroll } from './chat/useChatAutoScroll';
 import { useFocusTracking } from './chat/useFocusTracking';
@@ -16,7 +25,9 @@ import { useChatMutations } from './chat/useChatMutations';
 import { useChatAuth } from './chat/useChatAuth';
 import { useChatCameraPreview } from './chat/useChatCameraPreview';
 import { useChatUiState } from './chat/useChatUiState';
-import settingsIcon from '../public/settings.svg';
+import { useChatMaterials } from './chat/useChatMaterials';
+import { useStudySets } from './chat/useStudySets';
+import logo from '../public/logo.png';
 import './Chat.css';
 import ExamContainer from './chat/ExamContainer';
 import { ExamConfiguration } from '../types';
@@ -39,11 +50,13 @@ function formatDuration(ms: number): string {
 
 export default function Chat({ user }: ChatProps) {
   // Navigation State
-  const [mainView, setMainView] = useState<'chat' | 'dashboard' | 'exams'>('chat');
+  const [mainView, setMainView] = useState<'chat' | 'dashboard'>('chat');
   
   const [expandedCourseId, setExpandedCourseId] = useState<string | null>(null);
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null);
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
+  const [isChatSearchOpen, setIsChatSearchOpen] = useState(false);
+  const [chatSearchQuery, setChatSearchQuery] = useState('');
 
   const {
     courses,
@@ -76,6 +89,7 @@ export default function Chat({ user }: ChatProps) {
     authError,
     authLoading,
     handleAuth,
+    handleGoogleAuth,
   } = useChatAuth();
 
   // UI State
@@ -143,6 +157,9 @@ export default function Chat({ user }: ChatProps) {
     activeTrackerLabel,
     lastPose,
     focusElapsedMs,
+    currentFocusState,
+    studyDistractions,
+    firstDriftOffsetSec,
     showCalibrationModal,
     handleStartFocus,
     startFocusAfterCalibration,
@@ -167,6 +184,7 @@ export default function Chat({ user }: ChatProps) {
     previewError,
   } = useChatCameraPreview({
     mainView,
+    previewPanelVisible: mainView === 'chat',
     showCalibrationModal,
   });
 
@@ -211,6 +229,35 @@ export default function Chat({ user }: ChatProps) {
     showToast,
   });
 
+  const currentChat = chats.find((chat) => chat.id === selectedChatId) ?? null;
+  const {
+    materials,
+    materialsUploading,
+    handleUploadMaterialFiles,
+    handleDeleteMaterial,
+  } = useChatMaterials({
+    user,
+    selectedChatId,
+    currentChat,
+    showToast,
+  });
+
+  const {
+    studySets,
+    activeStudySet,
+    activeStudySetId,
+    setActiveStudySetId,
+    studySetGenerating,
+    reviewBusyCardId,
+    handleGenerateStudySet,
+    handleReviewFlashcard,
+  } = useStudySets({
+    user,
+    selectedChatId,
+    currentChat,
+    showToast,
+  });
+
   const handleSignOut = async () => {
     try {
       setSettingsOpen(false);
@@ -237,11 +284,11 @@ export default function Chat({ user }: ChatProps) {
         onPasswordChange={setAuthPassword}
         onToggleSignUp={() => setIsSignUp(!isSignUp)}
         onSubmit={handleAuth}
+        onGoogleSignIn={handleGoogleAuth}
       />
     );
   }
 
-  const currentChat = chats.find(c => c.id === selectedChatId);
   const visibleMessages = messages.filter((m) => {
     // Avoid rendering empty AI bubbles (e.g. streaming placeholder before first chunk).
     if (m.isAI && (!m.text || m.text.trim().length === 0)) return false;
@@ -250,37 +297,103 @@ export default function Chat({ user }: ChatProps) {
   const hasStreamingAiText = messages.some(
     (m) => m.isAI && m.id.startsWith('temp-') && !!m.text && m.text.trim().length > 0
   );
+  const showRightPanel = mainView === 'chat' && rightSidebarOpen;
+  const normalizedChatQuery = chatSearchQuery.trim().toLowerCase();
+  const filteredChatResults = useMemo(() => {
+    if (!normalizedChatQuery) return chats;
+    return chats.filter((chat) => chat.name.toLowerCase().includes(normalizedChatQuery));
+  }, [chats, normalizedChatQuery]);
+
+  const openChatSearchModal = () => {
+    setChatSearchQuery('');
+    setIsChatSearchOpen(true);
+  };
+
+  useEffect(() => {
+    document.body.classList.toggle('left-sidebar-collapsed', !leftSidebarOpen);
+    return () => {
+      document.body.classList.remove('left-sidebar-collapsed');
+    };
+  }, [leftSidebarOpen]);
 
   return (
-    <div className={`chat-container ${cameraPreviewEnabled && mainView === 'chat' ? 'preview-sidebar-open' : ''}`}>
-      <ChatSidebar
-        courses={courses}
-        sessions={sessions}
-        chats={chats}
-        expandedCourseId={expandedCourseId}
-        expandedSessionId={expandedSessionId}
-        selectedChatId={selectedChatId}
-        isCreatingCourse={isCreatingCourse}
-        newCourseName={newCourseName}
-        isCreatingSession={isCreatingSession}
-        newSessionName={newSessionName}
-        editingChatId={editingChatId}
-        editChatName={editChatName}
-        onSetCreatingCourse={setIsCreatingCourse}
-        onSetNewCourseName={setNewCourseName}
-        onCreateCourse={handleCreateCourse}
-        onToggleCourse={(courseId) => setExpandedCourseId(expandedCourseId === courseId ? null : courseId)}
-        onSetCreatingSession={setIsCreatingSession}
-        onSetNewSessionName={setNewSessionName}
-        onCreateSession={handleCreateSession}
-        onToggleSession={(sessionId) => setExpandedSessionId(expandedSessionId === sessionId ? null : sessionId)}
-        onCreateChat={handleCreateChat}
-        onSelectChat={setSelectedChatId}
-        onSetEditingChatId={setEditingChatId}
-        onSetEditChatName={setEditChatName}
-        onUpdateChatName={handleUpdateChatName}
-        onDeleteChat={handleDeleteChat}
-      />
+    <div className={`chat-container ${showRightPanel ? 'preview-sidebar-open' : ''} ${leftSidebarOpen ? '' : 'left-sidebar-closed'}`}>
+      {leftSidebarOpen && (
+        <ChatSidebar
+          courses={courses}
+          sessions={sessions}
+          chats={chats}
+          expandedCourseId={expandedCourseId}
+          expandedSessionId={expandedSessionId}
+          selectedChatId={selectedChatId}
+          isCreatingCourse={isCreatingCourse}
+          newCourseName={newCourseName}
+          isCreatingSession={isCreatingSession}
+          newSessionName={newSessionName}
+          editingChatId={editingChatId}
+          editChatName={editChatName}
+          onSetCreatingCourse={setIsCreatingCourse}
+          onSetNewCourseName={setNewCourseName}
+          onCreateCourse={handleCreateCourse}
+          onToggleCourse={(courseId) => setExpandedCourseId(expandedCourseId === courseId ? null : courseId)}
+          onSetCreatingSession={setIsCreatingSession}
+          onSetNewSessionName={setNewSessionName}
+          onCreateSession={handleCreateSession}
+          onToggleSession={(sessionId) => setExpandedSessionId(expandedSessionId === sessionId ? null : sessionId)}
+          onCreateChat={handleCreateChat}
+          onSelectChat={setSelectedChatId}
+          onSetEditingChatId={setEditingChatId}
+          onSetEditChatName={setEditChatName}
+          onUpdateChatName={handleUpdateChatName}
+          onDeleteChat={handleDeleteChat}
+          onCloseSidebar={() => setLeftSidebarOpen(false)}
+        />
+      )}
+      {!leftSidebarOpen && (
+        <aside className="chat-sidebar-rail" aria-label="Collapsed navigation">
+          <button
+            type="button"
+            className="chat-sidebar-rail-logo"
+            onClick={() => setLeftSidebarOpen(true)}
+            title="Expand courses panel"
+            aria-label="Expand courses panel"
+          >
+            <img src={logo} alt="Echelon logo" />
+          </button>
+          <div className="chat-sidebar-rail-actions">
+            <button
+              type="button"
+              className="chat-sidebar-rail-btn"
+              onClick={() => {
+                setLeftSidebarOpen(true);
+                setIsCreatingCourse(true);
+              }}
+              title="Add course"
+              aria-label="Add course"
+            >
+              <FolderPlus size={18} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className="chat-sidebar-rail-btn"
+              onClick={openChatSearchModal}
+              title="Search chats"
+              aria-label="Search chats"
+            >
+              <Search size={18} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className="chat-sidebar-rail-btn"
+              onClick={() => setLeftSidebarOpen(true)}
+              title="Expand panel"
+              aria-label="Expand panel"
+            >
+              <PanelLeftOpen size={18} aria-hidden="true" />
+            </button>
+          </div>
+        </aside>
+      )}
 
       {/* Main Area */}
       <div className="chat-main">
@@ -298,7 +411,6 @@ export default function Chat({ user }: ChatProps) {
           settingsIconSrc={settingsIcon}
           onToggleMainView={() => setMainView(mainView === 'dashboard' ? 'chat' : 'dashboard')}
           onStartFocus={handleStartFocus}
-                    onStartExams={() => setMainView(mainView === 'exams' ? 'chat' : 'exams')}
           onStopFocus={handleStopFocus}
           onToggleSettings={() => setSettingsOpen((v) => !v)}
           onToggleCameraPreview={() => setCameraPreviewEnabled((v) => !v)}
@@ -343,11 +455,50 @@ export default function Chat({ user }: ChatProps) {
       </div>
 
       <ChatPreviewSidebar
-        show={cameraPreviewEnabled && mainView === 'chat'}
+        show={showRightPanel}
+        studyContent={(
+          <StudyMode
+            variant="sidebar"
+            userId={user.uid}
+            activeFocusSession={activeFocusSession}
+            focusBusy={focusBusy}
+            currentFocusState={currentFocusState}
+            studyDistractions={studyDistractions}
+            firstDriftOffsetSec={firstDriftOffsetSec}
+            showCalibrationModal={showCalibrationModal}
+            onStartFocus={handleStartFocus}
+            onStopFocus={handleStopFocus}
+            showToast={showToast}
+          />
+        )}
+        materialsContent={(
+          <ChatMaterialsPanel
+            selectedChatId={selectedChatId}
+            materials={materials}
+            materialsUploading={materialsUploading}
+            onUploadFiles={handleUploadMaterialFiles}
+            onDeleteMaterial={handleDeleteMaterial}
+          />
+        )}
+        activeRecallContent={(
+          <ChatStudySetsPanel
+            selectedChatId={selectedChatId}
+            studySets={studySets}
+            activeStudySet={activeStudySet}
+            activeStudySetId={activeStudySetId}
+            studySetGenerating={studySetGenerating}
+            reviewBusyCardId={reviewBusyCardId}
+            onSelectStudySet={setActiveStudySetId}
+            onGenerateStudySet={handleGenerateStudySet}
+            onReviewFlashcard={handleReviewFlashcard}
+          />
+        )}
         isLocalTrackerRunning={isLocalTrackerRunning}
+        cameraPreviewEnabled={cameraPreviewEnabled}
         cameraPreviewAfterCalibration={cameraPreviewAfterCalibration}
         previewError={previewError}
         previewVideoRef={previewVideoRef}
+        onClose={() => setRightSidebarOpen(false)}
       />
       
       {toastMessage && (
@@ -365,6 +516,70 @@ export default function Chat({ user }: ChatProps) {
           startFocusAfterCalibration();
         }}
       />
+
+      {isChatSearchOpen && (
+        <div
+          className="chat-search-modal-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Search chats"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setIsChatSearchOpen(false);
+            }
+          }}
+        >
+          <div className="chat-search-modal">
+            <div className="chat-search-modal-header">
+              <h3>Search Chats</h3>
+              <button
+                type="button"
+                className="chat-search-modal-close"
+                onClick={() => setIsChatSearchOpen(false)}
+                aria-label="Close chat search"
+              >
+                <X size={16} aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="chat-search-input-wrap">
+              <Search size={16} aria-hidden="true" />
+              <input
+                type="text"
+                className="chat-search-input"
+                placeholder="Search by chat name..."
+                value={chatSearchQuery}
+                onChange={(event) => setChatSearchQuery(event.target.value)}
+                autoFocus
+              />
+            </div>
+
+            <div className="chat-search-results">
+              {filteredChatResults.length === 0 ? (
+                <p className="chat-search-empty">
+                  {chats.length === 0
+                    ? 'No chats loaded yet. Expand a course and session first.'
+                    : 'No chats match your search.'}
+                </p>
+              ) : (
+                filteredChatResults.map((chat) => (
+                  <button
+                    key={chat.id}
+                    type="button"
+                    className={`chat-search-result-item ${selectedChatId === chat.id ? 'active' : ''}`}
+                    onClick={() => {
+                      setSelectedChatId(chat.id);
+                      setIsChatSearchOpen(false);
+                    }}
+                  >
+                    {chat.name}
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

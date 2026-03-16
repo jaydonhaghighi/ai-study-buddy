@@ -1,7 +1,22 @@
+import {
+  Camera,
+  CameraOff,
+  LayoutDashboard,
+  LogOut,
+  MessageSquareText,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
+  Settings,
+  Timer,
+} from 'lucide-react';
 import type { InferencePredictionPayload } from '../../services/inference-focus-tracker';
 
+type MainView = 'chat' | 'dashboard';
+
 type ChatMainHeaderProps = {
-  mainView: 'chat' | 'dashboard' | 'exams';
+  mainView: 'chat' | 'dashboard';
   currentChatName?: string;
   focusBusy: boolean;
   isFocusActive: boolean;
@@ -10,10 +25,12 @@ type ChatMainHeaderProps = {
   lastPose: InferencePredictionPayload | null;
   settingsOpen: boolean;
   cameraPreviewEnabled: boolean;
+  isLeftSidebarOpen: boolean;
+  isRightSidebarOpen: boolean;
+  canToggleRightSidebar: boolean;
   settingsRef: React.RefObject<HTMLDivElement>;
   settingsIconSrc: string;
   onToggleMainView: () => void;
-  onStartExams?: () => void;
   onStartFocus: () => void;
   onStopFocus: () => void;
   onToggleSettings: () => void;
@@ -32,17 +49,22 @@ export default function ChatMainHeader({
   lastPose,
   settingsOpen,
   cameraPreviewEnabled,
+  isLeftSidebarOpen,
+  isRightSidebarOpen,
+  canToggleRightSidebar,
   settingsRef,
   settingsIconSrc,
   onToggleMainView,
   onStartFocus,
-    onStartExams,
   onStopFocus,
   onToggleSettings,
   onToggleCameraPreview,
   onSignOut,
   formatDuration,
 }: ChatMainHeaderProps) {
+  const navBtnClass = (view: MainView) =>
+    `chat-header-btn ${mainView === view ? 'chat-header-btn-primary' : ''}`;
+
   return (
     <div className="chat-header">
       <div className="chat-header-inner">
@@ -59,9 +81,7 @@ export default function ChatMainHeader({
               ? 'Practice with timed mock exams to prepare for assessments.'
               : mainView === 'dashboard'
               ? 'Visualize focus sessions captured from your webcam.'
-              : currentChatName
-              ? 'AI Study Buddy'
-              : 'Choose an existing chat or create a new one to get started'}
+              : (currentChatName ? 'AI Study Buddy' : 'Choose an existing chat or create a new one to get started')}
           </p>
         </div>
 
@@ -69,24 +89,33 @@ export default function ChatMainHeader({
           <div className="chat-header-controls">
             <div className="chat-header-row">
               <button
-                onClick={onToggleMainView}
+                onClick={onToggleLeftSidebar}
                 className="chat-header-btn"
+                type="button"
+                title={isLeftSidebarOpen ? 'Hide left panel' : 'Show left panel'}
+              >
+                {isLeftSidebarOpen ? <PanelLeftClose size={16} aria-hidden="true" /> : <PanelLeftOpen size={16} aria-hidden="true" />}
+                <span>{isLeftSidebarOpen ? 'Hide Left' : 'Show Left'}</span>
+              </button>
+              <button
+                onClick={onToggleRightSidebar}
+                className="chat-header-btn"
+                disabled={!canToggleRightSidebar}
+                type="button"
+                title={isRightSidebarOpen ? 'Hide right panel' : 'Show right panel'}
+              >
+                {isRightSidebarOpen ? <PanelRightClose size={16} aria-hidden="true" /> : <PanelRightOpen size={16} aria-hidden="true" />}
+                <span>{isRightSidebarOpen ? 'Hide Right' : 'Show Right'}</span>
+              </button>
+              <button
+                onClick={() => onChangeMainView('chat')}
+                className={navBtnClass('chat')}
                 disabled={focusBusy}
                 type="button"
               >
-                {mainView === 'dashboard' ? 'Back to chat' : 'Dashboard'}
+                <MessageSquareText size={16} aria-hidden="true" />
+                <span>Chat</span>
               </button>
-
-              {mainView !== 'exams' && (
-                <button
-                  onClick={onStartExams}
-                  className="chat-header-btn"
-                  disabled={focusBusy || !onStartExams}
-                  type="button"
-                >
-                  📝 Exams
-                </button>
-              )}
 
               {!isFocusActive ? (
                 <button
@@ -117,7 +146,7 @@ export default function ChatMainHeader({
                   disabled={focusBusy}
                   title="Settings"
                 >
-                  <img src={settingsIconSrc} alt="" className="chat-settings-icon" />
+                  <Settings size={18} aria-hidden="true" />
                 </button>
 
                 {settingsOpen && (
@@ -129,7 +158,8 @@ export default function ChatMainHeader({
                       onClick={onToggleCameraPreview}
                       disabled={focusBusy}
                     >
-                      Camera preview: {cameraPreviewEnabled ? 'On' : 'Off'}
+                      {cameraPreviewEnabled ? <Camera size={16} aria-hidden="true" /> : <CameraOff size={16} aria-hidden="true" />}
+                      <span>Camera preview: {cameraPreviewEnabled ? 'On' : 'Off'}</span>
                     </button>
                     <button
                       type="button"
@@ -137,7 +167,8 @@ export default function ChatMainHeader({
                       role="menuitem"
                       onClick={onSignOut}
                     >
-                      Sign out
+                      <LogOut size={16} aria-hidden="true" />
+                      <span>Sign out</span>
                     </button>
                   </div>
                 )}
@@ -148,7 +179,10 @@ export default function ChatMainHeader({
               <div className="chat-header-meta">
                 <span className="chat-header-pill">Focus active</span>
                 <span>{activeTrackerLabel ?? 'Webcam tracking'}</span>
-                <span>Duration: {formatDuration(focusElapsedMs)}</span>
+                <span className="chat-header-meta-inline">
+                  <Timer size={14} aria-hidden="true" />
+                  <span>Duration: {formatDuration(focusElapsedMs)}</span>
+                </span>
                 {lastPose && (
                   <span>
                     Pose: {lastPose.smoothed_label} ({Math.round(lastPose.smoothed_confidence * 100)}%)

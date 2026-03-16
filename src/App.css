@@ -1,46 +1,126 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Manrope:wght@500;600;700&display=swap');
+
 :root {
-  --color-paper: #F9F9F7;
-  --color-mist: #EFEFE9;
-  --color-overlay: #FFFFFF;
-  --color-charcoal: #222222;
-  --color-graphite: #555555;
-  --color-stone: #D1D1D1;
-  --color-silver: #A0A0A0;
-  --color-success: #4A4A4A;
-  --color-error: #000000;
-  
-  --font-serif: 'Noto Serif', serif;
-  --font-sans: 'Noto Sans', sans-serif;
+  color-scheme: dark;
+
+  --color-bg: #0f1115;
+  --color-bg-elevated: #151821;
+  --color-bg-soft: #1b1f2a;
+  --color-surface: #202531;
+  --color-surface-alt: #252a36;
+  --color-border: #2e3445;
+  --color-border-strong: #3d455a;
+  --color-text: #e6e8ee;
+  --color-text-secondary: #a7b0c0;
+  --color-text-muted: #8d96a8;
+  --color-accent: #62b2ff;
+  --color-accent-soft: rgba(98, 178, 255, 0.2);
+  --color-success: #36cfa2;
+  --color-warning: #ff9866;
+  --color-danger: #ff7f96;
+
+  /* Legacy aliases used by existing component styles */
+  --color-paper: var(--color-bg-elevated);
+  --color-mist: var(--color-bg-soft);
+  --color-overlay: var(--color-surface);
+  --color-charcoal: var(--color-text);
+  --color-graphite: var(--color-text-secondary);
+  --color-stone: var(--color-border);
+  --color-silver: var(--color-text-muted);
+  --color-error: var(--color-danger);
+
+  --shadow-soft: 0 8px 24px rgba(6, 8, 12, 0.28);
+  --shadow-card: 0 10px 32px rgba(6, 9, 14, 0.24);
+
+  --radius-xs: 8px;
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 18px;
+  --radius-pill: 999px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 40px;
+
+  --font-sans: 'Inter', 'Manrope', 'IBM Plex Sans', 'Segoe UI', sans-serif;
+  --font-heading: 'Manrope', 'Inter', 'IBM Plex Sans', 'Segoe UI', sans-serif;
+  --font-serif: var(--font-heading);
 }
 
 * {
+  box-sizing: border-box;
   margin: 0;
   padding: 0;
-  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
 }
 
 body {
   font-family: var(--font-sans);
-  background-color: var(--color-paper);
-  color: var(--color-charcoal);
-  height: 100vh;
-  width: 100vw;
+  line-height: 1.5;
+  color: var(--color-text);
+  background:
+    radial-gradient(1200px 600px at 16% -10%, rgba(98, 178, 255, 0.1), transparent 50%),
+    radial-gradient(900px 500px at 100% 0%, rgba(117, 158, 255, 0.08), transparent 50%),
+    linear-gradient(180deg, var(--color-bg) 0%, var(--color-bg-elevated) 100%);
   overflow: hidden;
-  line-height: 1.6;
 }
 
-/* Paper Texture Effect */
-body::before {
-  content: "";
-  position: absolute;
-  top: 0; left: 0; width: 100%; height: 100%;
-  opacity: 0.05;
-  /* Fallback noise if no image - using a simple grain simulation or just color */
-  background-color: #000; 
-  pointer-events: none;
-  z-index: 9999;
-  mix-blend-mode: multiply;
-  display: none; /* Disabled until a noise asset is available */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--font-heading);
+  color: var(--color-text);
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+}
+
+p,
+span,
+div,
+input,
+button,
+textarea,
+select {
+  font-family: var(--font-sans);
+}
+
+button,
+input,
+textarea,
+select {
+  color: inherit;
+  font: inherit;
+}
+
+button {
+  transition:
+    background-color 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms ease,
+    transform 180ms ease;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 2px solid transparent;
+  box-shadow: 0 0 0 2px var(--color-accent-soft), 0 0 0 4px rgba(98, 178, 255, 0.42);
 }
 
 .app-container {
@@ -50,86 +130,67 @@ body::before {
   flex-direction: column;
 }
 
-h1, h2, h3, h4, h5, h6 {
-  font-family: var(--font-serif);
-  font-weight: 700;
-  color: var(--color-charcoal);
-  letter-spacing: -0.02em;
+.container {
+  min-height: 100%;
+  display: grid;
+  place-items: center;
+  padding: var(--space-6);
 }
 
-p, span, div, input, button, textarea {
-  font-family: var(--font-sans);
+.loading {
+  padding: var(--space-4) var(--space-6);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: linear-gradient(180deg, var(--color-surface) 0%, var(--color-surface-alt) 100%);
+  color: var(--color-text-secondary);
+  box-shadow: var(--shadow-card);
 }
 
-/* Global Button Styles */
-.btn {
-  padding: 12px 24px;
-  border-radius: 4px; /* Slightly rounded */
-  font-size: 1rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: opacity 0.2s ease, background-color 0.2s ease;
+.app-brandmark {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 1200;
+  pointer-events: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0;
   border: none;
-}
-
-.btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.btn-primary {
-  background-color: var(--color-charcoal);
-  color: #FFFFFF;
-}
-
-.btn-primary:hover:not(:disabled) {
-  opacity: 0.9;
-}
-
-.btn-secondary {
-  background-color: transparent;
-  border: 1px solid var(--color-stone);
-  color: var(--color-charcoal);
-}
-
-.btn-secondary:hover:not(:disabled) {
-  background-color: var(--color-mist);
-}
-
-.btn-danger {
-  background-color: transparent;
-  border: 1px solid var(--color-error);
-  color: var(--color-error);
-}
-
-.btn-danger:hover:not(:disabled) {
-  background-color: rgba(0, 0, 0, 0.05);
-}
-
-/* Global Input Styles */
-input[type="text"],
-input[type="email"],
-input[type="password"] {
-  border: 1px solid var(--color-stone);
-  background-color: var(--color-overlay);
-  padding: 12px;
-  border-radius: 0; /* "Blank Line" feel or simple box */
-  font-size: 1rem;
-  color: var(--color-charcoal);
-  transition: border-color 0.2s ease;
-}
-
-input:focus {
-  outline: none;
-  border-color: var(--color-charcoal);
-  border-width: 2px;
-  padding: 11px; /* Adjust for border width change to prevent layout shift */
-}
-
-/* Card Style */
-.card {
-  background: var(--color-overlay);
-  border: 1px solid #E5E5E5;
   border-radius: 0;
-  padding: 24px;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.app-brandmark-logo {
+  width: 56px;
+  height: 56px;
+  object-fit: contain;
+  display: block;
+}
+
+.app-brandmark-text {
+  font-family: var(--font-heading);
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--color-text);
+  letter-spacing: 0.01em;
+  line-height: 1;
+}
+
+body.left-sidebar-collapsed .app-brandmark {
+  opacity: 0;
+  visibility: hidden;
+}
+
+@media (max-width: 640px) {
+  .app-brandmark-logo {
+    width: 46px;
+    height: 46px;
+  }
+
+  .app-brandmark-text {
+    display: none;
+  }
 }
