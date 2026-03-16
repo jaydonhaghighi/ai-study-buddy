@@ -1,7 +1,7 @@
 import type { InferencePredictionPayload } from '../../services/inference-focus-tracker';
 
 type ChatMainHeaderProps = {
-  mainView: 'chat' | 'dashboard';
+  mainView: 'chat' | 'dashboard' | 'exams';
   currentChatName?: string;
   focusBusy: boolean;
   isFocusActive: boolean;
@@ -13,6 +13,7 @@ type ChatMainHeaderProps = {
   settingsRef: React.RefObject<HTMLDivElement>;
   settingsIconSrc: string;
   onToggleMainView: () => void;
+  onStartExams?: () => void;
   onStartFocus: () => void;
   onStopFocus: () => void;
   onToggleSettings: () => void;
@@ -35,6 +36,7 @@ export default function ChatMainHeader({
   settingsIconSrc,
   onToggleMainView,
   onStartFocus,
+    onStartExams,
   onStopFocus,
   onToggleSettings,
   onToggleCameraPreview,
@@ -46,12 +48,20 @@ export default function ChatMainHeader({
       <div className="chat-header-inner">
         <div className="chat-header-left">
           <h2 className="chat-header-title">
-            {mainView === 'dashboard' ? 'Focus dashboard' : (currentChatName || 'Select a Chat')}
+            {mainView === 'exams'
+              ? 'Exam Simulations'
+              : mainView === 'dashboard'
+              ? 'Focus Dashboard'
+              : currentChatName || 'Select a Chat'}
           </h2>
           <p className="chat-header-subtitle">
-            {mainView === 'dashboard'
+            {mainView === 'exams'
+              ? 'Practice with timed mock exams to prepare for assessments.'
+              : mainView === 'dashboard'
               ? 'Visualize focus sessions captured from your webcam.'
-              : (currentChatName ? 'AI Study Buddy' : 'Choose an existing chat or create a new one to get started')}
+              : currentChatName
+              ? 'AI Study Buddy'
+              : 'Choose an existing chat or create a new one to get started'}
           </p>
         </div>
 
@@ -66,6 +76,17 @@ export default function ChatMainHeader({
               >
                 {mainView === 'dashboard' ? 'Back to chat' : 'Dashboard'}
               </button>
+
+              {mainView !== 'exams' && (
+                <button
+                  onClick={onStartExams}
+                  className="chat-header-btn"
+                  disabled={focusBusy || !onStartExams}
+                  type="button"
+                >
+                  📝 Exams
+                </button>
+              )}
 
               {!isFocusActive ? (
                 <button

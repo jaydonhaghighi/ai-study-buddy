@@ -18,6 +18,9 @@ import { useChatCameraPreview } from './chat/useChatCameraPreview';
 import { useChatUiState } from './chat/useChatUiState';
 import settingsIcon from '../public/settings.svg';
 import './Chat.css';
+import ExamContainer from './chat/ExamContainer';
+import { ExamConfiguration } from '../types';
+import ExamLauncher from './chat/ExamLauncher';
 
 interface ChatProps {
   user: User | null;
@@ -36,7 +39,7 @@ function formatDuration(ms: number): string {
 
 export default function Chat({ user }: ChatProps) {
   // Navigation State
-  const [mainView, setMainView] = useState<'chat' | 'dashboard'>('chat');
+  const [mainView, setMainView] = useState<'chat' | 'dashboard' | 'exams'>('chat');
   
   const [expandedCourseId, setExpandedCourseId] = useState<string | null>(null);
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null);
@@ -84,6 +87,10 @@ export default function Chat({ user }: ChatProps) {
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
   const [editChatName, setEditChatName] = useState('');
   const audioCtxRef = useRef<AudioContext | null>(null);
+
+  // Exam State
+  const [activeExamConfig, setActiveExamConfig] = useState<ExamConfiguration | null>(null);
+
   const {
     toastMessage,
     toastVariant,
@@ -291,6 +298,7 @@ export default function Chat({ user }: ChatProps) {
           settingsIconSrc={settingsIcon}
           onToggleMainView={() => setMainView(mainView === 'dashboard' ? 'chat' : 'dashboard')}
           onStartFocus={handleStartFocus}
+                    onStartExams={() => setMainView(mainView === 'exams' ? 'chat' : 'exams')}
           onStopFocus={handleStopFocus}
           onToggleSettings={() => setSettingsOpen((v) => !v)}
           onToggleCameraPreview={() => setCameraPreviewEnabled((v) => !v)}
@@ -298,7 +306,18 @@ export default function Chat({ user }: ChatProps) {
           formatDuration={formatDuration}
         />
 
-        {mainView === 'dashboard' ? (
+        {activeExamConfig ? (
+          <ExamContainer
+            examConfig={activeExamConfig}
+            userId={user.uid}
+            onComplete={() => {}}
+            onExit={() => {
+              setActiveExamConfig(null);
+            }}
+          />
+        ) : mainView === 'exams' ? (
+          <ExamLauncher userId={user.uid} onSelectExam={setActiveExamConfig} />
+        ) : mainView === 'dashboard' ? (
           <FocusDashboard userId={user.uid} />
         ) : (
           <>
