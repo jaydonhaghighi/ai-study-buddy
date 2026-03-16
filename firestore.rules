@@ -71,6 +71,20 @@ service cloud.firestore {
       allow delete: if isOwnerRead();
     }
 
+    match /studySets/{studySetId} {
+      allow read: if isOwnerRead();
+      allow create: if isOwnerCreate();
+      allow update: if isOwnerUpdate();
+      allow delete: if isOwnerRead();
+    }
+
+    match /flashcardReviews/{reviewId} {
+      allow read: if isOwnerRead();
+      allow create: if isOwnerCreate();
+      allow update: if isOwnerUpdate();
+      allow delete: if isOwnerRead();
+    }
+
     // Retrieval index is backend-only; never exposed directly to clients.
     match /material_chunks/{chunkId} {
       allow read, write: if false;

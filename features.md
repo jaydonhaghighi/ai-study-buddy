@@ -32,6 +32,7 @@
      - flashcards (spaced repetition-ready)
      - exam-style questions with rubric
    - Why it matters: converts passive reading into active recall quickly.
+   - Execution plan: see `feature-4-implementation-tracker.md`.
 
 5. **Upload/import course material, then chat with citations**
    - "Drop your PDF/DOCX/Excel/slides/TXT/images, then ask questions grounded in your material."

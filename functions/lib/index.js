@@ -55,6 +55,11 @@ const MAX_SOURCE_FILE_SIZE_BYTES = 25 * 1024 * 1024;
 const MAX_RETRIEVAL_CHUNKS = 6;
 const CHUNK_MAX_LEN = 1100;
 const CHUNK_OVERLAP = 140;
+const MAX_CHAT_MESSAGES_FOR_STUDY_SET = 30;
+const MAX_STUDY_TRANSCRIPT_CHARS = 14000;
+const DEFAULT_QUIZ_COUNT = 10;
+const DEFAULT_FLASHCARD_COUNT = 14;
+const DEFAULT_EXAM_COUNT = 4;
 const SUPPORTED_EXTENSIONS = new Set(["pdf", "docx", "xlsx", "xls", "pptx", "ppt", "txt", "png", "jpg", "jpeg", "webp"]);
 const STOPWORDS = new Set([
     "the", "and", "for", "with", "that", "this", "from", "have", "what", "when", "where", "which", "into", "your", "you",
@@ -66,6 +71,75 @@ function asRequiredNumber(value) {
 }
 function asOptionalNumber(value) {
     return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+function clampInteger(input, fallback, min, max) {
+    if (input == null)
+        return fallback;
+    const floored = Math.floor(input);
+    if (!Number.isFinite(floored))
+        return fallback;
+    return Math.min(max, Math.max(min, floored));
+}
+function asDate(value) {
+    if (value instanceof Date)
+        return value;
+    if (value && typeof value === "object" && "toDate" in value) {
+        try {
+            const out = value.toDate?.();
+            if (out instanceof Date)
+                return out;
+        }
+        catch {
+            return null;
+        }
+    }
+    return null;
+}
+function asString(value) {
+    return typeof value === "string" ? value.trim() : "";
+}
+function normalizeDifficulty(value) {
+    const candidate = asString(value).toLowerCase();
+    if (candidate === "easy" || candidate === "medium" || candidate === "hard")
+        return candidate;
+    return "medium";
+}
+function normalizeSourceIds(value, allowed) {
+    if (!Array.isArray(value))
+        return [];
+    const out = [];
+    const seen = new Set();
+    for (const row of value) {
+        const id = asString(row);
+        if (!id || !allowed.has(id) || seen.has(id))
+            continue;
+        seen.add(id);
+        out.push(id);
+        if (out.length >= 4)
+            break;
+    }
+    return out;
+}
+function extractJsonText(raw) {
+    const trimmed = raw.trim();
+    const fenceMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+    if (fenceMatch && typeof fenceMatch[1] === "string") {
+        return fenceMatch[1].trim();
+    }
+    const firstBrace = trimmed.indexOf("{");
+    const lastBrace = trimmed.lastIndexOf("}");
+    if (firstBrace >= 0 && lastBrace > firstBrace) {
+        return trimmed.slice(firstBrace, lastBrace + 1);
+    }
+    return trimmed;
+}
+function parseJsonObject(raw) {
+    const jsonText = extractJsonText(raw);
+    const parsed = JSON.parse(jsonText);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("Study generation response must be a JSON object");
+    }
+    return parsed;
 }
 function getFileExtension(fileName) {
     if (!fileName)
@@ -484,6 +558,336 @@ function selectFinalCitations(answerText, citations) {
     }
     return citations.filter((citation) => used.has(citation.id));
 }
+async function loadChatOwnership(chatId) {
+    const chatRef = db.collection("chats").doc(chatId);
+    const chatDoc = await chatRef.get();
+    if (!chatDoc.exists)
+        return null;
+    const data = chatDoc.data();
+    return {
+        userId: typeof data.userId === "string" ? data.userId : "",
+        courseId: typeof data.courseId === "string" ? data.courseId : null,
+        sessionId: typeof data.sessionId === "string" ? data.sessionId : null,
+    };
+}
+async function loadRecentChatMessages(chatId, userId, limitCount) {
+    const snapshot = await db.collection("messages")
+        .where("sessionId", "==", chatId)
+        .where("userId", "==", userId)
+        .orderBy("createdAt", "desc")
+        .limit(limitCount)
+        .get();
+    return snapshot.docs
+        .map((doc) => {
+        const data = doc.data();
+        const textField = typeof data.text === "string"
+            ? data.text
+            : (data.text && typeof data.text === "object" && "text" in data.text)
+                ? asString(data.text.text)
+                : "";
+        return {
+            id: doc.id,
+            text: textField,
+            isAI: !!data.isAI,
+            createdAt: asDate(data.createdAt),
+        };
+    })
+        .sort((a, b) => {
+        const aTime = a.createdAt ? a.createdAt.getTime() : 0;
+        const bTime = b.createdAt ? b.createdAt.getTime() : 0;
+        return aTime - bTime;
+    });
+}
+function buildChatSourcesAndTranscript(messages) {
+    const sources = [];
+    const lines = [];
+    let idx = 0;
+    for (const message of messages) {
+        const normalizedText = normalizeWhitespace(message.text || "");
+        if (!normalizedText)
+            continue;
+        idx += 1;
+        const sourceId = `M${idx}`;
+        const role = message.isAI ? "AI" : "You";
+        sources.push({
+            id: sourceId,
+            type: "chat",
+            label: `${role} message ${idx}`,
+            snippet: truncateText(normalizedText, 220),
+        });
+        lines.push(`[${sourceId}] ${role}: ${truncateText(normalizedText, 420)}`);
+    }
+    let transcript = lines.join("\n");
+    if (transcript.length > MAX_STUDY_TRANSCRIPT_CHARS) {
+        transcript = transcript.slice(transcript.length - MAX_STUDY_TRANSCRIPT_CHARS);
+    }
+    return { sources, transcript };
+}
+function buildMaterialSources(citations) {
+    return citations.map((citation) => ({
+        id: citation.id,
+        type: "material",
+        label: `${citation.fileName} (${citation.locationLabel})`,
+        snippet: truncateText(citation.contextText || citation.snippet, 220),
+    }));
+}
+function buildStudyGenerationPrompt({ quizCount, flashcardCount, examCount, transcript, sources, }) {
+    const sourceCatalog = sources
+        .map((source) => `- ${source.id} [${source.type}] ${source.label}: ${source.snippet}`)
+        .join("\n");
+    return [
+        "Generate active-recall study assets from the chat transcript and source catalog.",
+        "Output only valid JSON (no markdown, no prose) with this top-level shape:",
+        "{",
+        '  "quiz": [',
+        "    {",
+        '      "type": "mcq" | "short",',
+        '      "question": "string",',
+        '      "choices": ["string"]  // required for mcq only, 4 options preferred,',
+        '      "answerIndex": 0,        // required for mcq only, 0-based index into choices,',
+        '      "answer": "string",     // required for short only,',
+        '      "explanation": "string",',
+        '      "difficulty": "easy" | "medium" | "hard",',
+        '      "sourceIds": ["M1","C1"]',
+        "    }",
+        "  ],",
+        '  "flashcards": [',
+        "    {",
+        '      "front": "string",',
+        '      "back": "string",',
+        '      "tags": ["string"],',
+        '      "difficulty": "easy" | "medium" | "hard",',
+        '      "sourceIds": ["M2","C2"]',
+        "    }",
+        "  ],",
+        '  "examQuestions": [',
+        "    {",
+        '      "prompt": "string",',
+        '      "rubric": ["criterion string"],',
+        '      "modelAnswer": "string",',
+        '      "difficulty": "easy" | "medium" | "hard",',
+        '      "sourceIds": ["C1","M3"]',
+        "    }",
+        "  ]",
+        "}",
+        "",
+        `Required counts: quiz=${quizCount}, flashcards=${flashcardCount}, examQuestions=${examCount}.`,
+        "Rules:",
+        "- Use only facts supported by transcript/source catalog.",
+        "- Every item must include at least one source id from the catalog.",
+        "- Mix difficulty levels across the set.",
+        "- Keep wording concise and student-friendly.",
+        "",
+        "Source catalog:",
+        sourceCatalog || "- none",
+        "",
+        "Chat transcript:",
+        transcript || "(empty)",
+    ].join("\n");
+}
+function parseStudyQuizQuestions(value, maxCount, allowedSourceIds) {
+    if (!Array.isArray(value))
+        return [];
+    const out = [];
+    const fallbackSourceId = allowedSourceIds.values().next().value;
+    for (const row of value) {
+        if (out.length >= maxCount)
+            break;
+        if (!row || typeof row !== "object")
+            continue;
+        const data = row;
+        const questionType = asString(data.type).toLowerCase() === "mcq" ? "mcq" : "short";
+        const prompt = asString(data.question) || asString(data.prompt);
+        if (prompt.length < 6)
+            continue;
+        const explanation = asString(data.explanation);
+        const difficulty = normalizeDifficulty(data.difficulty);
+        const sourceIds = normalizeSourceIds(data.sourceIds, allowedSourceIds);
+        const normalizedSourceIds = sourceIds.length > 0
+            ? sourceIds
+            : (fallbackSourceId ? [fallbackSourceId] : []);
+        if (questionType === "mcq") {
+            const options = Array.isArray(data.choices)
+                ? data.choices.map((item) => asString(item)).filter((item) => item.length > 0).slice(0, 6)
+                : [];
+            if (options.length < 2)
+                continue;
+            let correctOptionIndex = typeof data.answerIndex === "number" && Number.isFinite(data.answerIndex)
+                ? Math.floor(data.answerIndex)
+                : null;
+            if (correctOptionIndex == null || correctOptionIndex < 0 || correctOptionIndex >= options.length) {
+                const answerText = asString(data.answer).toLowerCase();
+                const matchIndex = answerText ? options.findIndex((option) => option.toLowerCase() === answerText) : -1;
+                correctOptionIndex = matchIndex >= 0 ? matchIndex : 0;
+            }
+            out.push({
+                id: `Q${out.length + 1}`,
+                questionType: "mcq",
+                prompt,
+                options,
+                correctAnswer: options[correctOptionIndex] || options[0],
+                correctOptionIndex,
+                explanation,
+                difficulty,
+                sourceIds: normalizedSourceIds,
+            });
+            continue;
+        }
+        const shortAnswer = asString(data.answer) || asString(data.correctAnswer);
+        if (!shortAnswer)
+            continue;
+        out.push({
+            id: `Q${out.length + 1}`,
+            questionType: "short",
+            prompt,
+            options: [],
+            correctAnswer: shortAnswer,
+            correctOptionIndex: null,
+            explanation,
+            difficulty,
+            sourceIds: normalizedSourceIds,
+        });
+    }
+    return out;
+}
+function parseStudyFlashcards(value, maxCount, allowedSourceIds, now) {
+    if (!Array.isArray(value))
+        return [];
+    const out = [];
+    const fallbackSourceId = allowedSourceIds.values().next().value;
+    for (const row of value) {
+        if (out.length >= maxCount)
+            break;
+        if (!row || typeof row !== "object")
+            continue;
+        const data = row;
+        const front = asString(data.front);
+        const back = asString(data.back);
+        if (front.length < 4 || back.length < 4)
+            continue;
+        const tags = Array.isArray(data.tags)
+            ? data.tags.map((item) => asString(item)).filter((tag) => tag.length > 0).slice(0, 6)
+            : [];
+        const sourceIds = normalizeSourceIds(data.sourceIds, allowedSourceIds);
+        const normalizedSourceIds = sourceIds.length > 0
+            ? sourceIds
+            : (fallbackSourceId ? [fallbackSourceId] : []);
+        out.push({
+            id: `F${out.length + 1}`,
+            front,
+            back,
+            tags,
+            difficulty: normalizeDifficulty(data.difficulty),
+            sourceIds: normalizedSourceIds,
+            nextReviewAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
+            intervalDays: 1,
+            easeFactor: 2.5,
+            repetitions: 0,
+            lastReviewedAt: null,
+        });
+    }
+    return out;
+}
+function parseStudyExamQuestions(value, maxCount, allowedSourceIds) {
+    if (!Array.isArray(value))
+        return [];
+    const out = [];
+    const fallbackSourceId = allowedSourceIds.values().next().value;
+    for (const row of value) {
+        if (out.length >= maxCount)
+            break;
+        if (!row || typeof row !== "object")
+            continue;
+        const data = row;
+        const prompt = asString(data.prompt) || asString(data.question);
+        if (prompt.length < 6)
+            continue;
+        const rubric = Array.isArray(data.rubric)
+            ? data.rubric.map((item) => asString(item)).filter((item) => item.length > 0).slice(0, 6)
+            : [];
+        const modelAnswer = asString(data.modelAnswer) || asString(data.answer);
+        if (!modelAnswer)
+            continue;
+        const sourceIds = normalizeSourceIds(data.sourceIds, allowedSourceIds);
+        const normalizedSourceIds = sourceIds.length > 0
+            ? sourceIds
+            : (fallbackSourceId ? [fallbackSourceId] : []);
+        out.push({
+            id: `E${out.length + 1}`,
+            prompt,
+            rubric,
+            modelAnswer,
+            difficulty: normalizeDifficulty(data.difficulty),
+            sourceIds: normalizedSourceIds,
+        });
+    }
+    return out;
+}
+function applyFlashcardRating(card, rating, now) {
+    let easeFactor = card.easeFactor || 2.5;
+    let repetitions = Math.max(0, card.repetitions || 0);
+    let intervalDays = Math.max(1, card.intervalDays || 1);
+    if (rating === "again") {
+        repetitions = 0;
+        intervalDays = 1;
+        easeFactor = Math.max(1.3, easeFactor - 0.2);
+    }
+    else if (rating === "hard") {
+        repetitions += 1;
+        intervalDays = repetitions <= 1 ? 1 : Math.max(2, Math.round(intervalDays * 1.2));
+        easeFactor = Math.max(1.3, easeFactor - 0.15);
+    }
+    else if (rating === "good") {
+        repetitions += 1;
+        intervalDays = repetitions === 1 ? 1 : repetitions === 2 ? 3 : Math.max(2, Math.round(intervalDays * easeFactor));
+    }
+    else {
+        repetitions += 1;
+        intervalDays = repetitions === 1 ? 2 : repetitions === 2 ? 5 : Math.max(3, Math.round(intervalDays * easeFactor * 1.3));
+        easeFactor = Math.max(1.3, easeFactor + 0.15);
+    }
+    const nextReviewAt = new Date(now.getTime() + intervalDays * 24 * 60 * 60 * 1000);
+    return {
+        ...card,
+        easeFactor: Math.round(easeFactor * 100) / 100,
+        repetitions,
+        intervalDays,
+        nextReviewAt,
+        lastReviewedAt: now,
+    };
+}
+function parseStoredFlashcards(value) {
+    if (!Array.isArray(value))
+        return [];
+    const out = [];
+    for (const row of value) {
+        if (!row || typeof row !== "object")
+            continue;
+        const data = row;
+        const front = asString(data.front);
+        const back = asString(data.back);
+        if (!front || !back)
+            continue;
+        out.push({
+            id: asString(data.id) || `F${out.length + 1}`,
+            front,
+            back,
+            tags: Array.isArray(data.tags)
+                ? data.tags.map((item) => asString(item)).filter((tag) => tag.length > 0).slice(0, 6)
+                : [],
+            difficulty: normalizeDifficulty(data.difficulty),
+            sourceIds: Array.isArray(data.sourceIds)
+                ? data.sourceIds.map((item) => asString(item)).filter((id) => id.length > 0).slice(0, 6)
+                : [],
+            nextReviewAt: asDate(data.nextReviewAt) || new Date(),
+            intervalDays: clampInteger(asOptionalNumber(data.intervalDays), 1, 1, 3650),
+            easeFactor: Math.max(1.3, asOptionalNumber(data.easeFactor) ?? 2.5),
+            repetitions: Math.max(0, clampInteger(asOptionalNumber(data.repetitions), 0, 0, 1000)),
+            lastReviewedAt: asDate(data.lastReviewedAt),
+        });
+    }
+    return out;
+}
 async function loadMaterialById(materialId) {
     const ref = db.collection("courseMaterials").doc(materialId);
     const snap = await ref.get();
@@ -784,6 +1188,191 @@ export const materialDelete = onRequest(FUNCTION_CONFIG, async (req, res) => {
     catch (error) {
         sendServerError(res, error);
     }
+});
+/**
+ * POST /studyGenerate
+ * Body: { userId: string, chatId: string, quizCount?: number, flashcardCount?: number, examCount?: number }
+ */
+export const studyGenerate = onRequest(FUNCTION_CONFIG, async (req, res) => {
+    if (req.method !== "POST") {
+        sendErrorResponse(res, 405, "Method not allowed");
+        return;
+    }
+    const body = req.body || {};
+    const userId = asRequiredString(body.userId);
+    const chatId = asRequiredString(body.chatId);
+    const quizCount = clampInteger(asOptionalNumber(body.quizCount), DEFAULT_QUIZ_COUNT, 4, 20);
+    const flashcardCount = clampInteger(asOptionalNumber(body.flashcardCount), DEFAULT_FLASHCARD_COUNT, 6, 30);
+    const examCount = clampInteger(asOptionalNumber(body.examCount), DEFAULT_EXAM_COUNT, 2, 10);
+    if (!userId || !chatId) {
+        badRequest(res, "Missing required fields: userId, chatId");
+        return;
+    }
+    const ownership = await loadChatOwnership(chatId);
+    if (!ownership) {
+        sendErrorResponse(res, 404, "Chat not found");
+        return;
+    }
+    if (ownership.userId !== userId) {
+        sendErrorResponse(res, 403, "Not allowed");
+        return;
+    }
+    const now = new Date();
+    const studySetRef = db.collection("studySets").doc();
+    await studySetRef.set({
+        id: studySetRef.id,
+        userId,
+        chatId,
+        courseId: ownership.courseId,
+        sessionId: ownership.sessionId,
+        status: "generating",
+        quizQuestions: [],
+        flashcards: [],
+        examQuestions: [],
+        sources: [],
+        model: MODEL_NAME,
+        generationMs: null,
+        errorMessage: null,
+        createdAt: now,
+        updatedAt: now,
+    });
+    try {
+        const recentMessages = await loadRecentChatMessages(chatId, userId, MAX_CHAT_MESSAGES_FOR_STUDY_SET);
+        if (recentMessages.length === 0) {
+            throw new Error("No chat messages found. Ask at least one question before generating a study set.");
+        }
+        const retrievalSeed = recentMessages
+            .filter((msg) => !msg.isAI)
+            .slice(-6)
+            .map((msg) => msg.text)
+            .join("\n");
+        const ragCitations = await retrieveRankedCitations(chatId, userId, retrievalSeed || recentMessages[recentMessages.length - 1]?.text || "study topic");
+        const { sources: chatSources, transcript } = buildChatSourcesAndTranscript(recentMessages);
+        const materialSources = buildMaterialSources(ragCitations);
+        const allSources = [...chatSources, ...materialSources];
+        const allowedSourceIds = new Set(allSources.map((source) => source.id));
+        const prompt = buildStudyGenerationPrompt({
+            quizCount,
+            flashcardCount,
+            examCount,
+            transcript,
+            sources: allSources,
+        });
+        const startedAtMs = Date.now();
+        const generation = await ai.generate({
+            model: CHAT_MODEL,
+            system: "You create source-grounded study materials. Return JSON only.",
+            prompt,
+            config: {
+                temperature: 0.35,
+                maxOutputTokens: 2600,
+            },
+        });
+        const rawOutput = generation.text || "";
+        if (!rawOutput.trim()) {
+            throw new Error("Model returned an empty study set");
+        }
+        const parsed = parseJsonObject(rawOutput);
+        const quizQuestions = parseStudyQuizQuestions(parsed.quiz, quizCount, allowedSourceIds);
+        const flashcards = parseStudyFlashcards(parsed.flashcards, flashcardCount, allowedSourceIds, now);
+        const examQuestions = parseStudyExamQuestions(parsed.examQuestions, examCount, allowedSourceIds);
+        if (quizQuestions.length === 0 || flashcards.length === 0 || examQuestions.length === 0) {
+            throw new Error("Generated study set was incomplete. Try again with a richer chat context.");
+        }
+        await studySetRef.set({
+            status: "ready",
+            quizQuestions,
+            flashcards,
+            examQuestions,
+            sources: allSources,
+            generationMs: Date.now() - startedAtMs,
+            errorMessage: null,
+            updatedAt: new Date(),
+        }, { merge: true });
+        okJson(res, {
+            ok: true,
+            studySetId: studySetRef.id,
+            quizCount: quizQuestions.length,
+            flashcardCount: flashcards.length,
+            examCount: examQuestions.length,
+        });
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : "Study set generation failed";
+        await studySetRef.set({
+            status: "failed",
+            errorMessage: message,
+            updatedAt: new Date(),
+        }, { merge: true });
+        sendErrorResponse(res, 500, message);
+    }
+});
+/**
+ * POST /flashcardReview
+ * Body: { userId: string, studySetId: string, cardId: string, rating: "again"|"hard"|"good"|"easy" }
+ */
+export const flashcardReview = onRequest(FUNCTION_CONFIG, async (req, res) => {
+    if (req.method !== "POST") {
+        sendErrorResponse(res, 405, "Method not allowed");
+        return;
+    }
+    const body = req.body || {};
+    const userId = asRequiredString(body.userId);
+    const studySetId = asRequiredString(body.studySetId);
+    const cardId = asRequiredString(body.cardId);
+    const ratingRaw = asRequiredString(body.rating);
+    const validRatings = ["again", "hard", "good", "easy"];
+    const rating = validRatings.includes((ratingRaw || ""))
+        ? ratingRaw
+        : null;
+    if (!userId || !studySetId || !cardId || !rating) {
+        badRequest(res, "Missing required fields: userId, studySetId, cardId, rating");
+        return;
+    }
+    const studySetRef = db.collection("studySets").doc(studySetId);
+    const studySetSnap = await studySetRef.get();
+    if (!studySetSnap.exists) {
+        sendErrorResponse(res, 404, "Study set not found");
+        return;
+    }
+    const data = studySetSnap.data();
+    if (asString(data.userId) !== userId) {
+        sendErrorResponse(res, 403, "Not allowed");
+        return;
+    }
+    const flashcards = parseStoredFlashcards(data.flashcards);
+    const cardIndex = flashcards.findIndex((card) => card.id === cardId);
+    if (cardIndex < 0) {
+        sendErrorResponse(res, 404, "Flashcard not found");
+        return;
+    }
+    const now = new Date();
+    const updatedCard = applyFlashcardRating(flashcards[cardIndex], rating, now);
+    flashcards[cardIndex] = updatedCard;
+    await studySetRef.set({
+        flashcards,
+        updatedAt: now,
+    }, { merge: true });
+    await db.collection("flashcardReviews").add({
+        userId,
+        studySetId,
+        chatId: asString(data.chatId) || null,
+        cardId,
+        rating,
+        intervalDays: updatedCard.intervalDays,
+        easeFactor: updatedCard.easeFactor,
+        repetitions: updatedCard.repetitions,
+        reviewedAt: now,
+        createdAt: now,
+    });
+    okJson(res, {
+        ok: true,
+        cardId: updatedCard.id,
+        nextReviewAt: updatedCard.nextReviewAt.toISOString(),
+        intervalDays: updatedCard.intervalDays,
+        easeFactor: updatedCard.easeFactor,
+        repetitions: updatedCard.repetitions,
+    });
 });
 export const chat = onRequest(FUNCTION_CONFIG, async (req, res) => {
     if (req.method !== "POST") {

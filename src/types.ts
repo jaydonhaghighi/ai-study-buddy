@@ -37,3 +37,68 @@ export type CourseMaterial = {
   createdAt: Date | null;
   updatedAt: Date | null;
 };
+
+export type StudySetStatus = 'generating' | 'ready' | 'failed';
+export type StudyDifficulty = 'easy' | 'medium' | 'hard';
+export type QuizQuestionType = 'mcq' | 'short';
+export type FlashcardReviewRating = 'again' | 'hard' | 'good' | 'easy';
+
+export type StudySource = {
+  id: string;
+  type: 'chat' | 'material';
+  label: string;
+  snippet: string;
+};
+
+export type QuizQuestion = {
+  id: string;
+  questionType: QuizQuestionType;
+  prompt: string;
+  options: string[];
+  correctAnswer: string;
+  correctOptionIndex: number | null;
+  explanation: string;
+  difficulty: StudyDifficulty;
+  sourceIds: string[];
+};
+
+export type Flashcard = {
+  id: string;
+  front: string;
+  back: string;
+  tags: string[];
+  difficulty: StudyDifficulty;
+  sourceIds: string[];
+  nextReviewAt: Date | null;
+  intervalDays: number;
+  easeFactor: number;
+  repetitions: number;
+  lastReviewedAt: Date | null;
+};
+
+export type ExamQuestion = {
+  id: string;
+  prompt: string;
+  rubric: string[];
+  modelAnswer: string;
+  difficulty: StudyDifficulty;
+  sourceIds: string[];
+};
+
+export type StudySet = {
+  id: string;
+  userId: string;
+  chatId: string;
+  courseId: string | null;
+  sessionId: string | null;
+  status: StudySetStatus;
+  quizQuestions: QuizQuestion[];
+  flashcards: Flashcard[];
+  examQuestions: ExamQuestion[];
+  sources: StudySource[];
+  model: string;
+  generationMs: number | null;
+  errorMessage: string | null;
+  createdAt: Date | null;
+  updatedAt: Date | null;
+};

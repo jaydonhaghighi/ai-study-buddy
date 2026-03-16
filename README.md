@@ -57,7 +57,7 @@ The frontend is a React + TypeScript SPA built with Vite. It has two runtime mod
 ### Main frontend responsibilities
 
 - Authentication and session state
-  - Uses Firebase Auth for sign-in/sign-up and signed-in app state.
+  - Uses Firebase Auth for email/password sign-in/sign-up, Google sign-in, and signed-in app state.
 - Structured study organization
   - Organizes data as Course -> Session -> Chat and stores all entities in Firestore.
 - Streaming AI chat UX

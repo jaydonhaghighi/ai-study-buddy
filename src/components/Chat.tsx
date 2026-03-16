@@ -10,6 +10,7 @@ import ChatSidebar from './chat/ChatSidebar';
 import ChatAuthView from './chat/ChatAuthView';
 import ChatPreviewSidebar from './chat/ChatPreviewSidebar';
 import ChatMaterialsPanel from './chat/ChatMaterialsPanel';
+import ChatStudySetsPanel from './chat/ChatStudySetsPanel';
 import ChatCalibrationModal from './chat/ChatCalibrationModal';
 import { useChatAutoScroll } from './chat/useChatAutoScroll';
 import { useFocusTracking } from './chat/useFocusTracking';
@@ -19,6 +20,7 @@ import { useChatAuth } from './chat/useChatAuth';
 import { useChatCameraPreview } from './chat/useChatCameraPreview';
 import { useChatUiState } from './chat/useChatUiState';
 import { useChatMaterials } from './chat/useChatMaterials';
+import { useStudySets } from './chat/useStudySets';
 import settingsIcon from '../public/settings.svg';
 import './Chat.css';
 
@@ -76,6 +78,7 @@ export default function Chat({ user }: ChatProps) {
     authError,
     authLoading,
     handleAuth,
+    handleGoogleAuth,
   } = useChatAuth();
 
   // UI State
@@ -224,6 +227,22 @@ export default function Chat({ user }: ChatProps) {
     showToast,
   });
 
+  const {
+    studySets,
+    activeStudySet,
+    activeStudySetId,
+    setActiveStudySetId,
+    studySetGenerating,
+    reviewBusyCardId,
+    handleGenerateStudySet,
+    handleReviewFlashcard,
+  } = useStudySets({
+    user,
+    selectedChatId,
+    currentChat,
+    showToast,
+  });
+
   const handleSignOut = async () => {
     try {
       setSettingsOpen(false);
@@ -250,6 +269,7 @@ export default function Chat({ user }: ChatProps) {
         onPasswordChange={setAuthPassword}
         onToggleSignUp={() => setIsSignUp(!isSignUp)}
         onSubmit={handleAuth}
+        onGoogleSignIn={handleGoogleAuth}
       />
     );
   }
@@ -365,6 +385,19 @@ export default function Chat({ user }: ChatProps) {
             materialsUploading={materialsUploading}
             onUploadFiles={handleUploadMaterialFiles}
             onDeleteMaterial={handleDeleteMaterial}
+          />
+        )}
+        activeRecallContent={(
+          <ChatStudySetsPanel
+            selectedChatId={selectedChatId}
+            studySets={studySets}
+            activeStudySet={activeStudySet}
+            activeStudySetId={activeStudySetId}
+            studySetGenerating={studySetGenerating}
+            reviewBusyCardId={reviewBusyCardId}
+            onSelectStudySet={setActiveStudySetId}
+            onGenerateStudySet={handleGenerateStudySet}
+            onReviewFlashcard={handleReviewFlashcard}
           />
         )}
         isLocalTrackerRunning={isLocalTrackerRunning}
