@@ -1,0 +1,50 @@
+@startuml
+title AI Study Buddy - Chat Flow (SSE)
+autonumber
+
+skinparam backgroundColor #FAFCFF
+skinparam shadowing false
+skinparam ArrowColor #3B5BDB
+skinparam defaultFontName Arial
+skinparam roundCorner 12
+skinparam sequence {
+  LifeLineBorderColor #6B7A99
+  LifeLineBackgroundColor #F4F8FF
+  ParticipantBorderColor #5B7CFA
+}
+
+actor "Student" as Student #FFF4E0
+participant "Web App\n(React/Vite)" as FE #EAF2FF
+participant "Cloud Function\n/chat" as CHAT_FN #FFEED7
+database "Firestore" as DB #FFF0DA
+participant "Genkit + OpenAI" as OAI #F3E8FF
+
+Student -> FE : Send study question
+FE -> CHAT_FN : POST /chat {sessionId, message, userId}
+CHAT_FN -> CHAT_FN : Validate request body
+
+CHAT_FN -> DB : Load Genkit session state
+alt Session not found
+  CHAT_FN -> DB : Create new session store entry
+end
+
+CHAT_FN -> DB : Read chat doc (check "New Chat")
+CHAT_FN -> OAI : Generate response with history + system prompt
+
+loop For each generated chunk
+  OAI --> CHAT_FN : chunk text
+  CHAT_FN --> FE : SSE {text, done:false}
+  FE --> Student : Render incremental text
+end
+
+opt Chat still named "New Chat"
+  CHAT_FN -> OAI : Generate concise chat title
+  OAI --> CHAT_FN : title candidate
+  CHAT_FN -> DB : Update chat name
+end
+
+CHAT_FN -> DB : Save updated thread history
+CHAT_FN --> FE : SSE {done:true, fullText, model, newSessionName}
+FE --> Student : Display final answer
+
+@enduml

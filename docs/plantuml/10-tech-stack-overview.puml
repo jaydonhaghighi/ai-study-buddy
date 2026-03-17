@@ -1,0 +1,116 @@
+@startuml
+title AI Study Buddy - Full Codebase Tech Stack
+
+skinparam backgroundColor #FAFCFF
+skinparam shadowing false
+skinparam ArrowColor #3B5BDB
+skinparam defaultFontName Arial
+skinparam roundCorner 12
+skinparam packageStyle rectangle
+skinparam componentStyle rectangle
+skinparam package {
+  BorderColor #8EA5F5
+  FontColor #1C2B4A
+  BackgroundColor #F7FAFF
+}
+skinparam component {
+  BorderColor #5B7CFA
+  FontColor #1C2B4A
+  BackgroundColor #EAF2FF
+}
+skinparam node {
+  BorderColor #5B7CFA
+  FontColor #1C2B4A
+  BackgroundColor #EAF2FF
+}
+skinparam database {
+  BorderColor #C9852F
+  BackgroundColor #FFF0DA
+}
+skinparam cloud {
+  BorderColor #9D7ED8
+  BackgroundColor #F3E8FF
+}
+
+actor "Student" as STUDENT
+
+package "Frontend Web App" #EAF2FF {
+  component "React 18 + TypeScript 5" as FE_CORE
+  component "Vite 7 build/dev server" as FE_VITE
+  component "Firebase Web SDK 11" as FE_FBSDK
+  component "MediaPipe tasks-vision" as FE_MP
+  component "Inference frame uploader\n+ fallback laptop tracker" as FE_TRACK
+  component "UI libs:\nRecharts, React Markdown,\nremark-gfm, rehype-highlight" as FE_UI_LIBS
+}
+
+package "Cloud Backend (Firebase)" #FFF6EA {
+  component "Cloud Functions v2\nNode.js 20 + TypeScript" as BE_FN
+  component "Genkit 1.x + @genkit-ai/compat-oai" as BE_GENKIT
+  component "SSE chat streaming (/chat)" as BE_SSE
+  component "Focus lifecycle APIs\n/focusStart, /focusStop" as BE_FOCUS
+  database "Cloud Firestore" as DB
+  component "Firebase Auth" as AUTH
+  component "Firebase Hosting" as HOSTING
+}
+
+package "ML Training + Serving (Python)" #E6F7EA {
+  component "Python 3.11 package\nstudybuddy-ml" as ML_PKG #DDF3E3
+  component "TensorFlow/Keras 2.16 (GPU)\nEfficientNetV2/MobileNetV2" as ML_TF #DDF3E3
+  component "Data/metrics stack\npandas, numpy, scikit-learn,\nmatplotlib" as ML_DATA #DDF3E3
+  component "Experiment tracking\nMLflow 2.17" as ML_MLFLOW #DDF3E3
+  component "Inference API\nFastAPI + Uvicorn" as ML_API #DDF3E3
+  component "CLI + orchestration\nTyper + Make targets" as ML_CLI #DDF3E3
+  component "Temporal smoothing engine\nEMA + hysteresis" as ML_TEMP #DDF3E3
+  artifact "Model artifacts\nbest_model.keras + saved_model/" as ML_MODEL #DDF3E3
+}
+
+package "Infra + Dev Tooling" #F2F6FF {
+  node "Docker Compose services\ntrainer, inference, mlflow" as DEV_DC
+  component "npm + ESLint + TypeScript" as DEV_JS
+  component "Firebase CLI + deploy config\n(firebase.json, .firebaserc)" as DEV_FBCLI
+}
+
+cloud "External AI Provider" as OPENAI_CLOUD {
+  component "OpenAI API\n(default model: gpt-4o-mini)" as OPENAI
+}
+
+STUDENT --> FE_CORE : uses study/chat/focus UI
+FE_VITE --> FE_CORE : bundles + serves frontend
+FE_UI_LIBS --> FE_CORE : visualization + markdown rendering
+FE_MP --> FE_TRACK : face landmarks/signals
+FE_TRACK --> ML_API : frame/session requests
+FE_FBSDK --> AUTH : auth flows
+FE_FBSDK --> DB : app data access
+FE_CORE --> BE_FN : HTTPS function calls
+FE_CORE --> HOSTING : static app hosting
+
+BE_FN --> BE_GENKIT : model orchestration
+BE_FN --> BE_SSE : stream response chunks
+BE_FN --> BE_FOCUS : create/end focus sessions
+BE_FN --> DB : chat + focus persistence
+BE_GENKIT --> OPENAI : prompt + completion
+
+ML_CLI --> ML_PKG : validate/split/train/eval/export
+ML_PKG --> ML_TF : train + infer model
+ML_PKG --> ML_DATA : preprocessing + evaluation
+ML_PKG --> ML_MLFLOW : params/metrics/artifacts
+ML_PKG --> ML_MODEL : export deployment artifact
+ML_API --> ML_MODEL : load trained model
+ML_API --> ML_TEMP : smooth frame predictions
+
+DEV_DC --> ML_CLI : run pipeline commands
+DEV_DC --> ML_API : run inference container
+DEV_DC --> ML_MLFLOW : run tracking UI service
+DEV_JS --> FE_CORE : frontend quality/tooling
+DEV_FBCLI --> BE_FN : functions deploy workflow
+DEV_FBCLI --> HOSTING : frontend hosting deploy
+
+note right
+Repository stacks by area:
+- Frontend: React + TypeScript + Vite + MediaPipe + Firebase SDK
+- Backend: Firebase Functions + Genkit + OpenAI + Firestore/Auth
+- ML: TensorFlow/Keras + sklearn stack + MLflow + FastAPI
+- Ops/Tooling: Docker Compose + Makefile + npm/ESLint + Firebase CLI
+end note
+
+@enduml

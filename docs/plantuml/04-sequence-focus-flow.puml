@@ -1,0 +1,47 @@
+@startuml
+title AI Study Buddy - Focus Session Flow
+autonumber
+
+skinparam backgroundColor #FAFCFF
+skinparam shadowing false
+skinparam ArrowColor #2E8B57
+skinparam defaultFontName Arial
+skinparam roundCorner 12
+skinparam sequence {
+  LifeLineBorderColor #6B7A99
+  LifeLineBackgroundColor #F4F8FF
+  ParticipantBorderColor #4BA36B
+}
+
+actor "Student" as Student #FFF4E0
+participant "Web App\n(Focus Tracker)" as FE #EAF2FF
+participant "Cloud Functions\n/focus/start + /focus/stop" as FOCUS_FN #FFEED7
+database "Firestore" as DB #FFF0DA
+participant "Local Inference API\n(FastAPI)" as INF #E6F7EA
+
+Student -> FE : Start focus session
+FE -> FOCUS_FN : POST /focus/start {userId, courseId?, sessionId?}
+FOCUS_FN -> DB : Create focusSessions (status=active)
+FOCUS_FN --> FE : {ok:true, focusSessionId}
+
+loop Every sampled frame during session
+  FE -> INF : Send frame + calibration metadata
+  INF -> INF : Model prediction + temporal smoothing
+  INF --> FE : {focusState, confidence, poseLabel}
+  FE --> Student : Live focus indicator + feedback
+end
+
+opt Inference API unavailable
+  FE -> FE : Use local fallback tracker heuristic
+  FE --> Student : Continue approximate focus feedback
+end
+
+Student -> FE : Stop focus session
+FE -> FOCUS_FN : POST /focus/stop {userId, focusSessionId}
+FOCUS_FN -> DB : Validate ownership + mark ended
+FOCUS_FN --> FE : {ok:true}
+
+FE -> DB : Save focus summary metrics
+FE --> Student : Show session summary + refresh dashboard
+
+@enduml

@@ -12,6 +12,7 @@ type ChatAuthViewProps = {
   onPasswordChange: (value: string) => void;
   onToggleSignUp: () => void;
   onSubmit: (e: FormEvent) => void;
+  onGoogleSignIn: () => Promise<void>;
 };
 
 export default function ChatAuthView({
@@ -26,13 +27,14 @@ export default function ChatAuthView({
   onPasswordChange,
   onToggleSignUp,
   onSubmit,
+  onGoogleSignIn,
 }: ChatAuthViewProps) {
   return (
     <div className="chat-container chat-container-auth">
       <div className="chat-header chat-header-auth">
         <div className="chat-header-inner">
           <div className="chat-header-left">
-            <h2 className="chat-header-title">AI Study Buddy</h2>
+            <h2 className="chat-header-title">Echelon</h2>
             <p className="chat-header-subtitle">Sign in to start learning.</p>
           </div>
         </div>
@@ -42,7 +44,17 @@ export default function ChatAuthView({
           <div className="auth-prompt">
             <p className="auth-prompt-title">Organize your learning with Courses & Sessions</p>
             <p className="auth-prompt-subtitle">Create a focused workspace for every subject, and keep your study chats in context.</p>
-            <button className="auth-toggle-button" onClick={() => onShowAuth(true)}>Sign In / Sign Up</button>
+            <button className="auth-toggle-button" onClick={() => onShowAuth(true)} disabled={authLoading}>Sign In / Sign Up</button>
+            <button
+              type="button"
+              className="auth-google-button"
+              onClick={() => {
+                void onGoogleSignIn();
+              }}
+              disabled={authLoading}
+            >
+              {authLoading ? 'Loading...' : 'Continue with Google'}
+            </button>
           </div>
         </div>
       ) : (
@@ -69,10 +81,21 @@ export default function ChatAuthView({
             <button type="submit" className="auth-submit-button" disabled={authLoading}>
               {authLoading ? 'Loading...' : (isSignUp ? 'Sign Up' : 'Sign In')}
             </button>
-            <button type="button" className="auth-switch-button" onClick={onToggleSignUp}>
+            <div className="auth-divider">or</div>
+            <button
+              type="button"
+              className="auth-google-button"
+              onClick={() => {
+                void onGoogleSignIn();
+              }}
+              disabled={authLoading}
+            >
+              {authLoading ? 'Loading...' : 'Continue with Google'}
+            </button>
+            <button type="button" className="auth-switch-button" onClick={onToggleSignUp} disabled={authLoading}>
               {isSignUp ? 'Have account? Sign In' : 'No account? Sign Up'}
             </button>
-            <button type="button" className="auth-cancel-button" onClick={() => onShowAuth(false)}>
+            <button type="button" className="auth-cancel-button" onClick={() => onShowAuth(false)} disabled={authLoading}>
               Cancel
             </button>
           </form>

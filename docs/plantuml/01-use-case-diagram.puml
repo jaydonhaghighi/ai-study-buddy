@@ -1,0 +1,53 @@
+@startuml
+title AI Study Buddy - Use Cases
+left to right direction
+
+skinparam backgroundColor #FAFCFF
+skinparam shadowing false
+skinparam ArrowColor #3B5BDB
+skinparam actorStyle awesome
+skinparam defaultFontName Arial
+skinparam roundCorner 12
+skinparam usecase {
+  BackgroundColor #EAF2FF
+  BorderColor #5B7CFA
+  FontColor #1C2B4A
+}
+
+actor "Student" as Student
+actor "OpenAI\n(LLM Service)" as OpenAI #F3E8FF
+actor "Firebase Platform" as Firebase #FFEFD6
+actor "Local Inference API" as InferenceAPI #E8F7EC
+
+rectangle "AI Study Buddy System" #F4F8FF {
+  usecase "Sign In / Sign Up" as UC_Auth
+  usecase "Manage Course + Session + Chat" as UC_Organize
+  usecase "Ask Study Question" as UC_Ask
+  usecase "Receive Streamed Answer" as UC_Stream
+  usecase "Start Focus Session" as UC_FocusStart
+  usecase "Track Focus Live" as UC_FocusTrack
+  usecase "Stop Focus Session" as UC_FocusStop
+  usecase "View Focus Dashboard" as UC_Dashboard
+  usecase "Collect Labeled Data\n(/collect)" as UC_Collect
+}
+
+Student --> UC_Auth
+Student --> UC_Organize
+Student --> UC_Ask
+Student --> UC_FocusStart
+Student --> UC_FocusTrack
+Student --> UC_FocusStop
+Student --> UC_Dashboard
+Student --> UC_Collect
+
+UC_Ask .> UC_Stream : <<include>>
+
+OpenAI --> UC_Ask
+Firebase --> UC_Auth
+Firebase --> UC_Organize
+Firebase --> UC_Dashboard
+Firebase --> UC_FocusStart
+Firebase --> UC_FocusStop
+InferenceAPI --> UC_FocusTrack
+
+@enduml

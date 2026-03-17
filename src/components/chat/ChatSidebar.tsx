@@ -1,4 +1,20 @@
+import { useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
+import {
+  Camera,
+  ChevronsUpDown,
+  ChevronRight,
+  FolderClosed,
+  LogOut,
+  MessageSquarePlus,
+  PanelLeftClose,
+  Pencil,
+  Plus,
+  Search,
+  Settings,
+  Trash2,
+  X,
+} from 'lucide-react';
 
 type CourseLike = {
   id: string;
@@ -42,6 +58,14 @@ type ChatSidebarProps = {
   onSetEditChatName: (value: string) => void;
   onUpdateChatName: (chatId: string, newName: string) => void;
   onDeleteChat: (chatId: string) => void;
+  onCloseSidebar: () => void;
+  settingsOpen: boolean;
+  settingsRef: React.RefObject<HTMLDivElement>;
+  cameraPreviewEnabled: boolean;
+  focusBusy: boolean;
+  onToggleSettings: () => void;
+  onToggleCameraPreview: () => void;
+  onSignOut: () => void;
 };
 
 export default function ChatSidebar({
@@ -71,42 +95,149 @@ export default function ChatSidebar({
   onSetEditChatName,
   onUpdateChatName,
   onDeleteChat,
+  onCloseSidebar,
+  settingsOpen,
+  settingsRef,
+  cameraPreviewEnabled,
+  focusBusy,
+  onToggleSettings,
+  onToggleCameraPreview,
+  onSignOut,
 }: ChatSidebarProps) {
+  const [courseQuery, setCourseQuery] = useState('');
+  const [lastOpenedCourseId, setLastOpenedCourseId] = useState<string | null>(null);
+  const normalizedQuery = courseQuery.trim().toLowerCase();
+
+  const visibleCourses = useMemo(() => {
+    const ordered = [...courses];
+    if (lastOpenedCourseId) {
+      ordered.sort((a, b) => {
+        if (a.id === lastOpenedCourseId) return -1;
+        if (b.id === lastOpenedCourseId) return 1;
+        return a.name.localeCompare(b.name);
+      });
+    }
+    if (!normalizedQuery) return ordered;
+    return ordered.filter((course) => course.name.toLowerCase().includes(normalizedQuery));
+  }, [courses, lastOpenedCourseId, normalizedQuery]);
+
+  const hasExpandedRows = expandedCourseId !== null || expandedSessionId !== null;
+
+  const handleToggleCourse = (courseId: string) => {
+    setLastOpenedCourseId(courseId);
+    onToggleCourse(courseId);
+  };
+
   return (
     <div className="chat-sidebar">
-      <div className="sidebar-header">
-        <h3>My Courses</h3>
-        <button onClick={() => onSetCreatingCourse(true)} className="add-button" title="Add Course">+</button>
-      </div>
-
-      {isCreatingCourse && (
-        <form onSubmit={onCreateCourse} className="create-form">
-          <input
-            autoFocus
-            value={newCourseName}
-            onChange={(e) => onSetNewCourseName(e.target.value)}
-            placeholder="Course Name"
-            onBlur={() => onSetCreatingCourse(false)}
-          />
-        </form>
-      )}
-
       <div className="sidebar-content">
-        {courses.map((course) => (
+        <div className="sidebar-header">
+          <div>
+            <h3>Courses</h3>
+            <p className="sidebar-caption">
+              {visibleCourses.length} of {courses.length} courses
+            </p>
+          </div>
+          <div className="sidebar-header-actions">
+            <button
+              onClick={() => onSetCreatingCourse(true)}
+              className="add-button"
+              title="Add Course"
+              type="button"
+              aria-label="Add course"
+            >
+              <Plus size={14} aria-hidden="true" />
+            </button>
+            <button
+              onClick={onCloseSidebar}
+              className="add-button"
+              title="Close sidebar"
+              type="button"
+              aria-label="Close sidebar"
+            >
+              <PanelLeftClose size={14} aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+
+        <div className="sidebar-search-row">
+          <div className="sidebar-search">
+            <Search size={14} aria-hidden="true" className="sidebar-search-icon" />
+            <input
+              type="text"
+              value={courseQuery}
+              onChange={(event) => setCourseQuery(event.target.value)}
+              className="sidebar-search-input"
+              placeholder="Search courses..."
+              aria-label="Search courses"
+            />
+            {courseQuery.length > 0 && (
+              <button
+                type="button"
+                className="sidebar-search-clear"
+                onClick={() => setCourseQuery('')}
+                aria-label="Clear search"
+                title="Clear search"
+              >
+                <X size={12} aria-hidden="true" />
+              </button>
+            )}
+          </div>
+          <button
+            type="button"
+            className="sidebar-collapse-btn"
+            onClick={() => {
+              if (expandedSessionId) onToggleSession(expandedSessionId);
+              if (expandedCourseId) onToggleCourse(expandedCourseId);
+            }}
+            disabled={!hasExpandedRows}
+            title="Collapse all"
+            aria-label="Collapse all"
+          >
+            <ChevronsUpDown size={14} aria-hidden="true" />
+          </button>
+        </div>
+
+        {isCreatingCourse && (
+          <form onSubmit={onCreateCourse} className="create-form">
+            <input
+              autoFocus
+              value={newCourseName}
+              onChange={(e) => onSetNewCourseName(e.target.value)}
+              placeholder="Course Name"
+              onBlur={() => onSetCreatingCourse(false)}
+            />
+          </form>
+        )}
+
+        {visibleCourses.length === 0 && (
+          <div className="empty-state-small">No courses match your search</div>
+        )}
+
+        {visibleCourses.map((course) => (
           <div key={course.id} className="course-group">
             <div
               className={`course-item ${expandedCourseId === course.id ? 'expanded' : ''}`}
-              onClick={() => onToggleCourse(course.id)}
+              onClick={() => handleToggleCourse(course.id)}
             >
               <span className="name">{course.name}</span>
-              <span className="dropdown-arrow">›</span>
+              <span className="dropdown-arrow" aria-hidden="true">
+                <ChevronRight size={16} />
+              </span>
             </div>
 
             {expandedCourseId === course.id && (
               <div className="session-list">
                 <div className="session-header">
                   <small>Sessions</small>
-                  <button onClick={() => onSetCreatingSession(true)} className="add-button-small">+</button>
+                  <button
+                    onClick={() => onSetCreatingSession(true)}
+                    className="add-button-small"
+                    type="button"
+                    aria-label="Add session"
+                  >
+                    <Plus size={12} aria-hidden="true" />
+                  </button>
                 </div>
 
                 {isCreatingSession && (
@@ -128,21 +259,20 @@ export default function ChatSidebar({
                       onClick={() => onToggleSession(session.id)}
                     >
                       <div style={{ display: 'flex', alignItems: 'center' }}>
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          viewBox="0 0 24 24"
-                          className="folder-icon"
-                        >
-                          <path d="M19,3H12.472a1.019,1.019,0,0,1-.447-.1L8.869,1.316A3.014,3.014,0,0,0,7.528,1H5A5.006,5.006,0,0,0,0,6V18a5.006,5.006,0,0,0,5,5H19a5.006,5.006,0,0,0,5-5V8A5.006,5.006,0,0,0,19,3ZM5,3H7.528a1.019,1.019,0,0,1,.447.1l3.156,1.579A3.014,3.014,0,0,0,12.472,5H19a3,3,0,0,1,2.779,1.882L2,6.994V6A3,3,0,0,1,5,3ZM19,21H5a3,3,0,0,1-3-3V8.994l20-.113V18A3,3,0,0,1,19,21Z" />
-                        </svg>
+                        <FolderClosed className="folder-icon" size={15} aria-hidden="true" />
                         <span className="name">{session.name}</span>
                       </div>
-                      <span className="dropdown-arrow">›</span>
+                      <span className="dropdown-arrow" aria-hidden="true">
+                        <ChevronRight size={16} />
+                      </span>
                     </div>
 
                     {expandedSessionId === session.id && (
                       <div className="chat-list">
-                        <button onClick={onCreateChat} className="new-chat-button-small">+ New Chat</button>
+                        <button onClick={onCreateChat} className="new-chat-button-small" type="button">
+                          <MessageSquarePlus size={14} aria-hidden="true" />
+                          <span>New Chat</span>
+                        </button>
                         {chats.map((chat) => (
                           <div
                             key={chat.id}
@@ -179,16 +309,20 @@ export default function ChatSidebar({
                                     onSetEditChatName(chat.name);
                                   }}
                                   className="action-btn"
+                                  type="button"
+                                  aria-label={`Rename ${chat.name}`}
                                   >
-                                    ✎
+                                    <Pencil size={14} aria-hidden="true" />
                                   </button>
                                   <button onClick={(e) => {
                                     e.stopPropagation();
                                     onDeleteChat(chat.id);
                                   }}
                                   className="action-btn"
+                                  type="button"
+                                  aria-label={`Delete ${chat.name}`}
                                   >
-                                    ×
+                                    <Trash2 size={14} aria-hidden="true" />
                                   </button>
                                 </div>
                               </>
@@ -206,6 +340,48 @@ export default function ChatSidebar({
             )}
           </div>
         ))}
+
+        <div className="sidebar-footer">
+          <div className="chat-settings" ref={settingsRef}>
+            <button
+              className="chat-header-btn chat-settings-btn sidebar-settings-btn"
+              type="button"
+              aria-label="Settings"
+              aria-haspopup="menu"
+              aria-expanded={settingsOpen}
+              onClick={onToggleSettings}
+              disabled={focusBusy}
+              title="Settings"
+            >
+              <Settings size={17} aria-hidden="true" />
+              <span>Settings</span>
+            </button>
+
+            {settingsOpen && (
+              <div className="chat-settings-menu" role="menu" aria-label="Settings menu">
+                <button
+                  type="button"
+                  className="chat-settings-item"
+                  role="menuitem"
+                  onClick={onToggleCameraPreview}
+                  disabled={focusBusy}
+                >
+                  <Camera size={16} aria-hidden="true" />
+                  <span>Camera preview: {cameraPreviewEnabled ? 'On' : 'Off'}</span>
+                </button>
+                <button
+                  type="button"
+                  className="chat-settings-item chat-settings-item-danger"
+                  role="menuitem"
+                  onClick={onSignOut}
+                >
+                  <LogOut size={16} aria-hidden="true" />
+                  <span>Sign out</span>
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );

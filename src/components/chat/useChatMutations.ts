@@ -20,6 +20,7 @@ type UseChatMutationsParams = {
   expandedCourseId: string | null;
   expandedSessionId: string | null;
   selectedChatId: string | null;
+  selectedModel: string;
   input: string;
   newCourseName: string;
   newSessionName: string;
@@ -42,6 +43,7 @@ export function useChatMutations({
   expandedCourseId,
   expandedSessionId,
   selectedChatId,
+  selectedModel,
   input,
   newCourseName,
   newSessionName,
@@ -140,14 +142,14 @@ export function useChatMutations({
         id: tempId,
         text: '',
         userId: user.uid,
-        userName: 'AI Study Buddy',
+        userName: 'Echelon',
         sessionId: selectedChatId,
         createdAt: new Date(),
         isAI: true,
       }]);
 
       let streamingText = '';
-      const response = await getAIResponse(userMessage, selectedChatId, user.uid, (chunk) => {
+      const response = await getAIResponse(userMessage, selectedChatId, user.uid, selectedModel, (chunk) => {
         streamingText += chunk;
         setMessages((prev) => prev.map((m) => (m.id === tempId ? { ...m, text: streamingText } : m)));
       });
@@ -156,11 +158,12 @@ export function useChatMutations({
       await addDoc(collection(db, 'messages'), {
         text: response.text,
         userId: user.uid,
-        userName: 'AI Study Buddy',
+        userName: 'Echelon',
         sessionId: selectedChatId,
         createdAt: serverTimestamp(),
         isAI: true,
         model: response.model,
+        citations: response.citations,
       });
 
       await updateDoc(doc(db, 'chats', selectedChatId), {

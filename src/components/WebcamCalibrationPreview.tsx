@@ -207,6 +207,8 @@ export default function WebcamCalibrationPreview({
         pollTimerRef.current = null;
       }
     };
+  // stopPreview is intentionally omitted to keep this effect stable while preview state changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, mode, autoStopAfterAlignedSeconds, stopOnAlignedStable, onAlignedStable]);
 
   useEffect(() => {

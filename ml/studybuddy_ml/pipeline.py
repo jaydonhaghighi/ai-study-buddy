@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import random
 import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -60,10 +63,64 @@ def _slugify(value: str) -> str:
     return cleaned.strip("_")
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _resolve_git_sha() -> str:
+    env_sha = os.getenv("GIT_SHA", "").strip()
+    if env_sha:
+        return env_sha
+    try:
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        if sha:
+            return sha
+    except Exception:
+        pass
+    return "unknown"
+
+
+def _build_reproducibility_context(
+    *,
+    manifest_csv: Path,
+    config_path: Path,
+    split_dir: Path | None = None,
+) -> dict[str, Any]:
+    context: dict[str, Any] = {
+        "git_sha": _resolve_git_sha(),
+        "manifest_csv": str(manifest_csv),
+        "manifest_sha256": _file_sha256(manifest_csv),
+        "config_path": str(config_path),
+        "config_sha256": _file_sha256(config_path),
+        "tensorflow_version": str(tf.__version__),
+        "deterministic_ops_requested": os.getenv("TF_DETERMINISTIC_OPS", ""),
+    }
+    if split_dir is not None:
+        split_index = split_dir / "index.json"
+        if split_index.exists():
+            context["split_index_json"] = str(split_index)
+            context["split_index_sha256"] = _file_sha256(split_index)
+    return context
+
+
 def set_global_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     tf.random.set_seed(seed)
+    try:
+        tf.keras.utils.set_random_seed(seed)
+    except Exception:
+        pass
+    # Not calling enable_op_determinism(): it slows GPU training ~2–3x.
+    # For bit-level reproducibility set TF_DETERMINISTIC_OPS=1 in the environment.
 
 
 def load_yaml(path: Path) -> dict[str, Any]:
@@ -310,6 +367,104 @@ def _load_split_files(split_dir: Path) -> list[Path]:
     if not split_files:
         raise FileNotFoundError(f"No fold_*.json files found in {split_dir}")
     return split_files
+
+
+def _load_split_payloads(split_dir: Path) -> list[tuple[Path, dict[str, Any]]]:
+    payloads: list[tuple[Path, dict[str, Any]]] = []
+    for split_file in _load_split_files(split_dir):
+        split = json.loads(split_file.read_text(encoding="utf-8"))
+        if not isinstance(split, dict):
+            raise ValueError(f"Expected split payload object in {split_file}")
+        payloads.append((split_file, split))
+    payloads.sort(key=lambda item: int(item[1]["fold_id"]))
+    return payloads
+
+
+def _validate_loso_splits(
+    split_payloads: list[tuple[Path, dict[str, Any]]],
+    manifest: pd.DataFrame,
+    participant_column: str,
+) -> None:
+    manifest_participants = set(
+        manifest[participant_column].dropna().astype(str).tolist()
+    )
+    if not manifest_participants:
+        raise ValueError(
+            f"Manifest has no participants in column '{participant_column}'."
+        )
+
+    seen_fold_ids: set[int] = set()
+    seen_test_participants: list[str] = []
+    for split_file, split in split_payloads:
+        fold_id = int(split["fold_id"])
+        if fold_id in seen_fold_ids:
+            raise ValueError(f"Duplicate fold_id {fold_id} in split file {split_file}")
+        seen_fold_ids.add(fold_id)
+
+        train_p = [str(p).strip() for p in split.get("train_participants", [])]
+        val_p = [str(p).strip() for p in split.get("val_participants", [])]
+        test_p = [str(p).strip() for p in split.get("test_participants", [])]
+
+        if not train_p or not val_p or not test_p:
+            raise ValueError(
+                f"Fold {fold_id} in {split_file} must have non-empty train/val/test participants."
+            )
+        if len(val_p) != 1 or len(test_p) != 1:
+            raise ValueError(
+                f"Fold {fold_id} in {split_file} must have exactly one val and one test participant."
+            )
+
+        train_set = set(train_p)
+        val_set = set(val_p)
+        test_set = set(test_p)
+        overlap = (train_set & val_set) | (train_set & test_set) | (val_set & test_set)
+        if overlap:
+            raise ValueError(
+                f"Fold {fold_id} in {split_file} has overlapping participant assignments: {sorted(overlap)}"
+            )
+
+        unknown = (train_set | val_set | test_set) - manifest_participants
+        if unknown:
+            raise ValueError(
+                f"Fold {fold_id} in {split_file} references unknown participants: {sorted(unknown)}"
+            )
+
+        counts = split.get("counts", {})
+        if isinstance(counts, dict):
+            expected_train = int(
+                manifest[manifest[participant_column].isin(train_p)].shape[0]
+            )
+            expected_val = int(
+                manifest[manifest[participant_column].isin(val_p)].shape[0]
+            )
+            expected_test = int(
+                manifest[manifest[participant_column].isin(test_p)].shape[0]
+            )
+            if (
+                int(counts.get("train", -1)) != expected_train
+                or int(counts.get("val", -1)) != expected_val
+                or int(counts.get("test", -1)) != expected_test
+            ):
+                raise ValueError(
+                    f"Fold {fold_id} in {split_file} has stale counts; regenerate splits."
+                )
+
+        seen_test_participants.extend(test_p)
+
+    if len(seen_test_participants) != len(set(seen_test_participants)):
+        duplicates = sorted(
+            participant
+            for participant in set(seen_test_participants)
+            if seen_test_participants.count(participant) > 1
+        )
+        raise ValueError(f"Each participant must appear once as test; duplicates: {duplicates}")
+    if set(seen_test_participants) != manifest_participants:
+        missing = sorted(manifest_participants - set(seen_test_participants))
+        extra = sorted(set(seen_test_participants) - manifest_participants)
+        raise ValueError(
+            "Split set is not full LOSO coverage. "
+            f"Missing test participants: {missing}. Unexpected: {extra}."
+        )
 
 
 def _prepare_dataset(
@@ -564,9 +719,18 @@ def train_loso(
         raise ValueError(f"Unknown labels in manifest: {unknown}")
     frame["label_id"] = frame["label_id"].astype(int)
 
+    split_payloads = _load_split_payloads(split_dir)
+    _validate_loso_splits(split_payloads, frame, config.participant_column)
+    reproducibility = _build_reproducibility_context(
+        manifest_csv=manifest_csv,
+        config_path=config_path,
+        split_dir=split_dir,
+    )
+    reproducibility["strategy"] = "LOSO"
+    reproducibility["seed"] = int(config.seed)
+
     fold_summaries: list[dict[str, Any]] = []
-    for split_file in _load_split_files(split_dir):
-        split = json.loads(split_file.read_text(encoding="utf-8"))
+    for split_file, split in split_payloads:
         fold_id = int(split["fold_id"])
         train_p = split["train_participants"]
         val_p = split["val_participants"]
@@ -602,10 +766,20 @@ def train_loso(
                     "val_participants": ",".join(val_p),
                     "test_participants": ",".join(test_p),
                     "strategy": "LOSO",
+                    "git_sha": str(reproducibility["git_sha"]),
                 }
             )
+            train_class_counts = train_df[config.label_column].value_counts().sort_index().to_dict()
             mlflow.log_params(
                 {
+                    "num_train_images": int(train_df.shape[0]),
+                    "num_val_images": int(val_df.shape[0]),
+                    "num_test_images": int(test_df.shape[0]),
+                    "num_classes": len(LABELS),
+                    "labels": ",".join(LABELS),
+                    "participant_column": config.participant_column,
+                    "train_class_counts": json.dumps(train_class_counts),
+                    "tensorflow_version": str(reproducibility.get("tensorflow_version", tf.__version__)),
                     "image_size": config.image_size,
                     "backbone": config.backbone,
                     "batch_size": config.batch_size,
@@ -624,6 +798,13 @@ def train_loso(
                     "aug_saturation_lower": config.aug_saturation_lower,
                     "aug_saturation_upper": config.aug_saturation_upper,
                     "aug_gaussian_noise_stddev": config.aug_gaussian_noise_stddev,
+                    "seed": int(config.seed),
+                    "manifest_sha256": str(reproducibility["manifest_sha256"]),
+                    "config_sha256": str(reproducibility["config_sha256"]),
+                    "split_file_sha256": _file_sha256(split_file),
+                    "deterministic_ops_requested": str(
+                        reproducibility["deterministic_ops_requested"]
+                    ),
                 }
             )
 
@@ -751,7 +932,238 @@ def train_loso(
     summary_df = pd.DataFrame(fold_summaries).sort_values("fold_id")
     summary_csv = output_dir / "loso_summary.csv"
     summary_df.to_csv(summary_csv, index=False)
+    (output_dir / "reproducibility.json").write_text(
+        json.dumps(reproducibility, indent=2),
+        encoding="utf-8",
+    )
     return summary_csv
+
+
+def train_production(
+    manifest_csv: Path,
+    config_path: Path,
+    output_dir: Path,
+    tracking_uri: str | None = None,
+) -> Path:
+    config = load_train_config(config_path)
+    set_global_seed(config.seed)
+
+    if tracking_uri:
+        mlflow.set_tracking_uri(tracking_uri)
+    mlflow.set_experiment(config.experiment_name)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    production_dir = output_dir / "production"
+    production_dir.mkdir(parents=True, exist_ok=True)
+
+    frame = pd.read_csv(manifest_csv)
+    if config.label_column not in frame.columns:
+        raise KeyError(f"Label column '{config.label_column}' not found in manifest")
+    if config.path_column not in frame.columns:
+        raise KeyError(f"Path column '{config.path_column}' not found in manifest")
+
+    label_to_idx = {label: idx for idx, label in enumerate(LABELS)}
+    frame["label_id"] = frame[config.label_column].map(label_to_idx)
+    if frame["label_id"].isna().any():
+        unknown = sorted(frame[frame["label_id"].isna()][config.label_column].unique().tolist())
+        raise ValueError(f"Unknown labels in manifest: {unknown}")
+    frame["label_id"] = frame["label_id"].astype(int)
+    train_df = frame.copy()
+    if train_df.empty:
+        raise ValueError("Manifest is empty; cannot train production model.")
+
+    reproducibility = _build_reproducibility_context(
+        manifest_csv=manifest_csv,
+        config_path=config_path,
+    )
+    reproducibility["strategy"] = "FULL_DATASET"
+    reproducibility["seed"] = int(config.seed)
+
+    train_ds = _prepare_dataset(train_df, config, True, config.seed)
+    eval_ds = _prepare_dataset(train_df, config, False, config.seed)
+
+    class_values = np.unique(train_df["label_id"].to_numpy())
+    class_weights = compute_class_weight(
+        class_weight="balanced",
+        classes=class_values,
+        y=train_df["label_id"].to_numpy(),
+    )
+    class_weight = {int(label): float(weight) for label, weight in zip(class_values, class_weights)}
+
+    checkpoint_path = production_dir / "best_model.keras"
+    with mlflow.start_run(run_name="production_full_dataset") as run:
+        mlflow.set_tags(
+            {
+                "strategy": "FULL_DATASET",
+                "pipeline_stage": "production_training",
+                "evaluation_scope": "train_only",
+                "git_sha": str(reproducibility["git_sha"]),
+            }
+        )
+        class_counts = (
+            train_df[config.label_column].value_counts().sort_index().to_dict()
+        )
+        mlflow.log_params(
+            {
+                "num_training_rows": int(train_df.shape[0]),
+                "num_classes": len(LABELS),
+                "labels": ",".join(LABELS),
+                "class_counts": json.dumps(class_counts),
+                "tensorflow_version": str(reproducibility.get("tensorflow_version", tf.__version__)),
+                "image_size": config.image_size,
+                "backbone": config.backbone,
+                "batch_size": config.batch_size,
+                "epochs": config.epochs,
+                "freeze_epochs": config.freeze_epochs,
+                "fine_tune_epochs": config.fine_tune_epochs,
+                "learning_rate": config.learning_rate,
+                "fine_tune_learning_rate": config.fine_tune_learning_rate,
+                "fine_tune_trainable_layers": config.fine_tune_trainable_layers,
+                "dropout": config.dropout,
+                "label_smoothing": config.label_smoothing,
+                "early_stopping_patience": config.early_stopping_patience,
+                "aug_brightness_delta": config.aug_brightness_delta,
+                "aug_contrast_lower": config.aug_contrast_lower,
+                "aug_contrast_upper": config.aug_contrast_upper,
+                "aug_saturation_lower": config.aug_saturation_lower,
+                "aug_saturation_upper": config.aug_saturation_upper,
+                "aug_gaussian_noise_stddev": config.aug_gaussian_noise_stddev,
+                "seed": int(config.seed),
+                "manifest_sha256": str(reproducibility["manifest_sha256"]),
+                "config_sha256": str(reproducibility["config_sha256"]),
+                "deterministic_ops_requested": str(
+                    reproducibility["deterministic_ops_requested"]
+                ),
+            }
+        )
+
+        model, base = _build_model(
+            image_size=config.image_size,
+            num_classes=len(LABELS),
+            dropout=config.dropout,
+            backbone=config.backbone,
+        )
+        checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
+            filepath=str(checkpoint_path),
+            monitor="accuracy",
+            mode="max",
+            save_best_only=True,
+            save_weights_only=False,
+        )
+        history_chunks: list[dict[str, list[float]]] = []
+        completed_epochs = 0
+
+        if config.freeze_epochs and config.freeze_epochs > 0:
+            base.trainable = False
+            _compile_model(
+                model,
+                config.learning_rate,
+                config.label_smoothing,
+                num_classes=len(LABELS),
+            )
+            freeze_history = model.fit(
+                train_ds,
+                initial_epoch=completed_epochs,
+                epochs=completed_epochs + config.freeze_epochs,
+                class_weight=class_weight,
+                callbacks=[
+                    checkpoint_callback,
+                    tf.keras.callbacks.EarlyStopping(
+                        monitor="accuracy",
+                        mode="max",
+                        patience=config.early_stopping_patience,
+                        restore_best_weights=True,
+                    ),
+                ],
+                verbose=2,
+            )
+            history_chunks.append(freeze_history.history)
+            completed_epochs += len(freeze_history.history.get("loss", []))
+
+        if config.fine_tune_epochs > 0:
+            trainable_backbone_layers = _set_backbone_trainable_layers(
+                base,
+                config.fine_tune_trainable_layers,
+            )
+            mlflow.log_param("fine_tune_trainable_layers_effective", trainable_backbone_layers)
+            _compile_model(
+                model,
+                config.fine_tune_learning_rate,
+                config.label_smoothing,
+                num_classes=len(LABELS),
+            )
+            fine_tune_history = model.fit(
+                train_ds,
+                initial_epoch=completed_epochs,
+                epochs=completed_epochs + config.fine_tune_epochs,
+                class_weight=class_weight,
+                callbacks=[
+                    checkpoint_callback,
+                    tf.keras.callbacks.EarlyStopping(
+                        monitor="accuracy",
+                        mode="max",
+                        patience=config.early_stopping_patience,
+                        restore_best_weights=True,
+                    ),
+                ],
+                verbose=2,
+            )
+            history_chunks.append(fine_tune_history.history)
+
+        history = _merge_history_dicts(history_chunks)
+        history_out = production_dir / "history.json"
+        history_out.write_text(json.dumps(history, indent=2), encoding="utf-8")
+
+        best_model = tf.keras.models.load_model(checkpoint_path, compile=False)
+        train_true, train_pred = _evaluate_dataset(best_model, eval_ds)
+        train_metrics = _classification_metrics(train_true, train_pred)
+        for metric_name, metric_value in train_metrics.items():
+            mlflow.log_metric(f"train_{metric_name}", metric_value)
+
+        train_report = classification_report(
+            train_true,
+            train_pred,
+            target_names=LABELS,
+            labels=np.arange(len(LABELS)),
+            output_dict=True,
+            zero_division=0,
+        )
+        report_path = production_dir / "train_classification_report.json"
+        report_path.write_text(json.dumps(train_report, indent=2), encoding="utf-8")
+
+        cm_path = production_dir / "train_confusion_matrix.png"
+        _plot_confusion_matrix(train_true, train_pred, cm_path)
+        mlflow.log_artifacts(str(production_dir), artifact_path="production")
+
+        class_counts = (
+            train_df[config.label_column]
+            .value_counts()
+            .sort_index()
+            .to_dict()
+        )
+        summary = {
+            "run_id": run.info.run_id,
+            "strategy": "FULL_DATASET",
+            "model_path": str(checkpoint_path),
+            "manifest_csv": str(manifest_csv),
+            "config_path": str(config_path),
+            "manifest_sha256": str(reproducibility["manifest_sha256"]),
+            "config_sha256": str(reproducibility["config_sha256"]),
+            "git_sha": str(reproducibility["git_sha"]),
+            "seed": int(config.seed),
+            "evaluation_scope": "train_only",
+            "num_training_rows": int(train_df.shape[0]),
+            "class_counts": class_counts,
+            **{f"train_{k}": v for k, v in train_metrics.items()},
+        }
+        summary_path = production_dir / "production_summary.json"
+        summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        (production_dir / "reproducibility.json").write_text(
+            json.dumps(reproducibility, indent=2),
+            encoding="utf-8",
+        )
+
+    return summary_path
 
 
 def aggregate_loso(summary_csv: Path, aggregate_out: Path) -> dict[str, Any]:
@@ -783,8 +1195,13 @@ def aggregate_loso(summary_csv: Path, aggregate_out: Path) -> dict[str, Any]:
 def export_best_model(
     summary_csv: Path,
     export_dir: Path,
-    criterion: str = "test_macro_f1",
+    criterion: str = "val_macro_f1",
 ) -> dict[str, Any]:
+    if criterion.startswith("test_"):
+        raise ValueError(
+            "Refusing to select deployment model by test metric. "
+            "Use a validation criterion (for example: val_macro_f1)."
+        )
     frame = pd.read_csv(summary_csv)
     if criterion not in frame.columns:
         raise KeyError(f"Criterion column '{criterion}' not found in {summary_csv}")
@@ -804,6 +1221,7 @@ def export_best_model(
     model.export(str(saved_model_dir))
 
     meta = {
+        "source": "best_loso_fold",
         "criterion": criterion,
         "best_fold_id": int(best_row["fold_id"]),
         "criterion_value": float(best_row[criterion]),
@@ -814,6 +1232,56 @@ def export_best_model(
         "train_participants": str(best_row["train_participants"]),
         "val_participants": str(best_row["val_participants"]),
         "test_participants": str(best_row["test_participants"]),
+    }
+    (export_dir / "model_meta.json").write_text(
+        json.dumps(meta, indent=2), encoding="utf-8"
+    )
+    return meta
+
+
+def export_production_model(
+    production_summary_json: Path,
+    export_dir: Path,
+) -> dict[str, Any]:
+    payload = json.loads(production_summary_json.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"Expected JSON object in {production_summary_json}")
+
+    model_path_raw = str(payload.get("model_path", "")).strip()
+    if not model_path_raw:
+        raise KeyError(
+            f"'model_path' is missing in production summary: {production_summary_json}"
+        )
+
+    src_model = Path(model_path_raw)
+    if not src_model.is_absolute():
+        src_model = (production_summary_json.parent / src_model).resolve()
+    if not src_model.exists():
+        raise FileNotFoundError(f"Production model path not found: {src_model}")
+
+    export_dir.mkdir(parents=True, exist_ok=True)
+    dst_model = export_dir / "best_model.keras"
+    shutil.copy2(src_model, dst_model)
+
+    model = tf.keras.models.load_model(dst_model, compile=False)
+    saved_model_dir = export_dir / "saved_model"
+    model.export(str(saved_model_dir))
+
+    meta = {
+        "source": "production_full_dataset",
+        "labels": LABELS,
+        "keras_model_path": str(dst_model),
+        "saved_model_path": str(saved_model_dir),
+        "source_production_summary_json": str(production_summary_json),
+        "run_id": payload.get("run_id"),
+        "strategy": payload.get("strategy"),
+        "num_training_rows": payload.get("num_training_rows"),
+        "class_counts": payload.get("class_counts"),
+        "train_accuracy": payload.get("train_accuracy"),
+        "train_macro_f1": payload.get("train_macro_f1"),
+        "train_macro_precision": payload.get("train_macro_precision"),
+        "train_macro_recall": payload.get("train_macro_recall"),
+        "train_balanced_accuracy": payload.get("train_balanced_accuracy"),
     }
     (export_dir / "model_meta.json").write_text(
         json.dumps(meta, indent=2), encoding="utf-8"

@@ -1,46 +1,58 @@
+import { useState } from 'react';
+import {
+  ChevronUp,
+  ChevronDown,
+  LayoutDashboard,
+  MessageSquareText,
+  PanelRightOpen,
+  Timer,
+} from 'lucide-react';
 import type { InferencePredictionPayload } from '../../services/inference-focus-tracker';
 
+type MainView = 'chat' | 'dashboard';
+
 type ChatMainHeaderProps = {
-  mainView: 'chat' | 'dashboard';
+  mainView: MainView;
   currentChatName?: string;
+  selectedModel: string;
+  modelOptions: string[];
   focusBusy: boolean;
   isFocusActive: boolean;
   activeTrackerLabel: string | null;
   focusElapsedMs: number;
   lastPose: InferencePredictionPayload | null;
-  settingsOpen: boolean;
-  cameraPreviewEnabled: boolean;
-  settingsRef: React.RefObject<HTMLDivElement>;
-  settingsIconSrc: string;
-  onToggleMainView: () => void;
-  onStartFocus: () => void;
-  onStopFocus: () => void;
-  onToggleSettings: () => void;
-  onToggleCameraPreview: () => void;
-  onSignOut: () => void;
+  isRightSidebarOpen: boolean;
+  canToggleRightSidebar: boolean;
+  onChangeModel: (value: string) => void;
+  onChangeMainView: (nextView: MainView) => void;
+  onToggleRightSidebar: () => void;
   formatDuration: (ms: number) => string;
 };
 
 export default function ChatMainHeader({
   mainView,
   currentChatName,
+  selectedModel,
+  modelOptions,
   focusBusy,
   isFocusActive,
   activeTrackerLabel,
   focusElapsedMs,
   lastPose,
-  settingsOpen,
-  cameraPreviewEnabled,
-  settingsRef,
-  settingsIconSrc,
-  onToggleMainView,
-  onStartFocus,
-  onStopFocus,
-  onToggleSettings,
-  onToggleCameraPreview,
-  onSignOut,
+  isRightSidebarOpen,
+  canToggleRightSidebar,
+  onChangeModel,
+  onChangeMainView,
+  onToggleRightSidebar,
   formatDuration,
 }: ChatMainHeaderProps) {
+  const [isModelPickerOpen, setIsModelPickerOpen] = useState(false);
+  const navBtnClass = (view: MainView) =>
+    `chat-header-btn ${mainView === view ? 'chat-header-btn-primary' : ''}`;
+  const subtitleText = mainView === 'dashboard'
+    ? 'Visualize focus sessions captured from your webcam.'
+    : (currentChatName ? '' : 'Choose an existing chat or create a new one to get started');
+
   return (
     <div className="chat-header">
       <div className="chat-header-inner">
@@ -48,86 +60,82 @@ export default function ChatMainHeader({
           <h2 className="chat-header-title">
             {mainView === 'dashboard' ? 'Focus dashboard' : (currentChatName || 'Select a Chat')}
           </h2>
-          <p className="chat-header-subtitle">
-            {mainView === 'dashboard'
-              ? 'Visualize focus sessions captured from your webcam.'
-              : (currentChatName ? 'AI Study Buddy' : 'Choose an existing chat or create a new one to get started')}
-          </p>
+          {subtitleText && <p className="chat-header-subtitle">{subtitleText}</p>}
+          {mainView === 'chat' && (
+            <div className="chat-header-model-row">
+              <div className="chat-header-model-picker">
+                <select
+                  id="chat-header-model-select"
+                  className="chat-header-model-select"
+                  value={selectedModel}
+                  onChange={(event) => {
+                    onChangeModel(event.target.value);
+                    setIsModelPickerOpen(false);
+                  }}
+                  onFocus={() => setIsModelPickerOpen(true)}
+                  onBlur={() => setIsModelPickerOpen(false)}
+                  onMouseDown={() => setIsModelPickerOpen(true)}
+                  aria-label="Select AI model"
+                >
+                  {modelOptions.map((modelName) => (
+                    <option key={modelName} value={modelName}>
+                      {modelName}
+                    </option>
+                  ))}
+                </select>
+                {isModelPickerOpen ? (
+                  <ChevronUp size={14} aria-hidden="true" className="chat-header-model-caret" />
+                ) : (
+                  <ChevronDown size={14} aria-hidden="true" className="chat-header-model-caret" />
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="chat-header-right">
           <div className="chat-header-controls">
             <div className="chat-header-row">
               <button
-                onClick={onToggleMainView}
-                className="chat-header-btn"
+                onClick={() => onChangeMainView('chat')}
+                className={navBtnClass('chat')}
                 disabled={focusBusy}
                 type="button"
               >
-                {mainView === 'dashboard' ? 'Back to chat' : 'Dashboard'}
+                <MessageSquareText size={16} aria-hidden="true" />
+                <span>Chat</span>
               </button>
-
-              {!isFocusActive ? (
+              <button
+                onClick={() => onChangeMainView('dashboard')}
+                className={navBtnClass('dashboard')}
+                disabled={focusBusy}
+                type="button"
+              >
+                <LayoutDashboard size={16} aria-hidden="true" />
+                <span>Dashboard</span>
+              </button>
+              {!isRightSidebarOpen && (
                 <button
-                  onClick={onStartFocus}
-                  className="chat-header-btn chat-header-btn-primary"
-                  disabled={focusBusy}
+                  onClick={onToggleRightSidebar}
+                  className="chat-header-btn chat-header-btn-icon-only"
+                  disabled={!canToggleRightSidebar}
+                  type="button"
+                  title="Show right panel"
+                  aria-label="Show right panel"
                 >
-                  Start Focus
-                </button>
-              ) : (
-                <button
-                  onClick={onStopFocus}
-                  className="chat-header-btn chat-header-btn-danger"
-                  disabled={focusBusy}
-                >
-                  Stop Focus
+                  <PanelRightOpen size={16} aria-hidden="true" />
                 </button>
               )}
-
-              <div className="chat-settings" ref={settingsRef}>
-                <button
-                  className="chat-header-btn chat-settings-btn"
-                  type="button"
-                  aria-label="Settings"
-                  aria-haspopup="menu"
-                  aria-expanded={settingsOpen}
-                  onClick={onToggleSettings}
-                  disabled={focusBusy}
-                  title="Settings"
-                >
-                  <img src={settingsIconSrc} alt="" className="chat-settings-icon" />
-                </button>
-
-                {settingsOpen && (
-                  <div className="chat-settings-menu" role="menu" aria-label="Settings menu">
-                    <button
-                      type="button"
-                      className="chat-settings-item"
-                      role="menuitem"
-                      onClick={onToggleCameraPreview}
-                      disabled={focusBusy}
-                    >
-                      Camera preview: {cameraPreviewEnabled ? 'On' : 'Off'}
-                    </button>
-                    <button
-                      type="button"
-                      className="chat-settings-item chat-settings-item-danger"
-                      role="menuitem"
-                      onClick={onSignOut}
-                    >
-                      Sign out
-                    </button>
-                  </div>
-                )}
-              </div>
             </div>
 
             {isFocusActive && (
               <div className="chat-header-meta">
                 <span className="chat-header-pill">Focus active</span>
                 <span>{activeTrackerLabel ?? 'Webcam tracking'}</span>
-                <span>Duration: {formatDuration(focusElapsedMs)}</span>
+                <span className="chat-header-meta-inline">
+                  <Timer size={14} aria-hidden="true" />
+                  <span>Duration: {formatDuration(focusElapsedMs)}</span>
+                </span>
                 {lastPose && (
                   <span>
                     Pose: {lastPose.smoothed_label} ({Math.round(lastPose.smoothed_confidence * 100)}%)

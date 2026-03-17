@@ -11,8 +11,17 @@ import {
   Pie,
   Cell,
 } from 'recharts';
-import { collection, onSnapshot, query, Timestamp, where } from 'firebase/firestore';
+import { collection, doc, onSnapshot, query, Timestamp, where } from 'firebase/firestore';
 import { db } from '../firebase-config';
+import type { GamificationBadgeId, GamificationProfile } from '../types';
+import badgeFirstFocusDay from '../public/badges/image.png';
+import badgeStreak3 from '../public/badges/image copy.png';
+import badgeStreak7 from '../public/badges/image copy 2.png';
+import badgeStreak14 from '../public/badges/image copy 3.png';
+import badgeStreak30 from '../public/badges/image copy 4.png';
+import badgeWeeklyGoal from '../public/badges/image copy 5.png';
+import badgeFocus300 from '../public/badges/image copy 6.png';
+import badgeFocus1000 from '../public/badges/image copy 7.png';
 import './FocusDashboard.css';
 
 const COLORS: Record<string, string> = {
@@ -22,6 +31,39 @@ const COLORS: Record<string, string> = {
   away_up: '#A78BFA', // purple
   away_down: '#60A5FA', // blue
   away_unknown: '#9CA3AF', // gray
+};
+
+const CHART_COLORS = {
+  grid: 'rgba(167, 176, 192, 0.22)',
+  axis: '#A7B0C0',
+  line: '#77BCFF',
+  tooltipBg: '#1F2430',
+  tooltipBorder: '#3D455A',
+  tooltipText: '#E6E8EE',
+  pieStroke: '#151821',
+  fallback: '#A7B0C0',
+};
+
+const GAMIFICATION_BADGE_META: Record<GamificationBadgeId, { title: string; hint: string }> = {
+  first_focus_day: { title: 'First Focus Day', hint: 'Hit 25 focused minutes in one day.' },
+  streak_3: { title: '3-Day Streak', hint: 'Qualify 3 days in a row.' },
+  streak_7: { title: '7-Day Streak', hint: 'Qualify 7 days in a row.' },
+  streak_14: { title: '14-Day Streak', hint: 'Qualify 14 days in a row.' },
+  streak_30: { title: '30-Day Streak', hint: 'Qualify 30 days in a row.' },
+  weekly_goal_1: { title: 'Weekly Goal', hint: 'Hit one weekly focused-minute goal.' },
+  focus_300m: { title: '300 Focus Minutes', hint: 'Reach 300 total focused minutes.' },
+  focus_1000m: { title: '1000 Focus Minutes', hint: 'Reach 1000 total focused minutes.' },
+};
+
+const GAMIFICATION_BADGE_IMAGE_BY_ID: Record<GamificationBadgeId, string> = {
+  first_focus_day: badgeFirstFocusDay,
+  streak_3: badgeStreak3,
+  streak_7: badgeStreak7,
+  streak_14: badgeStreak14,
+  streak_30: badgeStreak30,
+  weekly_goal_1: badgeWeeklyGoal,
+  focus_300m: badgeFocus300,
+  focus_1000m: badgeFocus1000,
 };
 
 type FocusSummaryDoc = {
@@ -100,6 +142,8 @@ export default function FocusDashboard({ userId }: { userId: string }) {
   const [courses, setCourses] = useState<Course[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [selectedCourseId, setSelectedCourseId] = useState<string>('__all__');
+  const [gamificationProfile, setGamificationProfile] = useState<GamificationProfile | null>(null);
+  const [gamificationError, setGamificationError] = useState<string | null>(null);
 
   useEffect(() => {
     const q = query(
@@ -160,6 +204,49 @@ export default function FocusDashboard({ userId }: { userId: string }) {
     return onSnapshot(q, (snap) => {
       setSessions(snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) } as Session)));
     });
+  }, [userId]);
+
+  useEffect(() => {
+    const profileRef = doc(db, 'gamificationProfiles', userId);
+    return onSnapshot(
+      profileRef,
+      (snap) => {
+        if (!snap.exists()) {
+          setGamificationProfile(null);
+          setGamificationError(null);
+          return;
+        }
+        const data = snap.data() as any;
+        setGamificationProfile({
+          currentStreakDays: typeof data.currentStreakDays === 'number' ? data.currentStreakDays : 0,
+          longestStreakDays: typeof data.longestStreakDays === 'number' ? data.longestStreakDays : 0,
+          lastQualifiedDayKey: typeof data.lastQualifiedDayKey === 'string' ? data.lastQualifiedDayKey : null,
+          totalXp: typeof data.totalXp === 'number' ? data.totalXp : 0,
+          level: typeof data.level === 'number' ? data.level : 1,
+          levelProgressXp: typeof data.totalXp === 'number' ? (data.totalXp % 100) : 0,
+          xpToNextLevel: typeof data.totalXp === 'number' ? ((100 - (data.totalXp % 100)) || 100) : 100,
+          totalFocusedMinutes: typeof data.totalFocusedMinutes === 'number' ? data.totalFocusedMinutes : 0,
+          weeklyGoal: {
+            targetMinutes: typeof data.weeklyGoalTargetMinutes === 'number' ? data.weeklyGoalTargetMinutes : 180,
+            weekKey: typeof data.currentWeekKey === 'string' ? data.currentWeekKey : '',
+            weekStartDayKey: typeof data.currentWeekStartDayKey === 'string' ? data.currentWeekStartDayKey : '',
+            focusedMinutes: typeof data.currentWeekFocusedMinutes === 'number' ? data.currentWeekFocusedMinutes : 0,
+            completedAt:
+              data.currentWeekCompletedAt instanceof Timestamp
+                ? data.currentWeekCompletedAt.toDate().toISOString()
+                : data.currentWeekCompletedAt instanceof Date
+                  ? data.currentWeekCompletedAt.toISOString()
+                  : null,
+          },
+          unlockedBadges: Array.isArray(data.unlockedBadges) ? data.unlockedBadges : [],
+        });
+        setGamificationError(null);
+      },
+      (err) => {
+        setGamificationProfile(null);
+        setGamificationError(err?.message || 'Failed to load gamification progress');
+      }
+    );
   }, [userId]);
 
   const courseNameById = useMemo(() => {
@@ -233,7 +320,7 @@ export default function FocusDashboard({ userId }: { userId: string }) {
         name: k === 'screen' ? 'Screen' : fmtAwayLabel(k),
         value: (counts as any)[k] as number,
         pct: Math.round((((counts as any)[k] as number) / total) * 100),
-        color: COLORS[k] ?? '#111827',
+        color: COLORS[k] ?? CHART_COLORS.fallback,
       }))
       .filter((x) => x.value > 0);
   }, [latest]);
@@ -251,6 +338,17 @@ export default function FocusDashboard({ userId }: { userId: string }) {
         : 0;
     return { focusedMs, distractedMs, avgFocusPercent };
   }, [filtered]);
+
+  const weeklyTarget = gamificationProfile?.weeklyGoal.targetMinutes ?? 180;
+  const weeklyFocused = Math.max(0, gamificationProfile?.weeklyGoal.focusedMinutes ?? 0);
+  const weeklyPercent = Math.min(100, Math.round((weeklyFocused / Math.max(1, weeklyTarget)) * 100));
+  const levelProgressPct = Math.min(100, Math.max(0, Math.round(((gamificationProfile?.levelProgressXp ?? 0) / 100) * 100)));
+  const orderedBadges = (Object.keys(GAMIFICATION_BADGE_META) as GamificationBadgeId[]).map((badgeId) => ({
+      id: badgeId,
+      unlocked: (gamificationProfile?.unlockedBadges ?? []).includes(badgeId),
+      image: GAMIFICATION_BADGE_IMAGE_BY_ID[badgeId],
+      ...GAMIFICATION_BADGE_META[badgeId],
+    }));
 
   return (
     <div className="focusdash">
@@ -297,6 +395,78 @@ export default function FocusDashboard({ userId }: { userId: string }) {
         </div>
       </div>
 
+      <div className="focusdash-card focusdash-gamification">
+        <div className="focusdash-card-title">Focus Progress</div>
+        {gamificationError ? (
+          <div className="focusdash-card-hint">{gamificationError}</div>
+        ) : !gamificationProfile ? (
+          <div className="focusdash-card-hint">
+            Start and complete a focus session to initialize streaks, XP, and badges.
+          </div>
+        ) : (
+          <>
+            <div className="focusdash-gamification-grid">
+              <div className="focusdash-stat">
+                <div className="focusdash-stat-label">Current streak</div>
+                <div className="focusdash-stat-value">{gamificationProfile.currentStreakDays} days</div>
+              </div>
+              <div className="focusdash-stat">
+                <div className="focusdash-stat-label">Longest streak</div>
+                <div className="focusdash-stat-value">{gamificationProfile.longestStreakDays} days</div>
+              </div>
+              <div className="focusdash-stat">
+                <div className="focusdash-stat-label">Level</div>
+                <div className="focusdash-stat-value">Lv {gamificationProfile.level}</div>
+              </div>
+              <div className="focusdash-stat">
+                <div className="focusdash-stat-label">Weekly goal</div>
+                <div className="focusdash-stat-value">{weeklyFocused}/{weeklyTarget} min</div>
+              </div>
+            </div>
+
+            <div className="focusdash-level">
+              <div className="focusdash-level-head">
+                <span>XP progress ({gamificationProfile.levelProgressXp}/100)</span>
+                <span>{gamificationProfile.xpToNextLevel} XP to next level</span>
+              </div>
+              <div className="focusdash-progress-track">
+                <div className="focusdash-progress-fill" style={{ width: `${levelProgressPct}%` }} />
+              </div>
+            </div>
+
+            <div className="focusdash-level">
+              <div className="focusdash-level-head">
+                <span>Weekly progress ({gamificationProfile.weeklyGoal.weekKey || 'This week'})</span>
+                <span>{weeklyPercent}%</span>
+              </div>
+              <div className="focusdash-progress-track">
+                <div className="focusdash-progress-fill focusdash-progress-fill--goal" style={{ width: `${weeklyPercent}%` }} />
+              </div>
+            </div>
+
+            <div className="focusdash-badges">
+              {orderedBadges.map((badge) => (
+                <div
+                  key={badge.id}
+                  className={`focusdash-badge-chip ${badge.unlocked ? 'focusdash-badge-chip--unlocked' : ''}`}
+                  title={badge.hint}
+                  style={{
+                    backgroundImage: `linear-gradient(180deg, ${
+                      badge.unlocked
+                        ? 'rgba(8, 20, 33, 0.30), rgba(8, 20, 33, 0.56)'
+                        : 'rgba(8, 20, 33, 0.62), rgba(8, 20, 33, 0.86)'
+                    }), url(${badge.image})`,
+                  }}
+                >
+                  <div className="focusdash-badge-chip-title">{badge.title}</div>
+                  <div className="focusdash-badge-chip-hint">{badge.unlocked ? 'Unlocked' : 'Locked'}</div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+
       {summariesError ? (
         <div className="focusdash-empty">
           <div className="focusdash-empty-title">Couldn’t load focus summaries</div>
@@ -317,19 +487,19 @@ export default function FocusDashboard({ userId }: { userId: string }) {
               <div className="focusdash-chart">
                 <ResponsiveContainer width="100%" height={260}>
                   <LineChart data={series}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
+                    <CartesianGrid strokeDasharray="3 3" stroke={CHART_COLORS.grid} />
                     <XAxis
                       dataKey="when"
                       type="number"
                       domain={['dataMin', 'dataMax']}
-                      tick={{ fontSize: 12, fill: '#111827' }}
+                      tick={{ fontSize: 12, fill: CHART_COLORS.axis }}
                       tickFormatter={(v) => {
                         const n = typeof v === 'number' ? v : Number(v);
                         if (!Number.isFinite(n)) return '';
                         return formatShortDate(new Date(n));
                       }}
                     />
-                    <YAxis domain={[0, 100]} tick={{ fontSize: 12, fill: '#111827' }} />
+                    <YAxis domain={[0, 100]} tick={{ fontSize: 12, fill: CHART_COLORS.axis }} />
                     <Tooltip
                       labelFormatter={(v) => {
                         const n = typeof v === 'number' ? v : Number(v);
@@ -342,14 +512,14 @@ export default function FocusDashboard({ userId }: { userId: string }) {
                         return [`${Math.round(n)}%`, 'Focus %'];
                       }}
                       contentStyle={{
-                        background: '#FFFFFF',
-                        border: '1px solid rgba(17, 24, 39, 0.14)',
+                        background: CHART_COLORS.tooltipBg,
+                        border: `1px solid ${CHART_COLORS.tooltipBorder}`,
                         borderRadius: 10,
-                        color: '#111827',
+                        color: CHART_COLORS.tooltipText,
                       }}
-                      labelStyle={{ color: '#111827', fontWeight: 700 }}
+                      labelStyle={{ color: CHART_COLORS.tooltipText, fontWeight: 700 }}
                     />
-                    <Line type="monotone" dataKey="focusPercent" stroke="#111827" strokeWidth={2.5} dot={false} />
+                    <Line type="monotone" dataKey="focusPercent" stroke={CHART_COLORS.line} strokeWidth={2.5} dot={false} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -372,14 +542,14 @@ export default function FocusDashboard({ userId }: { userId: string }) {
                           cy="50%"
                           outerRadius={80}
                           innerRadius={42}
-                          stroke="#111827"
+                          stroke={CHART_COLORS.pieStroke}
                           strokeWidth={1}
                         >
                           {lastAttentionPie.map((entry) => (
                             <Cell
                               key={entry.key}
-                              fill={(entry as any).color ?? '#111827'}
-                              stroke="#111827"
+                              fill={(entry as any).color ?? CHART_COLORS.fallback}
+                              stroke={CHART_COLORS.pieStroke}
                               strokeWidth={1}
                             />
                           ))}
@@ -391,12 +561,12 @@ export default function FocusDashboard({ userId }: { userId: string }) {
                             return [`${value} frames (${pct ?? 0}%)`, dir];
                           }}
                           contentStyle={{
-                            background: '#FFFFFF',
-                            border: '1px solid #111827',
+                            background: CHART_COLORS.tooltipBg,
+                            border: `1px solid ${CHART_COLORS.tooltipBorder}`,
                             borderRadius: 10,
-                            color: '#111827',
+                            color: CHART_COLORS.tooltipText,
                           }}
-                          labelStyle={{ color: '#111827', fontWeight: 700 }}
+                          labelStyle={{ color: CHART_COLORS.tooltipText, fontWeight: 700 }}
                         />
                       </PieChart>
                     </ResponsiveContainer>
@@ -494,4 +664,3 @@ export default function FocusDashboard({ userId }: { userId: string }) {
     </div>
   );
 }
-
