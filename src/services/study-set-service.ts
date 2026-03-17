@@ -6,6 +6,7 @@ export type StudySetPreset = 'quick' | 'standard' | 'exam';
 type GenerateStudySetParams = {
   userId: string;
   chatId: string;
+  model?: string;
   preset?: StudySetPreset;
 };
 
@@ -29,6 +30,7 @@ function presetCounts(preset: StudySetPreset): { quizCount: number; flashcardCou
 export async function generateStudySet({
   userId,
   chatId,
+  model,
   preset = 'standard',
 }: GenerateStudySetParams): Promise<{ studySetId: string }> {
   const counts = presetCounts(preset);
@@ -40,6 +42,7 @@ export async function generateStudySet({
       quizCount: counts.quizCount,
       flashcardCount: counts.flashcardCount,
       examCount: counts.examCount,
+      model,
     }),
   });
 

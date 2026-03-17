@@ -31,9 +31,67 @@ const db = getFirestore();
 const storage = getStorage();
 const MAIN_THREAD = "main";
 
-const MODEL_NAME = process.env.OPENAI_MODEL || "gpt-4o-mini";
-const CHAT_MODEL = openAI.model(MODEL_NAME);
-const OCR_MODEL_NAME = process.env.OPENAI_OCR_MODEL || MODEL_NAME;
+const DEFAULT_MODEL_NAME = (process.env.OPENAI_MODEL || "gpt-4o-mini").trim() || "gpt-4o-mini";
+const MODEL_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{1,100}$/;
+const FALLBACK_ALLOWED_MODELS = [
+  "gpt-4o-mini",
+  "gpt-4o",
+  "gpt-4.1-nano",
+  "gpt-4.1-mini",
+  "gpt-4.1",
+  "gpt-5-nano",
+  "gpt-5-mini",
+  "gpt-5",
+  "gpt-5.1",
+  "gpt-5.2",
+  "gpt-5.4",
+];
+
+function parseModelNameList(raw: string | undefined): string[] {
+  if (!raw) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const token of raw.split(",")) {
+    const modelName = token.trim();
+    if (!modelName || seen.has(modelName)) continue;
+    seen.add(modelName);
+    out.push(modelName);
+  }
+  return out;
+}
+
+function uniqueModelNames(candidates: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const candidate of candidates) {
+    if (!candidate || seen.has(candidate)) continue;
+    seen.add(candidate);
+    out.push(candidate);
+  }
+  return out;
+}
+
+const configuredAllowedModels = parseModelNameList(process.env.OPENAI_ALLOWED_MODELS);
+const ALLOWED_CHAT_MODEL_NAMES = configuredAllowedModels.length > 0
+  ? uniqueModelNames([DEFAULT_MODEL_NAME, ...configuredAllowedModels])
+  : uniqueModelNames([DEFAULT_MODEL_NAME, ...FALLBACK_ALLOWED_MODELS]);
+const ALLOWED_CHAT_MODEL_SET = new Set(ALLOWED_CHAT_MODEL_NAMES);
+
+function getChatModel(modelName: string) {
+  return openAI.model(modelName);
+}
+
+function resolveRequestedChatModelName(value: unknown): string {
+  if (typeof value !== "string") return DEFAULT_MODEL_NAME;
+  const requested = value.trim();
+  if (!requested) return DEFAULT_MODEL_NAME;
+  if (!MODEL_NAME_PATTERN.test(requested)) return DEFAULT_MODEL_NAME;
+  if (!ALLOWED_CHAT_MODEL_SET.has(requested)) return DEFAULT_MODEL_NAME;
+  return requested;
+}
+
+const CHAT_MODEL = getChatModel(DEFAULT_MODEL_NAME);
+const OCR_MODEL_NAME = (process.env.OPENAI_OCR_MODEL || DEFAULT_MODEL_NAME).trim() || DEFAULT_MODEL_NAME;
 
 const ai = genkit({
   plugins: [openAI({
@@ -1065,11 +1123,13 @@ function buildRagUserPrompt(question: string, citations: RagCitation[]): string 
     .join("\n\n");
 
   return [
-    "Use the context snippets below to answer the question.",
+    "You may use the context snippets below as optional supporting references.",
     "Rules:",
-    "- Use only the provided snippets for factual claims.",
-    "- If information is missing, clearly say you do not know from the uploaded material.",
-    "- Cite supporting snippets inline using [C#] markers.",
+    "- Answer normally; general knowledge is allowed.",
+    "- Use snippets when they are relevant to the user's question.",
+    "- Cite snippet-backed claims inline with [C#] markers.",
+    "- Do not invent citations or claim a snippet says something it does not.",
+    "- If the user explicitly asks about uploaded material and needed info is missing, say that clearly.",
     "",
     "Context snippets:",
     context,
@@ -1088,9 +1148,7 @@ function selectFinalCitations(answerText: string, citations: RagCitation[]): Rag
     match = regex.exec(answerText);
   }
 
-  if (used.size === 0) {
-    return citations.slice(0, Math.min(3, citations.length));
-  }
+  if (used.size === 0) return [];
 
   return citations.filter((citation) => used.has(citation.id));
 }
@@ -2135,7 +2193,7 @@ export const materialDelete = onRequest(
 
 /**
  * POST /studyGenerate
- * Body: { userId: string, chatId: string, quizCount?: number, flashcardCount?: number, examCount?: number }
+ * Body: { userId: string, chatId: string, quizCount?: number, flashcardCount?: number, examCount?: number, model?: string }
  */
 export const studyGenerate = onRequest(
   FUNCTION_CONFIG,
@@ -2148,6 +2206,8 @@ export const studyGenerate = onRequest(
     const body = req.body || {};
     const userId = asRequiredString(body.userId);
     const chatId = asRequiredString(body.chatId);
+    const selectedModelName = resolveRequestedChatModelName(body.model);
+    const selectedChatModel = getChatModel(selectedModelName);
     const quizCount = clampInteger(asOptionalNumber(body.quizCount), DEFAULT_QUIZ_COUNT, 4, 20);
     const flashcardCount = clampInteger(asOptionalNumber(body.flashcardCount), DEFAULT_FLASHCARD_COUNT, 6, 30);
     const examCount = clampInteger(asOptionalNumber(body.examCount), DEFAULT_EXAM_COUNT, 2, 10);
@@ -2181,7 +2241,7 @@ export const studyGenerate = onRequest(
       flashcards: [],
       examQuestions: [],
       sources: [],
-      model: MODEL_NAME,
+      model: selectedModelName,
       generationMs: null,
       errorMessage: null,
       createdAt: now,
@@ -2216,7 +2276,7 @@ export const studyGenerate = onRequest(
 
       const startedAtMs = Date.now();
       const generation: GenerateResponse = await ai.generate({
-        model: CHAT_MODEL,
+        model: selectedChatModel,
         system: "You create source-grounded study materials. Return JSON only.",
         prompt,
         config: {
@@ -2361,6 +2421,8 @@ export const chat = onRequest(
       const sessionId = asRequiredString(body.sessionId);
       const message = asRequiredString(body.message);
       const userId = asRequiredString(body.userId);
+      const selectedModelName = resolveRequestedChatModelName(body.model);
+      const selectedChatModel = getChatModel(selectedModelName);
       if (!sessionId || !message || !userId) {
         sendErrorResponse(res, 400, "Missing required fields: sessionId, message, userId");
         return;
@@ -2394,11 +2456,11 @@ export const chat = onRequest(
       let fullText = "";
       const modelMessages = toGenkitMessages(chatHistory, ragPrompt);
       const generationOptions: GenerateOptions = {
-        model: CHAT_MODEL,
+        model: selectedChatModel,
         system:
           ragCitations.length > 0
-            ? `${SYSTEM_INSTRUCTION}\n\nWhen context snippets are included by the user message, use only those snippets for factual claims and cite them using [C#].`
-            : `${SYSTEM_INSTRUCTION}\n\nIf the question requires course-specific source material and none is available, clearly state that and ask for upload.`,
+            ? `${SYSTEM_INSTRUCTION}\n\nUploaded-material snippets may be included as optional references. Use them when relevant and cite snippet-backed claims with [C#]. You can still answer with general knowledge for topics outside the snippets.`
+            : `${SYSTEM_INSTRUCTION}\n\nAnswer normally using general knowledge. If the user asks about uploaded files and no relevant snippets are available, say that and suggest uploading/indexing the material.`,
         messages: modelMessages,
         config: { temperature: 0.5 },
         onChunk: (chunk: GenerateResponseChunk) => {
@@ -2419,7 +2481,7 @@ export const chat = onRequest(
       if (isNewChat) {
         try {
           const titleOptions: GenerateOptions = {
-            model: CHAT_MODEL,
+            model: selectedChatModel,
             system: "You are a helpful assistant that generates short, concise titles for chat sessions.",
             prompt: `Generate a short, concise title (max 6 words) for a chat based on this initial user message: "${message}". Do not use quotes.`,
             config: { temperature: 0.2, maxOutputTokens: 24 },
@@ -2458,7 +2520,7 @@ export const chat = onRequest(
         `data: ${JSON.stringify({
           text: "",
           done: true,
-          model: MODEL_NAME,
+          model: selectedModelName,
           sessionId: session.id,
           fullText,
           newSessionName,

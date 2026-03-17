@@ -18,6 +18,7 @@ interface ChatRequest {
   sessionId: string;
   message: string;
   userId: string;
+  model?: string;
 }
 
 function parseCitations(input: unknown): Citation[] {
@@ -65,12 +66,13 @@ export async function getAIResponse(
   userMessage: string,
   sessionId: string,
   userId: string,
+  model?: string,
   onChunk?: (text: string) => void
 ): Promise<AIResponse> {
   try {
     const response = await fetchFunctionsEndpoint('/chat', {
       method: 'POST',
-      body: JSON.stringify({ sessionId, message: userMessage, userId } as ChatRequest),
+      body: JSON.stringify({ sessionId, message: userMessage, userId, model } as ChatRequest),
     });
 
     if (response.headers.get('content-type')?.includes('text/event-stream')) {

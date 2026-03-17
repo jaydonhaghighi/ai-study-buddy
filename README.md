@@ -96,7 +96,7 @@ The backend uses Firebase Cloud Functions (HTTP functions) for chat and focus se
 ### Cloud Functions endpoints
 
 - `POST /chat`
-  - Input: `sessionId`, `message`, `userId`
+  - Input: `sessionId`, `message`, `userId`, optional `model`
   - Output: streamed SSE chunks + final message metadata
 - `POST /focusStart`
   - Input: `userId`, optional `courseId`, optional `sessionId`
@@ -154,7 +154,9 @@ The backend uses Firebase Cloud Functions (HTTP functions) for chat and focus se
 - Functions runtime: Node.js 20, TypeScript
 - Platform services: Firestore, Firebase Auth
 - Required secret: `OPENAI_API_KEY`
-- Optional model override: `OPENAI_MODEL` (defaults to `gpt-4o-mini`)
+- Optional default chat model: `OPENAI_MODEL` (defaults to `gpt-4o-mini`)
+- Optional chat model allow-list: `OPENAI_ALLOWED_MODELS` (comma-separated)
+- Optional frontend model picker list: `VITE_OPENAI_CHAT_MODELS` (comma-separated)
 
 ## ML Pipeline
 

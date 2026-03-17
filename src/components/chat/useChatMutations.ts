@@ -20,6 +20,7 @@ type UseChatMutationsParams = {
   expandedCourseId: string | null;
   expandedSessionId: string | null;
   selectedChatId: string | null;
+  selectedModel: string;
   input: string;
   newCourseName: string;
   newSessionName: string;
@@ -42,6 +43,7 @@ export function useChatMutations({
   expandedCourseId,
   expandedSessionId,
   selectedChatId,
+  selectedModel,
   input,
   newCourseName,
   newSessionName,
@@ -147,7 +149,7 @@ export function useChatMutations({
       }]);
 
       let streamingText = '';
-      const response = await getAIResponse(userMessage, selectedChatId, user.uid, (chunk) => {
+      const response = await getAIResponse(userMessage, selectedChatId, user.uid, selectedModel, (chunk) => {
         streamingText += chunk;
         setMessages((prev) => prev.map((m) => (m.id === tempId ? { ...m, text: streamingText } : m)));
       });

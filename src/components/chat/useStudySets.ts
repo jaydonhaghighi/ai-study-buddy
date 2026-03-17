@@ -37,6 +37,7 @@ type UseStudySetsParams = {
   user: User | null;
   selectedChatId: string | null;
   currentChat: CurrentChatLike | null;
+  selectedModel: string;
   showToast: (message: string, variant?: ToastVariant) => void;
 };
 
@@ -192,6 +193,7 @@ export function useStudySets({
   user,
   selectedChatId,
   currentChat,
+  selectedModel,
   showToast,
 }: UseStudySetsParams) {
   const [studySets, setStudySets] = useState<StudySet[]>([]);
@@ -265,6 +267,7 @@ export function useStudySets({
       const result = await generateStudySet({
         userId: user.uid,
         chatId: selectedChatId,
+        model: selectedModel,
         preset,
       });
       setActiveStudySetId(result.studySetId);
@@ -275,7 +278,7 @@ export function useStudySets({
     } finally {
       setStudySetGenerating(false);
     }
-  }, [currentChat, selectedChatId, showToast, user]);
+  }, [currentChat, selectedChatId, selectedModel, showToast, user]);
 
   const handleReviewFlashcard = useCallback(async (
     studySetId: string,

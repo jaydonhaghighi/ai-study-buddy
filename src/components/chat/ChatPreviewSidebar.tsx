@@ -76,7 +76,7 @@ export default function ChatPreviewSidebar({
   if (studyContent) {
     tabs.push({
       id: 'study',
-      title: 'Study Mode',
+      title: 'Study',
       icon: <Timer size={15} aria-hidden="true" />,
       content: (
         <>
@@ -113,7 +113,6 @@ export default function ChatPreviewSidebar({
   return (
     <div className="preview-sidebar" aria-label="Right side panel">
       <div className="preview-sidebar-header">
-        <h3>Study Panel</h3>
         <button
           type="button"
           className="preview-sidebar-close-btn"
@@ -141,18 +140,12 @@ export default function ChatPreviewSidebar({
         ))}
       </div>
 
-      <div className="preview-sidebar-body">
-        {tabs.map((tab) => (
-          <div
-            key={tab.id}
-            role="tabpanel"
-            aria-hidden={tab.id !== activeTab?.id}
-            className={`preview-sidebar-section ${tab.id === activeTab?.id ? '' : 'preview-sidebar-section-hidden'}`}
-          >
-            <h4 className="preview-sidebar-subtitle">{tab.title}</h4>
-            {tab.content}
-          </div>
-        ))}
+      <div
+        className="preview-sidebar-body"
+        role="tabpanel"
+        aria-label={activeTab?.title ?? 'Side panel content'}
+      >
+        {activeTab?.content}
       </div>
     </div>
   );

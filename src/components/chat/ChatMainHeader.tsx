@@ -1,14 +1,10 @@
+import { useState } from 'react';
 import {
-  Camera,
-  CameraOff,
+  ChevronUp,
+  ChevronDown,
   LayoutDashboard,
-  LogOut,
   MessageSquareText,
-  PanelLeftClose,
-  PanelLeftOpen,
-  PanelRightClose,
   PanelRightOpen,
-  Settings,
   Timer,
 } from 'lucide-react';
 import type { InferencePredictionPayload } from '../../services/inference-focus-tracker';
@@ -18,50 +14,44 @@ type MainView = 'chat' | 'dashboard';
 type ChatMainHeaderProps = {
   mainView: MainView;
   currentChatName?: string;
+  selectedModel: string;
+  modelOptions: string[];
   focusBusy: boolean;
   isFocusActive: boolean;
   activeTrackerLabel: string | null;
   focusElapsedMs: number;
   lastPose: InferencePredictionPayload | null;
-  settingsOpen: boolean;
-  cameraPreviewEnabled: boolean;
-  isLeftSidebarOpen: boolean;
   isRightSidebarOpen: boolean;
   canToggleRightSidebar: boolean;
-  settingsRef: React.RefObject<HTMLDivElement>;
+  onChangeModel: (value: string) => void;
   onChangeMainView: (nextView: MainView) => void;
-  onToggleLeftSidebar: () => void;
   onToggleRightSidebar: () => void;
-  onToggleSettings: () => void;
-  onToggleCameraPreview: () => void;
-  onSignOut: () => void;
   formatDuration: (ms: number) => string;
 };
 
 export default function ChatMainHeader({
   mainView,
   currentChatName,
+  selectedModel,
+  modelOptions,
   focusBusy,
   isFocusActive,
   activeTrackerLabel,
   focusElapsedMs,
   lastPose,
-  settingsOpen,
-  cameraPreviewEnabled,
-  isLeftSidebarOpen,
   isRightSidebarOpen,
   canToggleRightSidebar,
-  settingsRef,
+  onChangeModel,
   onChangeMainView,
-  onToggleLeftSidebar,
   onToggleRightSidebar,
-  onToggleSettings,
-  onToggleCameraPreview,
-  onSignOut,
   formatDuration,
 }: ChatMainHeaderProps) {
+  const [isModelPickerOpen, setIsModelPickerOpen] = useState(false);
   const navBtnClass = (view: MainView) =>
     `chat-header-btn ${mainView === view ? 'chat-header-btn-primary' : ''}`;
+  const subtitleText = mainView === 'dashboard'
+    ? 'Visualize focus sessions captured from your webcam.'
+    : (currentChatName ? '' : 'Choose an existing chat or create a new one to get started');
 
   return (
     <div className="chat-header">
@@ -70,35 +60,42 @@ export default function ChatMainHeader({
           <h2 className="chat-header-title">
             {mainView === 'dashboard' ? 'Focus dashboard' : (currentChatName || 'Select a Chat')}
           </h2>
-          <p className="chat-header-subtitle">
-            {mainView === 'dashboard'
-              ? 'Visualize focus sessions captured from your webcam.'
-              : (currentChatName ? 'Echelon' : 'Choose an existing chat or create a new one to get started')}
-          </p>
+          {subtitleText && <p className="chat-header-subtitle">{subtitleText}</p>}
+          {mainView === 'chat' && (
+            <div className="chat-header-model-row">
+              <div className="chat-header-model-picker">
+                <select
+                  id="chat-header-model-select"
+                  className="chat-header-model-select"
+                  value={selectedModel}
+                  onChange={(event) => {
+                    onChangeModel(event.target.value);
+                    setIsModelPickerOpen(false);
+                  }}
+                  onFocus={() => setIsModelPickerOpen(true)}
+                  onBlur={() => setIsModelPickerOpen(false)}
+                  onMouseDown={() => setIsModelPickerOpen(true)}
+                  aria-label="Select AI model"
+                >
+                  {modelOptions.map((modelName) => (
+                    <option key={modelName} value={modelName}>
+                      {modelName}
+                    </option>
+                  ))}
+                </select>
+                {isModelPickerOpen ? (
+                  <ChevronUp size={14} aria-hidden="true" className="chat-header-model-caret" />
+                ) : (
+                  <ChevronDown size={14} aria-hidden="true" className="chat-header-model-caret" />
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="chat-header-right">
           <div className="chat-header-controls">
             <div className="chat-header-row">
-              <button
-                onClick={onToggleLeftSidebar}
-                className="chat-header-btn"
-                type="button"
-                title={isLeftSidebarOpen ? 'Hide left panel' : 'Show left panel'}
-              >
-                {isLeftSidebarOpen ? <PanelLeftClose size={16} aria-hidden="true" /> : <PanelLeftOpen size={16} aria-hidden="true" />}
-                <span>{isLeftSidebarOpen ? 'Hide Left' : 'Show Left'}</span>
-              </button>
-              <button
-                onClick={onToggleRightSidebar}
-                className="chat-header-btn"
-                disabled={!canToggleRightSidebar}
-                type="button"
-                title={isRightSidebarOpen ? 'Hide right panel' : 'Show right panel'}
-              >
-                {isRightSidebarOpen ? <PanelRightClose size={16} aria-hidden="true" /> : <PanelRightOpen size={16} aria-hidden="true" />}
-                <span>{isRightSidebarOpen ? 'Hide Right' : 'Show Right'}</span>
-              </button>
               <button
                 onClick={() => onChangeMainView('chat')}
                 className={navBtnClass('chat')}
@@ -117,45 +114,18 @@ export default function ChatMainHeader({
                 <LayoutDashboard size={16} aria-hidden="true" />
                 <span>Dashboard</span>
               </button>
-
-              <div className="chat-settings" ref={settingsRef}>
+              {!isRightSidebarOpen && (
                 <button
-                  className="chat-header-btn chat-settings-btn"
+                  onClick={onToggleRightSidebar}
+                  className="chat-header-btn chat-header-btn-icon-only"
+                  disabled={!canToggleRightSidebar}
                   type="button"
-                  aria-label="Settings"
-                  aria-haspopup="menu"
-                  aria-expanded={settingsOpen}
-                  onClick={onToggleSettings}
-                  disabled={focusBusy}
-                  title="Settings"
+                  title="Show right panel"
+                  aria-label="Show right panel"
                 >
-                  <Settings size={18} aria-hidden="true" />
+                  <PanelRightOpen size={16} aria-hidden="true" />
                 </button>
-
-                {settingsOpen && (
-                  <div className="chat-settings-menu" role="menu" aria-label="Settings menu">
-                    <button
-                      type="button"
-                      className="chat-settings-item"
-                      role="menuitem"
-                      onClick={onToggleCameraPreview}
-                      disabled={focusBusy}
-                    >
-                      {cameraPreviewEnabled ? <Camera size={16} aria-hidden="true" /> : <CameraOff size={16} aria-hidden="true" />}
-                      <span>Camera preview: {cameraPreviewEnabled ? 'On' : 'Off'}</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="chat-settings-item chat-settings-item-danger"
-                      role="menuitem"
-                      onClick={onSignOut}
-                    >
-                      <LogOut size={16} aria-hidden="true" />
-                      <span>Sign out</span>
-                    </button>
-                  </div>
-                )}
-              </div>
+              )}
             </div>
 
             {isFocusActive && (

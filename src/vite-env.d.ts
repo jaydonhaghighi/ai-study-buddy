@@ -11,9 +11,9 @@ interface ImportMetaEnv {
   readonly VITE_INFERENCE_API_BASE_URL?: string;
   readonly VITE_INFERENCE_FACE_CROP?: string;
   readonly VITE_INFERENCE_MIRROR_INPUT?: string;
+  readonly VITE_OPENAI_CHAT_MODELS?: string;
 }
 
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
-

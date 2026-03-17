@@ -2,9 +2,12 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { auth } from '../firebase-config';
 import { User, signOut } from 'firebase/auth';
 import {
+  Camera,
   FolderPlus,
+  LogOut,
   PanelLeftOpen,
   Search,
+  Settings,
   X,
 } from 'lucide-react';
 import FocusDashboard from './FocusDashboard';
@@ -45,6 +48,40 @@ function formatDuration(ms: number): string {
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 }
 
+const DEFAULT_OPENAI_CHAT_MODEL = 'gpt-4o-mini';
+const FALLBACK_OPENAI_CHAT_MODELS = [
+  'gpt-4o-mini',
+  'gpt-4o',
+  'gpt-4.1-nano',
+  'gpt-4.1-mini',
+  'gpt-4.1',
+  'gpt-5-nano',
+  'gpt-5-mini',
+  'gpt-5',
+  'gpt-5.1',
+  'gpt-5.2',
+  'gpt-5.4',
+];
+const CHAT_MODEL_STORAGE_KEY = 'studybuddy.chatModel';
+
+function parseModelList(raw: string | undefined): string[] {
+  const source = (raw ?? '').trim();
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const token of source.split(',')) {
+    const modelName = token.trim();
+    if (!modelName || seen.has(modelName)) continue;
+    seen.add(modelName);
+    out.push(modelName);
+  }
+  return out;
+}
+
+const configuredModelOptions = parseModelList(import.meta.env.VITE_OPENAI_CHAT_MODELS);
+const OPENAI_CHAT_MODEL_OPTIONS = configuredModelOptions.length > 0
+  ? configuredModelOptions
+  : FALLBACK_OPENAI_CHAT_MODELS;
+
 export default function Chat({ user }: ChatProps) {
   // Navigation State
   const [mainView, setMainView] = useState<'chat' | 'dashboard'>('chat');
@@ -75,6 +112,15 @@ export default function Chat({ user }: ChatProps) {
   // Chat State
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [selectedModel, setSelectedModel] = useState<string>(() => {
+    const fallbackModel = OPENAI_CHAT_MODEL_OPTIONS[0] ?? DEFAULT_OPENAI_CHAT_MODEL;
+    if (typeof window === 'undefined') return fallbackModel;
+    const storedModel = window.localStorage.getItem(CHAT_MODEL_STORAGE_KEY);
+    if (storedModel && OPENAI_CHAT_MODEL_OPTIONS.includes(storedModel)) {
+      return storedModel;
+    }
+    return fallbackModel;
+  });
 
   const {
     showAuth,
@@ -90,6 +136,16 @@ export default function Chat({ user }: ChatProps) {
     handleAuth,
     handleGoogleAuth,
   } = useChatAuth();
+
+  useEffect(() => {
+    if (OPENAI_CHAT_MODEL_OPTIONS.includes(selectedModel)) return;
+    setSelectedModel(OPENAI_CHAT_MODEL_OPTIONS[0] ?? DEFAULT_OPENAI_CHAT_MODEL);
+  }, [selectedModel]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(CHAT_MODEL_STORAGE_KEY, selectedModel);
+  }, [selectedModel]);
 
   // UI State
   const [isCreatingCourse, setIsCreatingCourse] = useState(false);
@@ -207,6 +263,7 @@ export default function Chat({ user }: ChatProps) {
     expandedCourseId,
     expandedSessionId,
     selectedChatId,
+    selectedModel,
     input,
     newCourseName,
     newSessionName,
@@ -250,6 +307,7 @@ export default function Chat({ user }: ChatProps) {
     user,
     selectedChatId,
     currentChat,
+    selectedModel,
     showToast,
   });
 
@@ -264,6 +322,28 @@ export default function Chat({ user }: ChatProps) {
       console.error("Sign out error:", error);
     }
   };
+
+  const normalizedChatQuery = chatSearchQuery.trim().toLowerCase();
+  const filteredChatResults = useMemo(() => {
+    if (!normalizedChatQuery) return chats;
+    return chats.filter((chat) => chat.name.toLowerCase().includes(normalizedChatQuery));
+  }, [chats, normalizedChatQuery]);
+
+  const openChatSearchModal = () => {
+    setChatSearchQuery('');
+    setIsChatSearchOpen(true);
+  };
+
+  useEffect(() => {
+    if (!user) {
+      document.body.classList.remove('left-sidebar-collapsed');
+      return;
+    }
+    document.body.classList.toggle('left-sidebar-collapsed', !leftSidebarOpen);
+    return () => {
+      document.body.classList.remove('left-sidebar-collapsed');
+    };
+  }, [leftSidebarOpen, user]);
 
   if (!user) {
     return (
@@ -293,23 +373,6 @@ export default function Chat({ user }: ChatProps) {
     (m) => m.isAI && m.id.startsWith('temp-') && !!m.text && m.text.trim().length > 0
   );
   const showRightPanel = mainView === 'chat' && rightSidebarOpen;
-  const normalizedChatQuery = chatSearchQuery.trim().toLowerCase();
-  const filteredChatResults = useMemo(() => {
-    if (!normalizedChatQuery) return chats;
-    return chats.filter((chat) => chat.name.toLowerCase().includes(normalizedChatQuery));
-  }, [chats, normalizedChatQuery]);
-
-  const openChatSearchModal = () => {
-    setChatSearchQuery('');
-    setIsChatSearchOpen(true);
-  };
-
-  useEffect(() => {
-    document.body.classList.toggle('left-sidebar-collapsed', !leftSidebarOpen);
-    return () => {
-      document.body.classList.remove('left-sidebar-collapsed');
-    };
-  }, [leftSidebarOpen]);
 
   return (
     <div className={`chat-container ${showRightPanel ? 'preview-sidebar-open' : ''} ${leftSidebarOpen ? '' : 'left-sidebar-closed'}`}>
@@ -342,6 +405,13 @@ export default function Chat({ user }: ChatProps) {
           onUpdateChatName={handleUpdateChatName}
           onDeleteChat={handleDeleteChat}
           onCloseSidebar={() => setLeftSidebarOpen(false)}
+          settingsOpen={settingsOpen}
+          settingsRef={settingsRef}
+          cameraPreviewEnabled={cameraPreviewEnabled}
+          focusBusy={focusBusy}
+          onToggleSettings={() => setSettingsOpen((value) => !value)}
+          onToggleCameraPreview={() => setCameraPreviewEnabled((value) => !value)}
+          onSignOut={handleSignOut}
         />
       )}
       {!leftSidebarOpen && (
@@ -354,6 +424,9 @@ export default function Chat({ user }: ChatProps) {
             aria-label="Expand courses panel"
           >
             <img src={logo} alt="Echelon logo" />
+            <span className="chat-sidebar-rail-logo-overlay" aria-hidden="true">
+              <PanelLeftOpen size={18} />
+            </span>
           </button>
           <div className="chat-sidebar-rail-actions">
             <button
@@ -387,6 +460,46 @@ export default function Chat({ user }: ChatProps) {
               <PanelLeftOpen size={18} aria-hidden="true" />
             </button>
           </div>
+          <div className="chat-sidebar-rail-footer">
+            <div className="chat-settings" ref={settingsRef}>
+              <button
+                className="chat-sidebar-rail-btn"
+                type="button"
+                aria-label="Settings"
+                aria-haspopup="menu"
+                aria-expanded={settingsOpen}
+                onClick={() => setSettingsOpen((value) => !value)}
+                disabled={focusBusy}
+                title="Settings"
+              >
+                <Settings size={18} aria-hidden="true" />
+              </button>
+
+              {settingsOpen && (
+                <div className="chat-settings-menu chat-settings-menu-rail" role="menu" aria-label="Settings menu">
+                  <button
+                    type="button"
+                    className="chat-settings-item"
+                    role="menuitem"
+                    onClick={() => setCameraPreviewEnabled((value) => !value)}
+                    disabled={focusBusy}
+                  >
+                    <Camera size={16} aria-hidden="true" />
+                    <span>Camera preview: {cameraPreviewEnabled ? 'On' : 'Off'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="chat-settings-item chat-settings-item-danger"
+                    role="menuitem"
+                    onClick={handleSignOut}
+                  >
+                    <LogOut size={16} aria-hidden="true" />
+                    <span>Sign out</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
         </aside>
       )}
 
@@ -395,23 +508,18 @@ export default function Chat({ user }: ChatProps) {
         <ChatMainHeader
           mainView={mainView}
           currentChatName={currentChat?.name}
+          selectedModel={selectedModel}
+          modelOptions={OPENAI_CHAT_MODEL_OPTIONS}
           focusBusy={focusBusy}
           isFocusActive={!!activeFocusSession}
           activeTrackerLabel={activeTrackerLabel}
           focusElapsedMs={focusElapsedMs}
           lastPose={lastPose}
-          settingsOpen={settingsOpen}
-          cameraPreviewEnabled={cameraPreviewEnabled}
-          settingsRef={settingsRef}
+          onChangeModel={setSelectedModel}
           onChangeMainView={setMainView}
-          isLeftSidebarOpen={leftSidebarOpen}
           isRightSidebarOpen={rightSidebarOpen}
           canToggleRightSidebar={mainView === 'chat'}
-          onToggleLeftSidebar={() => setLeftSidebarOpen((value) => !value)}
           onToggleRightSidebar={() => setRightSidebarOpen((value) => !value)}
-          onToggleSettings={() => setSettingsOpen((v) => !v)}
-          onToggleCameraPreview={() => setCameraPreviewEnabled((v) => !v)}
-          onSignOut={handleSignOut}
           formatDuration={formatDuration}
         />
 

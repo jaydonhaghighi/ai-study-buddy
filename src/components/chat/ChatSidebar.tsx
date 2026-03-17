@@ -1,14 +1,17 @@
 import { useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 import {
+  Camera,
   ChevronsUpDown,
   ChevronRight,
   FolderClosed,
+  LogOut,
   MessageSquarePlus,
   PanelLeftClose,
   Pencil,
   Plus,
   Search,
+  Settings,
   Trash2,
   X,
 } from 'lucide-react';
@@ -56,6 +59,13 @@ type ChatSidebarProps = {
   onUpdateChatName: (chatId: string, newName: string) => void;
   onDeleteChat: (chatId: string) => void;
   onCloseSidebar: () => void;
+  settingsOpen: boolean;
+  settingsRef: React.RefObject<HTMLDivElement>;
+  cameraPreviewEnabled: boolean;
+  focusBusy: boolean;
+  onToggleSettings: () => void;
+  onToggleCameraPreview: () => void;
+  onSignOut: () => void;
 };
 
 export default function ChatSidebar({
@@ -86,6 +96,13 @@ export default function ChatSidebar({
   onUpdateChatName,
   onDeleteChat,
   onCloseSidebar,
+  settingsOpen,
+  settingsRef,
+  cameraPreviewEnabled,
+  focusBusy,
+  onToggleSettings,
+  onToggleCameraPreview,
+  onSignOut,
 }: ChatSidebarProps) {
   const [courseQuery, setCourseQuery] = useState('');
   const [lastOpenedCourseId, setLastOpenedCourseId] = useState<string | null>(null);
@@ -116,7 +133,7 @@ export default function ChatSidebar({
       <div className="sidebar-content">
         <div className="sidebar-header">
           <div>
-            <h3>My Courses</h3>
+            <h3>Courses</h3>
             <p className="sidebar-caption">
               {visibleCourses.length} of {courses.length} courses
             </p>
@@ -175,9 +192,9 @@ export default function ChatSidebar({
             }}
             disabled={!hasExpandedRows}
             title="Collapse all"
+            aria-label="Collapse all"
           >
             <ChevronsUpDown size={14} aria-hidden="true" />
-            <span>Collapse</span>
           </button>
         </div>
 
@@ -323,6 +340,48 @@ export default function ChatSidebar({
             )}
           </div>
         ))}
+
+        <div className="sidebar-footer">
+          <div className="chat-settings" ref={settingsRef}>
+            <button
+              className="chat-header-btn chat-settings-btn sidebar-settings-btn"
+              type="button"
+              aria-label="Settings"
+              aria-haspopup="menu"
+              aria-expanded={settingsOpen}
+              onClick={onToggleSettings}
+              disabled={focusBusy}
+              title="Settings"
+            >
+              <Settings size={17} aria-hidden="true" />
+              <span>Settings</span>
+            </button>
+
+            {settingsOpen && (
+              <div className="chat-settings-menu" role="menu" aria-label="Settings menu">
+                <button
+                  type="button"
+                  className="chat-settings-item"
+                  role="menuitem"
+                  onClick={onToggleCameraPreview}
+                  disabled={focusBusy}
+                >
+                  <Camera size={16} aria-hidden="true" />
+                  <span>Camera preview: {cameraPreviewEnabled ? 'On' : 'Off'}</span>
+                </button>
+                <button
+                  type="button"
+                  className="chat-settings-item chat-settings-item-danger"
+                  role="menuitem"
+                  onClick={onSignOut}
+                >
+                  <LogOut size={16} aria-hidden="true" />
+                  <span>Sign out</span>
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
