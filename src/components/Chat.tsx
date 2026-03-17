@@ -1,12 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { auth } from '../firebase-config';
 import { User, signOut } from 'firebase/auth';
-import {
-  FolderPlus,
-  PanelLeftOpen,
-  Search,
-  X,
-} from 'lucide-react';
 import FocusDashboard from './FocusDashboard';
 import StudyMode from './StudyMode';
 import ChatMainHeader from './chat/ChatMainHeader';
@@ -50,13 +44,15 @@ function formatDuration(ms: number): string {
 
 export default function Chat({ user }: ChatProps) {
   // Navigation State
-  const [mainView, setMainView] = useState<'chat' | 'dashboard'>('chat');
+  const [mainView, setMainView] = useState<'chat' | 'dashboard' | 'exams'>('chat');
   
   const [expandedCourseId, setExpandedCourseId] = useState<string | null>(null);
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null);
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
   const [isChatSearchOpen, setIsChatSearchOpen] = useState(false);
   const [chatSearchQuery, setChatSearchQuery] = useState('');
+  const [leftSidebarOpen, setLeftSidebarOpen] = useState(true);
+  const [rightSidebarOpen, setRightSidebarOpen] = useState(true);
 
   const {
     courses,
@@ -104,6 +100,7 @@ export default function Chat({ user }: ChatProps) {
 
   // Exam State
   const [activeExamConfig, setActiveExamConfig] = useState<ExamConfiguration | null>(null);
+  const [examRunVersion, setExamRunVersion] = useState(0);
 
   const {
     toastMessage,
@@ -184,7 +181,7 @@ export default function Chat({ user }: ChatProps) {
     previewError,
   } = useChatCameraPreview({
     mainView,
-    previewPanelVisible: mainView === 'chat',
+    previewPanelVisible: mainView === 'chat' && rightSidebarOpen,
     showCalibrationModal,
   });
 
@@ -270,25 +267,6 @@ export default function Chat({ user }: ChatProps) {
     }
   };
 
-  if (!user) {
-    return (
-      <ChatAuthView
-        showAuth={showAuth}
-        authEmail={authEmail}
-        authPassword={authPassword}
-        isSignUp={isSignUp}
-        authError={authError}
-        authLoading={authLoading}
-        onShowAuth={setShowAuth}
-        onEmailChange={setAuthEmail}
-        onPasswordChange={setAuthPassword}
-        onToggleSignUp={() => setIsSignUp(!isSignUp)}
-        onSubmit={handleAuth}
-        onGoogleSignIn={handleGoogleAuth}
-      />
-    );
-  }
-
   const visibleMessages = messages.filter((m) => {
     // Avoid rendering empty AI bubbles (e.g. streaming placeholder before first chunk).
     if (m.isAI && (!m.text || m.text.trim().length === 0)) return false;
@@ -315,6 +293,25 @@ export default function Chat({ user }: ChatProps) {
       document.body.classList.remove('left-sidebar-collapsed');
     };
   }, [leftSidebarOpen]);
+
+  if (!user) {
+    return (
+      <ChatAuthView
+        showAuth={showAuth}
+        authEmail={authEmail}
+        authPassword={authPassword}
+        isSignUp={isSignUp}
+        authError={authError}
+        authLoading={authLoading}
+        onShowAuth={setShowAuth}
+        onEmailChange={setAuthEmail}
+        onPasswordChange={setAuthPassword}
+        onToggleSignUp={() => setIsSignUp(!isSignUp)}
+        onSubmit={handleAuth}
+        onGoogleSignIn={handleGoogleAuth}
+      />
+    );
+  }
 
   return (
     <div className={`chat-container ${showRightPanel ? 'preview-sidebar-open' : ''} ${leftSidebarOpen ? '' : 'left-sidebar-closed'}`}>
@@ -371,7 +368,7 @@ export default function Chat({ user }: ChatProps) {
               title="Add course"
               aria-label="Add course"
             >
-              <FolderPlus size={18} aria-hidden="true" />
+              +
             </button>
             <button
               type="button"
@@ -380,7 +377,7 @@ export default function Chat({ user }: ChatProps) {
               title="Search chats"
               aria-label="Search chats"
             >
-              <Search size={18} aria-hidden="true" />
+              ?
             </button>
             <button
               type="button"
@@ -389,7 +386,7 @@ export default function Chat({ user }: ChatProps) {
               title="Expand panel"
               aria-label="Expand panel"
             >
-              <PanelLeftOpen size={18} aria-hidden="true" />
+              &gt;&gt;
             </button>
           </div>
         </aside>
@@ -407,10 +404,15 @@ export default function Chat({ user }: ChatProps) {
           lastPose={lastPose}
           settingsOpen={settingsOpen}
           cameraPreviewEnabled={cameraPreviewEnabled}
+          isLeftSidebarOpen={leftSidebarOpen}
+          isRightSidebarOpen={rightSidebarOpen}
+          canToggleRightSidebar={mainView === 'chat'}
           settingsRef={settingsRef}
-          settingsIconSrc={settingsIcon}
-          onToggleMainView={() => setMainView(mainView === 'dashboard' ? 'chat' : 'dashboard')}
+          onToggleLeftSidebar={() => setLeftSidebarOpen((v) => !v)}
+          onToggleRightSidebar={() => setRightSidebarOpen((v) => !v)}
+          onChangeMainView={setMainView}
           onStartFocus={handleStartFocus}
+          onStartExams={() => setMainView('exams')}
           onStopFocus={handleStopFocus}
           onToggleSettings={() => setSettingsOpen((v) => !v)}
           onToggleCameraPreview={() => setCameraPreviewEnabled((v) => !v)}
@@ -420,15 +422,29 @@ export default function Chat({ user }: ChatProps) {
 
         {activeExamConfig ? (
           <ExamContainer
+            key={`${activeExamConfig.id}-${examRunVersion}`}
             examConfig={activeExamConfig}
             userId={user.uid}
             onComplete={() => {}}
             onExit={() => {
               setActiveExamConfig(null);
+              setMainView('exams');
             }}
+            onRestart={() => setExamRunVersion((value) => value + 1)}
           />
         ) : mainView === 'exams' ? (
-          <ExamLauncher userId={user.uid} onSelectExam={setActiveExamConfig} />
+          <ExamLauncher
+            userId={user.uid}
+            selectedChatId={selectedChatId}
+            onSelectChat={setSelectedChatId}
+            chats={chats}
+            activeStudySet={activeStudySet}
+            studySets={studySets}
+            onSelectExam={(exam) => {
+              setExamRunVersion(0);
+              setActiveExamConfig(exam);
+            }}
+          />
         ) : mainView === 'dashboard' ? (
           <FocusDashboard userId={user.uid} />
         ) : (
@@ -538,12 +554,12 @@ export default function Chat({ user }: ChatProps) {
                 onClick={() => setIsChatSearchOpen(false)}
                 aria-label="Close chat search"
               >
-                <X size={16} aria-hidden="true" />
+                x
               </button>
             </div>
 
             <div className="chat-search-input-wrap">
-              <Search size={16} aria-hidden="true" />
+              <span aria-hidden="true">Search</span>
               <input
                 type="text"
                 className="chat-search-input"

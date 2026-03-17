@@ -10,10 +10,10 @@ import {
 } from 'firebase/firestore';
 import { db } from '../../firebase-config';
 import type {
-  ExamQuestion,
   Flashcard,
   FlashcardReviewRating,
   QuizQuestion,
+  StudyExamQuestion,
   StudyDifficulty,
   StudySet,
   StudySource,
@@ -157,7 +157,7 @@ function parseFlashcards(value: unknown): Flashcard[] {
     .filter((item): item is Flashcard => item !== null);
 }
 
-function parseExamQuestions(value: unknown): ExamQuestion[] {
+function parseExamQuestions(value: unknown): StudyExamQuestion[] {
   if (!Array.isArray(value)) return [];
   return value
     .map((row) => {
@@ -183,9 +183,9 @@ function parseExamQuestions(value: unknown): ExamQuestion[] {
         modelAnswer: item.modelAnswer,
         difficulty: normalizeDifficulty(item.difficulty),
         sourceIds,
-      } as ExamQuestion;
+      } as StudyExamQuestion;
     })
-    .filter((item): item is ExamQuestion => item !== null);
+    .filter((item): item is StudyExamQuestion => item !== null);
 }
 
 export function useStudySets({

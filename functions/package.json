@@ -6,12 +6,12 @@
   "main": "lib/index.js",
   "scripts": {
     "build": "tsc",
-    "serve": "npm run build && firebase emulators:start --only functions",
-    "shell": "npm run build && firebase functions:shell",
+    "serve": "npm run build && npx --yes firebase-tools emulators:start --only functions",
+    "shell": "npm run build && npx --yes firebase-tools functions:shell",
     "start": "npm run shell",
-    "test:gamification:emulator": "npm run build && firebase emulators:exec --config ../firebase.json --project demo-ai-study-buddy --only firestore,functions \"node scripts/gamification-emulator-tests.mjs\"",
-    "deploy": "firebase deploy --only functions",
-    "logs": "firebase functions:log"
+    "test:gamification:emulator": "npm run build && npx --yes firebase-tools emulators:exec --config ../firebase.json --project demo-ai-study-buddy --only firestore,functions \"node scripts/gamification-emulator-tests.mjs\"",
+    "deploy": "npx --yes firebase-tools deploy --only functions",
+    "logs": "npx --yes firebase-tools functions:log"
   },
   "engines": {
     "node": "20"

@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { acquireWebcamStream } from '../../services/webcam-manager';
 
 type UseChatCameraPreviewParams = {
-  mainView: 'chat' | 'dashboard';
+  mainView: 'chat' | 'dashboard' | 'exams';
+  previewPanelVisible: boolean;
   showCalibrationModal: boolean;
 };
 

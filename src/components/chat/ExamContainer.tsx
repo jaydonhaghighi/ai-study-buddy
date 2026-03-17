@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ExamSession, ExamConfiguration } from '../../types';
 import { generateExamReport } from '../../services/exam-service';
 import { saveExamReport } from '../../services/exam-report-service';
@@ -10,6 +10,7 @@ interface ExamContainerProps {
   userId: string;
   onComplete: (report: ReturnType<typeof generateExamReport>) => void;
   onExit: () => void;
+  onRestart: () => void;
 }
 
 export default function ExamContainer({
@@ -17,21 +18,36 @@ export default function ExamContainer({
   userId,
   onComplete,
   onExit,
+  onRestart,
 }: ExamContainerProps) {
-  const { examSession, isActive, timeRemainingMs, startExam, submitAnswer, completeExam, getNextDifficulty, getCurrentQuestion } = useExamSession({
+  const { examSession, isActive, timeRemainingMs, startExam, submitAnswer, completeExam, abandonExam, getNextDifficulty, getCurrentQuestion } = useExamSession({
     examConfig,
     userId,
   });
 
   const [selectedAnswer, setSelectedAnswer] = useState<number | null>(null);
+  const [shortAnswerText, setShortAnswerText] = useState('');
   const [confidence, setConfidence] = useState<'low' | 'medium' | 'high'>('medium');
   const [showingReport, setShowingReport] = useState(false);
   const [hasStarted, setHasStarted] = useState(false);
+  const [answerChecked, setAnswerChecked] = useState(false);
+  const [lastAnswerCorrect, setLastAnswerCorrect] = useState<boolean | null>(null);
 
   const currentQuestion = getCurrentQuestion();
+  const totalQuestions = examConfig.sections.reduce(
+    (sum, s) => sum + Math.min(s.totalQuestionsTarget, s.questions.length),
+    0,
+  );
+  const answeredCount = examSession?.answeredQuestions.length ?? 0;
+  const isLastQuestion = answeredCount >= totalQuestions - 1;
+  const hasCompletedQuestionSet = !!examSession && answeredCount >= totalQuestions;
+  const isShortAnswer = currentQuestion?.questionType === 'short';
+  const canSubmitAnswer = isShortAnswer
+    ? shortAnswerText.trim().length > 0
+    : selectedAnswer !== null;
   const progress =
     examSession && currentQuestion
-      ? `${examSession.answeredQuestions.length + 1}/${examConfig.sections.reduce((sum, s) => sum + s.totalQuestionsTarget, 0)}`
+      ? `${examSession.answeredQuestions.length + 1}/${totalQuestions}`
       : '0/0';
 
   const handleStartExam = () => {
@@ -39,8 +55,26 @@ export default function ExamContainer({
     setHasStarted(true);
   };
 
-  const handleSubmitAnswer = async () => {
-    if (!currentQuestion || selectedAnswer === null || !examSession) return;
+  const handleSubmitAnswer = () => {
+    if (!currentQuestion || !examSession) return;
+
+    if (currentQuestion.questionType === 'short') {
+      const response = shortAnswerText.trim();
+      if (!response) return;
+      const evaluatedCorrect = evaluateShortAnswer(currentQuestion, response);
+      submitAnswer(
+        currentQuestion.id,
+        evaluatedCorrect ? 1 : 0,
+        currentQuestion.topic,
+        1,
+        confidence,
+        currentQuestion.initialDifficulty,
+        evaluatedCorrect,
+      );
+      return;
+    }
+
+    if (selectedAnswer === null) return;
 
     submitAnswer(
       currentQuestion.id,
@@ -50,12 +84,38 @@ export default function ExamContainer({
       confidence,
       currentQuestion.initialDifficulty
     );
-
-    setSelectedAnswer(null);
-    setConfidence('medium');
   };
 
-  const handleCompleteExam = () => {
+  const handleCheckAnswer = () => {
+    if (!currentQuestion) return;
+    if (currentQuestion.questionType === 'short') {
+      const response = shortAnswerText.trim();
+      if (!response) return;
+      setLastAnswerCorrect(evaluateShortAnswer(currentQuestion, response));
+      setAnswerChecked(true);
+      return;
+    }
+
+    if (selectedAnswer === null) return;
+    setLastAnswerCorrect(selectedAnswer === currentQuestion.correctAnswer);
+    setAnswerChecked(true);
+  };
+
+  const handleAdvanceQuestion = () => {
+    handleSubmitAnswer();
+    setSelectedAnswer(null);
+    setShortAnswerText('');
+    setConfidence('medium');
+    setAnswerChecked(false);
+    setLastAnswerCorrect(null);
+  };
+
+  const handleFinishExam = () => {
+    handleSubmitAnswer();
+    setTimeout(handleCompleteExam, 100);
+  };
+
+  const handleCompleteExam = useCallback(() => {
     const completedSession = completeExam();
     if (completedSession) {
       const report = generateExamReport(completedSession, examConfig.title, examConfig.totalTimeMs);
@@ -65,10 +125,26 @@ export default function ExamContainer({
         console.error('Failed to save exam report:', error);
       });
     }
+  }, [completeExam, examConfig.id, examConfig.title, examConfig.totalTimeMs, onComplete, userId]);
+
+  useEffect(() => {
+    if (!showingReport && hasCompletedQuestionSet && !currentQuestion) {
+      handleCompleteExam();
+    }
+  }, [currentQuestion, handleCompleteExam, hasCompletedQuestionSet, showingReport]);
+
+  const handleEndSession = () => {
+    if (!examSession) return;
+    if (isActive) {
+      const confirmed = window.confirm('End this exam session now and view your summary?');
+      if (!confirmed) return;
+    }
+    handleCompleteExam();
   };
 
   const handleExit = () => {
     if (isActive && window.confirm('Are you sure you want to exit the exam? Your progress will be lost.')) {
+      abandonExam();
       onExit();
     } else if (!isActive) {
       onExit();
@@ -114,13 +190,21 @@ export default function ExamContainer({
     );
   }
 
+  if (showingReport && examSession) {
+    return (
+      <div className="exam-container">
+        <ExamReport examSession={examSession} examConfig={examConfig} onExit={onExit} onRestart={onRestart} />
+      </div>
+    );
+  }
+
   if (!currentQuestion || !examSession) {
     return (
       <div className="exam-container">
         <div className="exam-error">
-          <h3>No questions available</h3>
-          <button onClick={handleExit} className="btn-secondary">
-            Exit Exam
+          <h3>{hasCompletedQuestionSet ? 'Finalizing your summary...' : 'No questions available'}</h3>
+          <button onClick={hasCompletedQuestionSet ? handleEndSession : handleExit} className="btn-secondary">
+            {hasCompletedQuestionSet ? 'End Session' : 'Exit Exam'}
           </button>
         </div>
       </div>
@@ -130,7 +214,7 @@ export default function ExamContainer({
   return (
     <div className="exam-container">
       {showingReport ? (
-        <ExamReport examSession={examSession} examConfig={examConfig} onExit={handleExit} />
+        <ExamReport examSession={examSession} examConfig={examConfig} onExit={handleExit} onRestart={onRestart} />
       ) : (
         <>
           <div className="exam-header">
@@ -165,21 +249,60 @@ export default function ExamContainer({
 
               <h3 className="question-text">{currentQuestion.text}</h3>
 
-              <div className="options-list">
-                {currentQuestion.options.map((option, idx) => (
-                  <label key={idx} className={`option-item ${selectedAnswer === idx ? 'selected' : ''}`}>
-                    <input
-                      type="radio"
-                      name="answer"
-                      value={idx}
-                      checked={selectedAnswer === idx}
-                      onChange={() => setSelectedAnswer(idx)}
-                      disabled={!isActive}
-                    />
-                    <span className="option-text">{option}</span>
-                  </label>
-                ))}
-              </div>
+              {isShortAnswer ? (
+                <div className="short-answer-box">
+                  <label htmlFor="short-answer-input" className="short-answer-label">Explain your answer</label>
+                  <textarea
+                    id="short-answer-input"
+                    className="short-answer-input"
+                    value={shortAnswerText}
+                    onChange={(event) => setShortAnswerText(event.target.value)}
+                    disabled={!isActive || answerChecked}
+                    rows={5}
+                    placeholder="Type your response here..."
+                  />
+                </div>
+              ) : (
+                <div className="options-list">
+                  {currentQuestion.options.map((option, idx) => (
+                    <label key={idx} className={`option-item ${selectedAnswer === idx ? 'selected' : ''}`}>
+                      <input
+                        type="radio"
+                        name="answer"
+                        value={idx}
+                        checked={selectedAnswer === idx}
+                        onChange={() => setSelectedAnswer(idx)}
+                        disabled={!isActive || answerChecked}
+                      />
+                      <span className="option-text">{option}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+
+              {answerChecked && currentQuestion && (
+                <div className={`answer-feedback ${lastAnswerCorrect ? 'correct' : 'incorrect'}`}>
+                  <p className="feedback-title">
+                    {lastAnswerCorrect ? 'Correct.' : 'Incorrect.'}
+                  </p>
+                  {!lastAnswerCorrect && !isShortAnswer && (
+                    <p className="feedback-detail">
+                      Correct answer: {currentQuestion.options[currentQuestion.correctAnswer]}
+                    </p>
+                  )}
+                  {!lastAnswerCorrect && isShortAnswer && currentQuestion.modelAnswer && (
+                    <p className="feedback-detail">
+                      Suggested model answer: {currentQuestion.modelAnswer}
+                    </p>
+                  )}
+                  {isShortAnswer && currentQuestion.rubric && currentQuestion.rubric.length > 0 && (
+                    <p className="feedback-detail">
+                      Key points: {currentQuestion.rubric.join(' | ')}
+                    </p>
+                  )}
+                  <p className="feedback-detail">{currentQuestion.explanation}</p>
+                </div>
+              )}
 
               <div className="confidence-section">
                 <label className="confidence-label">How confident are you?</label>
@@ -198,26 +321,31 @@ export default function ExamContainer({
               </div>
 
               <div className="question-actions">
-                {examSession.answeredQuestions.length < (examConfig.sections.reduce((sum, s) => sum + s.totalQuestionsTarget, 0) - 1) ? (
-                  <>
-                    <button
-                      onClick={handleSubmitAnswer}
-                      disabled={selectedAnswer === null}
-                      className="btn-primary"
-                    >
-                      Next Question
-                    </button>
-                  </>
+                <button
+                  onClick={handleEndSession}
+                  className="btn-secondary"
+                >
+                  End Session
+                </button>
+                {!answerChecked ? (
+                  <button
+                    onClick={handleCheckAnswer}
+                    disabled={!canSubmitAnswer}
+                    className="btn-primary"
+                  >
+                    Submit Answer
+                  </button>
+                ) : !isLastQuestion ? (
+                  <button
+                    onClick={handleAdvanceQuestion}
+                    className="btn-primary"
+                  >
+                    Next Question
+                  </button>
                 ) : (
                   <>
-                    <button onClick={handleSubmitAnswer} disabled={selectedAnswer === null} className="btn-primary">
-                      Submit Last Answer
-                    </button>
                     <button
-                      onClick={() => {
-                        handleSubmitAnswer();
-                        setTimeout(handleCompleteExam, 100);
-                      }}
+                      onClick={handleFinishExam}
                       className="btn-success"
                     >
                       Finish Exam
@@ -240,13 +368,41 @@ function formatTime(ms: number): string {
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 }
 
+function evaluateShortAnswer(
+  question: NonNullable<ExamConfiguration['sections'][number]['questions'][number]>,
+  answerText: string,
+): boolean {
+  const sourceText = [question.modelAnswer ?? '', ...(question.rubric ?? [])].join(' ').toLowerCase();
+  const normalizedAnswer = answerText.toLowerCase();
+  const stopWords = new Set([
+    'the', 'and', 'that', 'with', 'from', 'this', 'have', 'into', 'their', 'there', 'which', 'about', 'would',
+  ]);
+
+  const keywords = Array.from(
+    new Set(
+      sourceText
+        .split(/[^a-z0-9]+/)
+        .filter((word) => word.length >= 4 && !stopWords.has(word)),
+    ),
+  );
+
+  if (keywords.length === 0) {
+    return normalizedAnswer.trim().length >= 24;
+  }
+
+  const matchedKeywords = keywords.filter((word) => normalizedAnswer.includes(word)).length;
+  const ratio = matchedKeywords / keywords.length;
+  return matchedKeywords >= 2 || ratio >= 0.35;
+}
+
 interface ExamReportProps {
   examSession: ExamSession;
   examConfig: ExamConfiguration;
   onExit: () => void;
+  onRestart: () => void;
 }
 
-function ExamReport({ examSession, examConfig, onExit }: ExamReportProps) {
+function ExamReport({ examSession, examConfig, onExit, onRestart }: ExamReportProps) {
   const report = generateExamReport(examSession, examConfig.title, examConfig.totalTimeMs);
 
   return (
@@ -254,6 +410,14 @@ function ExamReport({ examSession, examConfig, onExit }: ExamReportProps) {
       <div className="report-header">
         <h2>Exam Complete!</h2>
         <p className="exam-title">{report.examTitle}</p>
+        <div className="report-header-actions">
+          <button onClick={onRestart} className="btn-secondary">
+            Restart Exam
+          </button>
+          <button onClick={onExit} className="btn-primary">
+            End Session
+          </button>
+        </div>
       </div>
 
       <div className="report-metrics">
@@ -329,8 +493,11 @@ function ExamReport({ examSession, examConfig, onExit }: ExamReportProps) {
       </section>
 
       <div className="report-actions">
+        <button onClick={onRestart} className="btn-secondary btn-large">
+          Restart Exam
+        </button>
         <button onClick={onExit} className="btn-primary btn-large">
-          Close Report
+          End Session
         </button>
       </div>
     </div>

@@ -12,6 +12,9 @@ export interface ExamQuestion {
   text: string;
   options: string[];
   correctAnswer: number;
+  questionType?: 'mcq' | 'short';
+  modelAnswer?: string;
+  rubric?: string[];
   initialDifficulty: 'easy' | 'medium' | 'hard';
   explanation: string;
 }
@@ -160,7 +163,7 @@ export type Flashcard = {
   lastReviewedAt: Date | null;
 };
 
-export type ExamQuestion = {
+export type StudyExamQuestion = {
   id: string;
   prompt: string;
   rubric: string[];
@@ -178,7 +181,7 @@ export type StudySet = {
   status: StudySetStatus;
   quizQuestions: QuizQuestion[];
   flashcards: Flashcard[];
-  examQuestions: ExamQuestion[];
+  examQuestions: StudyExamQuestion[];
   sources: StudySource[];
   model: string;
   generationMs: number | null;

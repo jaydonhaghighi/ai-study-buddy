@@ -44,7 +44,7 @@ export function useExamSession({ examConfig, userId }: UseExamSessionParams) {
     // Start timer
     const startTime = Date.now();
     timerIntervalRef.current = window.setInterval(() => {
-      setTimeRemainingMs((_prev: number) => {
+      setTimeRemainingMs(() => {
         const newTime = examConfig.totalTimeMs - (Date.now() - startTime);
         return Math.max(0, newTime);
       });
@@ -61,11 +61,14 @@ export function useExamSession({ examConfig, userId }: UseExamSessionParams) {
       topic: string,
       correctAnswerIndex: number,
       confidence: 'low' | 'medium' | 'high',
-      questionDifficulty: 'easy' | 'medium' | 'hard'
+      questionDifficulty: 'easy' | 'medium' | 'hard',
+      evaluatedCorrect?: boolean,
     ) => {
       if (!examSession) return;
 
-      const isCorrect = selectedAnswerIndex === correctAnswerIndex;
+      const isCorrect = typeof evaluatedCorrect === 'boolean'
+        ? evaluatedCorrect
+        : selectedAnswerIndex === correctAnswerIndex;
       const timeSpentMs = currentQuestionStartTime ? Date.now() - currentQuestionStartTime : 0;
 
       const newAnswer: AnsweredQuestion = {
@@ -148,21 +151,26 @@ export function useExamSession({ examConfig, userId }: UseExamSessionParams) {
   // Get current question
   const getCurrentQuestion = useCallback(() => {
     if (!examSession) return null;
-    const section = getCurrentSection();
-    if (!section) return null;
+    const questionPool = examConfig.sections.flatMap((section) => section.questions);
+    const questionLimit = examConfig.sections.reduce(
+      (sum, section) => sum + Math.min(section.totalQuestionsTarget, section.questions.length),
+      0,
+    );
+    const answeredIds = new Set(examSession.answeredQuestions.map((a) => a.questionId));
 
-    const difficulty = getNextDifficulty();
-    const questionsWithDifficulty = section.questions.filter((q) => q.initialDifficulty === difficulty);
-
-    if (questionsWithDifficulty.length === 0) {
-      // Fallback to any question not yet answered
-      const answeredIds = new Set(examSession.answeredQuestions.map((a) => a.questionId));
-      const unanswered = section.questions.filter((q) => !answeredIds.has(q.id));
-      return unanswered[examSession.currentQuestionIndex % unanswered.length] || null;
+    if (answeredIds.size >= questionLimit) {
+      return null;
     }
 
-    return questionsWithDifficulty[examSession.currentQuestionIndex % questionsWithDifficulty.length];
-  }, [examSession, getCurrentSection, getNextDifficulty]);
+    const unanswered = questionPool.filter((q) => !answeredIds.has(q.id));
+    if (unanswered.length === 0) {
+      return null;
+    }
+
+    const difficulty = getNextDifficulty();
+    const preferred = unanswered.filter((q) => q.initialDifficulty === difficulty);
+    return preferred[0] ?? unanswered[0] ?? null;
+  }, [examConfig.sections, examSession, getNextDifficulty]);
 
   return {
     examSession,

@@ -10,10 +10,6 @@ import type {
   GenerateResponse,
   GenerateResponseChunk,
 } from "genkit";
-import { PDFParse } from "pdf-parse";
-import mammoth from "mammoth";
-import XLSX from "xlsx";
-import JSZip from "jszip";
 import { FirestoreSessionStore, type StudyBuddyState } from "./firestore-session-store.js";
 import { fromThreadMessages, toGenkitMessages, toThreadMessages, type ChatHistoryMessage } from "./chat-history.js";
 import {
@@ -781,6 +777,7 @@ async function extractSegmentsFromMaterial(buffer: Buffer, material: CourseMater
   }
 
   if (inferred === "pdf") {
+    const { PDFParse } = await import("pdf-parse");
     const parser = new PDFParse({ data: buffer });
     const parsed = await parser.getText();
     await parser.destroy();
@@ -810,6 +807,7 @@ async function extractSegmentsFromMaterial(buffer: Buffer, material: CourseMater
   }
 
   if (inferred === "docx") {
+    const mammoth = (await import("mammoth")).default;
     const result = await mammoth.extractRawText({ buffer });
     const text = normalizeWhitespace(result.value || "");
     if (!text) throw new Error("No readable text found in DOCX");
@@ -820,6 +818,7 @@ async function extractSegmentsFromMaterial(buffer: Buffer, material: CourseMater
   }
 
   if (inferred === "spreadsheet") {
+    const XLSX = (await import("xlsx")).default;
     const workbook = XLSX.read(buffer, { type: "buffer" });
     const segments: ExtractedSegment[] = [];
 
@@ -827,11 +826,13 @@ async function extractSegmentsFromMaterial(buffer: Buffer, material: CourseMater
       const sheet = workbook.Sheets[sheetName];
       if (!sheet) continue;
 
-      const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, raw: false, defval: "" });
+      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: "" }) as unknown[][];
       const lines: string[] = [];
       for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
         const row = rows[rowIndex] || [];
-        const values = row.map((cell) => String(cell).trim()).filter((cell) => cell.length > 0);
+        const values = row
+          .map((cell: unknown) => String(cell).trim())
+          .filter((cell: string) => cell.length > 0);
         if (values.length === 0) continue;
         lines.push(`Row ${rowIndex + 1}: ${values.join(" | ")}`);
       }
@@ -851,6 +852,7 @@ async function extractSegmentsFromMaterial(buffer: Buffer, material: CourseMater
   }
 
   if (inferred === "slides") {
+    const JSZip = (await import("jszip")).default;
     const zip = await JSZip.loadAsync(buffer);
     const slidePaths = Object.keys(zip.files)
       .filter((path) => /^ppt\/slides\/slide\d+\.xml$/i.test(path))
