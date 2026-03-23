@@ -1,0 +1,238 @@
+{
+  "dataset_root": "/datasets",
+  "meta_files_found": 8,
+  "rows_seen": 10640,
+  "rows_kept": 10260,
+  "rows_malformed": 0,
+  "rows_invalid_label": 0,
+  "rows_missing_image": 380,
+  "participants": [
+    "can_meto",
+    "daniel_esenwa",
+    "isaiah_hunte",
+    "jaydon",
+    "johnny",
+    "mais",
+    "phoenix_bastien",
+    "yara"
+  ],
+  "class_counts": {
+    "away_down": 2007,
+    "away_left": 2121,
+    "away_right": 2099,
+    "away_up": 1988,
+    "screen": 2045
+  },
+  "participant_counts": {
+    "can_meto": 1085,
+    "daniel_esenwa": 1030,
+    "isaiah_hunte": 1148,
+    "jaydon": 1537,
+    "johnny": 1328,
+    "mais": 1458,
+    "phoenix_bastien": 1200,
+    "yara": 1474
+  },
+  "per_participant_class_counts": [
+    {
+      "participant_id": "can_meto",
+      "label": "away_down",
+      "count": 187
+    },
+    {
+      "participant_id": "can_meto",
+      "label": "away_left",
+      "count": 237
+    },
+    {
+      "participant_id": "can_meto",
+      "label": "away_right",
+      "count": 221
+    },
+    {
+      "participant_id": "can_meto",
+      "label": "away_up",
+      "count": 205
+    },
+    {
+      "participant_id": "can_meto",
+      "label": "screen",
+      "count": 235
+    },
+    {
+      "participant_id": "daniel_esenwa",
+      "label": "away_down",
+      "count": 182
+    },
+    {
+      "participant_id": "daniel_esenwa",
+      "label": "away_left",
+      "count": 232
+    },
+    {
+      "participant_id": "daniel_esenwa",
+      "label": "away_right",
+      "count": 215
+    },
+    {
+      "participant_id": "daniel_esenwa",
+      "label": "away_up",
+      "count": 223
+    },
+    {
+      "participant_id": "daniel_esenwa",
+      "label": "screen",
+      "count": 178
+    },
+    {
+      "participant_id": "isaiah_hunte",
+      "label": "away_down",
+      "count": 211
+    },
+    {
+      "participant_id": "isaiah_hunte",
+      "label": "away_left",
+      "count": 237
+    },
+    {
+      "participant_id": "isaiah_hunte",
+      "label": "away_right",
+      "count": 236
+    },
+    {
+      "participant_id": "isaiah_hunte",
+      "label": "away_up",
+      "count": 231
+    },
+    {
+      "participant_id": "isaiah_hunte",
+      "label": "screen",
+      "count": 233
+    },
+    {
+      "participant_id": "jaydon",
+      "label": "away_down",
+      "count": 300
+    },
+    {
+      "participant_id": "jaydon",
+      "label": "away_left",
+      "count": 320
+    },
+    {
+      "participant_id": "jaydon",
+      "label": "away_right",
+      "count": 294
+    },
+    {
+      "participant_id": "jaydon",
+      "label": "away_up",
+      "count": 308
+    },
+    {
+      "participant_id": "jaydon",
+      "label": "screen",
+      "count": 315
+    },
+    {
+      "participant_id": "johnny",
+      "label": "away_down",
+      "count": 298
+    },
+    {
+      "participant_id": "johnny",
+      "label": "away_left",
+      "count": 244
+    },
+    {
+      "participant_id": "johnny",
+      "label": "away_right",
+      "count": 301
+    },
+    {
+      "participant_id": "johnny",
+      "label": "away_up",
+      "count": 242
+    },
+    {
+      "participant_id": "johnny",
+      "label": "screen",
+      "count": 243
+    },
+    {
+      "participant_id": "mais",
+      "label": "away_down",
+      "count": 305
+    },
+    {
+      "participant_id": "mais",
+      "label": "away_left",
+      "count": 299
+    },
+    {
+      "participant_id": "mais",
+      "label": "away_right",
+      "count": 304
+    },
+    {
+      "participant_id": "mais",
+      "label": "away_up",
+      "count": 253
+    },
+    {
+      "participant_id": "mais",
+      "label": "screen",
+      "count": 297
+    },
+    {
+      "participant_id": "phoenix_bastien",
+      "label": "away_down",
+      "count": 240
+    },
+    {
+      "participant_id": "phoenix_bastien",
+      "label": "away_left",
+      "count": 240
+    },
+    {
+      "participant_id": "phoenix_bastien",
+      "label": "away_right",
+      "count": 240
+    },
+    {
+      "participant_id": "phoenix_bastien",
+      "label": "away_up",
+      "count": 240
+    },
+    {
+      "participant_id": "phoenix_bastien",
+      "label": "screen",
+      "count": 240
+    },
+    {
+      "participant_id": "yara",
+      "label": "away_down",
+      "count": 284
+    },
+    {
+      "participant_id": "yara",
+      "label": "away_left",
+      "count": 312
+    },
+    {
+      "participant_id": "yara",
+      "label": "away_right",
+      "count": 288
+    },
+    {
+      "participant_id": "yara",
+      "label": "away_up",
+      "count": 286
+    },
+    {
+      "participant_id": "yara",
+      "label": "screen",
+      "count": 304
+    }
+  ]
+}
