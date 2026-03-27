@@ -1,0 +1,22 @@
+sequenceDiagram
+    autonumber
+    title Chat Request Lifecycle
+
+    actor Student
+    participant Web as Web App
+    participant API as Cloud Functions
+    participant DB as Firestore
+    participant LLM as OpenAI
+
+    Student->>Web: Ask question
+    Web->>DB: Save user message
+    Web->>API: POST /chat
+    API->>DB: Load chat and material context
+    API->>LLM: Generate answer
+    loop Stream answer
+        LLM-->>API: Text chunk
+        API-->>Web: SSE chunk
+    end
+    API->>DB: Save session state
+    Web->>DB: Save AI answer + citations
+    Web-->>Student: Show answer

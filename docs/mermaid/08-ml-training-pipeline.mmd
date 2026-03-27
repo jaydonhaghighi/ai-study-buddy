@@ -1,0 +1,42 @@
+%% Simpler onboarding-friendly view of the active StudyBuddy ML training pipeline.
+%% Read left to right for the main lifecycle; side boxes show tracking and saved outputs.
+flowchart LR
+
+    Data["1. Training Data<br/>run_*/meta.jsonl<br/>+ face image files"]
+    Validate["2. Validate Data<br/>build manifest<br/>filter bad rows<br/>write validation report"]
+    Split["3. Create LOSO Folds<br/>split by participant<br/>1 val subject + 1 test subject<br/>prevents subject leakage"]
+    Input["4. Prepare Inputs<br/>decode, resize, batch<br/>train-only augmentation<br/>backbone provides image features"]
+    Train["5. Train Fold Models<br/>transfer learning<br/>class weights + checkpoints<br/>freeze/fine-tune stages"]
+    Eval["6. Evaluate Held-Out Folds<br/>validation + test metrics<br/>classification report<br/>confusion matrix"]
+    Aggregate["7. Aggregate LOSO Results<br/>mean/std across folds"]
+    Production["8. Train Production Model<br/>retrain on full dataset<br/>after LOSO is accepted"]
+    Export["9. Export Final Model<br/>best_model.keras<br/>SavedModel + metadata"]
+
+    MLflow["MLflow<br/>params, metrics,<br/>artifacts, run IDs"]
+    Intermediate[("Intermediate Outputs<br/>manifest.csv<br/>split files<br/>fold checkpoints<br/>loso_summary.csv<br/>loso_aggregate.json<br/>production_summary.json")]
+    Final[("Deployment Artifacts<br/>export/best_model.keras<br/>export/saved_model/<br/>export/model_meta.json")]
+
+    Data --> Validate --> Split --> Input --> Train --> Eval --> Aggregate --> Production --> Export
+
+    Validate --> Intermediate
+    Split --> Intermediate
+    Train --> Intermediate
+    Eval --> Intermediate
+    Aggregate --> Intermediate
+    Production --> Intermediate
+
+    Train -.-> MLflow
+    Eval -.-> MLflow
+    Production -.-> MLflow
+
+    Export --> Final
+
+    classDef main fill:#EAF4FF,stroke:#4E87B5,stroke-width:1.8px,color:#10253A
+    classDef eval fill:#FFF1D6,stroke:#D48A2F,stroke-width:1.8px,color:#4A2A00
+    classDef output fill:#F5F0FF,stroke:#7C5AC2,stroke-width:1.8px,color:#2E1F57
+
+    linkStyle default stroke:#5A6472,stroke-width:1.5px
+
+    class Data,Validate,Split,Input,Train,Aggregate,Production,Export main
+    class Eval eval
+    class MLflow,Intermediate,Final output

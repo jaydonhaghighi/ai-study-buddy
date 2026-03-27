@@ -1,0 +1,39 @@
+sequenceDiagram
+    autonumber
+    title Focus Sprint Lifecycle
+
+    actor Student
+    participant Web as Web App
+    participant API as Cloud Functions
+    participant Tracker as Focus Tracker
+    participant DB as Firestore
+
+    Student->>Web: Start sprint
+    Web->>API: POST /focusStart
+    API->>DB: Create focusSessions(active)
+    API-->>Web: focusSessionId
+
+    alt Remote inference available
+        Web->>Tracker: Start ML inference session
+    else Fallback path
+        Web->>Tracker: Start local webcam tracking
+    end
+
+    loop During sprint
+        Tracker-->>Web: Focus state updates
+    end
+
+    Student->>Web: Stop sprint
+    Web->>API: POST /focusStop
+    API->>DB: Mark focusSessions(ended)
+    API-->>Web: Stop acknowledged
+    Tracker-->>Web: Final focus summary
+    Web->>DB: Save focus summary
+
+    opt Apply progression
+        Web->>API: POST /gamificationApplyFocusSession
+        API->>DB: Update streaks, XP, badges
+        API-->>Web: Updated profile
+    end
+
+    Web-->>Student: Show recap and progress

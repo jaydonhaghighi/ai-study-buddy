@@ -1,0 +1,121 @@
+%% High-level Firestore/Firebase data model.
+%% AUTH_USERS represents Firebase Auth identity, not a Firestore collection.
+erDiagram
+
+    AUTH_USERS ||--o{ COURSES : owns
+    AUTH_USERS ||--|| GAMIFICATION_PROFILES : has
+
+    COURSES ||--o{ SESSIONS : contains
+    SESSIONS ||--o{ CHATS : contains
+    SESSIONS ||--o{ FOCUS_SESSIONS : contextualizes
+
+    CHATS ||--o{ MESSAGES : contains
+    CHATS ||--o{ STUDY_SETS : generates
+    CHATS ||--o{ COURSE_MATERIALS : attaches
+
+    COURSE_MATERIALS ||--o{ MATERIAL_CHUNKS : indexed_into
+
+    FOCUS_SESSIONS ||--|| FOCUS_SUMMARIES : summarized_by
+    FOCUS_SESSIONS ||--o| GAMIFICATION_SESSION_AWARDS : awarded_once
+    GAMIFICATION_PROFILES ||--o{ GAMIFICATION_SESSION_AWARDS : aggregates
+
+    AUTH_USERS {
+        string uid PK
+        string email
+        timestamp created_at
+    }
+
+    COURSES {
+        string id PK
+        string user_id FK
+        string name
+        timestamp created_at
+    }
+
+    SESSIONS {
+        string id PK
+        string user_id FK
+        string course_id FK
+        string name
+        timestamp created_at
+    }
+
+    CHATS {
+        string id PK
+        string user_id FK
+        string session_id FK
+        string name
+        timestamp last_message_at
+    }
+
+    MESSAGES {
+        string id PK
+        string chat_id FK
+        string user_id FK
+        boolean is_ai
+        string model
+        timestamp created_at
+    }
+
+    STUDY_SETS {
+        string id PK
+        string user_id FK
+        string chat_id FK
+        string status
+        string model
+        timestamp updated_at
+    }
+
+    COURSE_MATERIALS {
+        string id PK
+        string user_id FK
+        string chat_id FK
+        string storage_path
+        string status
+        int chunk_count
+    }
+
+    MATERIAL_CHUNKS {
+        string id PK
+        string material_id FK
+        string chat_id FK
+        string location_label
+        int chunk_index
+        string text
+    }
+
+    FOCUS_SESSIONS {
+        string id PK
+        string user_id FK
+        string session_id FK
+        string status
+        timestamp started_at
+        timestamp ended_at
+    }
+
+    FOCUS_SUMMARIES {
+        string id PK
+        string focus_session_id FK
+        string user_id FK
+        int focused_ms
+        int distracted_ms
+        float focus_percent
+    }
+
+    GAMIFICATION_PROFILES {
+        string id PK
+        int current_streak_days
+        int level
+        int total_xp
+        int total_focused_minutes
+        string unlocked_badges
+    }
+
+    GAMIFICATION_SESSION_AWARDS {
+        string id PK
+        string focus_session_id FK
+        string user_id FK
+        int focused_minutes
+        int xp_gain
+        string badge_unlocks
+    }

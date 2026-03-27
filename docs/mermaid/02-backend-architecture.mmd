@@ -1,0 +1,62 @@
+flowchart LR
+
+    Client["Web Client"]
+
+    subgraph CloudFns["Firebase Cloud Functions (Modular Monolith)"]
+        direction TB
+        ApiLayer["HTTP API Layer<br/>onRequest endpoints"]
+        AIServices["Chat + Study Generation<br/>chat, studyCoach, studyGenerate,<br/>flashcardReview"]
+        FocusServices["Focus + Gamification<br/>focusStart, focusStop,<br/>reward application"]
+        MaterialServices["Material Ingestion + Retrieval<br/>materialIndex, materialDelete,<br/>chunk indexing"]
+        SessionStore["Session Persistence Adapter<br/>Genkit session store"]
+
+        ApiLayer --> AIServices
+        ApiLayer --> FocusServices
+        ApiLayer --> MaterialServices
+        ApiLayer --> SessionStore
+    end
+
+    subgraph Persistence["Persistence"]
+        direction TB
+        FirestoreCore[("Firestore Core Data<br/>courses, chats, messages,<br/>focus/study documents")]
+        FirestoreInternal[("Firestore Internal Collections<br/>material_chunks, genkit_sessions")]
+        Storage[("Cloud Storage<br/>uploaded source files")]
+    end
+
+    subgraph ExternalAI["External AI"]
+        direction TB
+        OpenAI(["OpenAI API<br/>Genkit + OCR calls"])
+    end
+
+    Client -->|HTTPS calls| ApiLayer
+
+    AIServices <-->|chats, messages,<br/>study sets, reviews| FirestoreCore
+    AIServices -->|session history| FirestoreInternal
+    SessionStore <-->|genkit_sessions| FirestoreInternal
+
+    FocusServices <-->|focus sessions,<br/>summaries, gamification| FirestoreCore
+
+    MaterialServices <-->|materials metadata| FirestoreCore
+    MaterialServices <-->|material_chunks| FirestoreInternal
+    MaterialServices <-->|read / delete files| Storage
+
+    AIServices -->|generation| OpenAI
+    MaterialServices -->|image OCR| OpenAI
+
+    style CloudFns fill:#F3FBF6,stroke:#7DA88D,stroke-width:2px,color:#0F172A
+    style Persistence fill:#FFF9E7,stroke:#C7A94A,stroke-width:2px,color:#0F172A
+    style ExternalAI fill:#F7F7FA,stroke:#A7AFBC,stroke-width:2px,color:#0F172A
+
+    classDef actor fill:#FFFFFF,stroke:#475569,stroke-width:1.8px,color:#0F172A
+    classDef service fill:#DFF5E8,stroke:#3F8A61,stroke-width:1.6px,color:#102A1C
+    classDef data fill:#FFF1C9,stroke:#B8860B,stroke-width:1.6px,color:#3B2A08
+    classDef ai fill:#EEE4FF,stroke:#7C5AC2,stroke-width:1.6px,color:#2E1F57
+    classDef ext fill:#ECEFF3,stroke:#6B7280,stroke-width:1.6px,color:#1F2937
+
+    linkStyle default stroke:#5A6472,stroke-width:1.4px
+
+    class Client actor
+    class ApiLayer,FocusServices,MaterialServices service
+    class FirestoreCore,FirestoreInternal,Storage data
+    class AIServices,SessionStore ai
+    class OpenAI ext

@@ -1,0 +1,19 @@
+sequenceDiagram
+    autonumber
+    title Material Upload and Indexing Flow
+
+    actor Student
+    participant Web as Web App
+    participant Storage as Firebase Storage
+    participant API as Cloud Functions
+    participant DB as Firestore
+
+    Student->>Web: Upload material
+    Web->>Storage: Upload raw file
+    Web->>API: POST /materialIndex
+
+    API->>Storage: Download file
+    API->>API: Extract text and build chunks
+    API->>DB: Save material metadata + chunks
+    DB-->>Web: Material status update
+    Web-->>Student: Material ready for chat

@@ -1,0 +1,77 @@
+flowchart LR
+
+    Student[Student]
+
+    subgraph Frontend["Frontend / Browser Client"]
+        direction TB
+        AppUI["App UI<br/>Chat, Study Mode, Dashboard"]
+        ClientData["Client Data Layer<br/>Firestore listeners + mutations"]
+        FnGateway["Functions Gateway<br/>SSE chat + study/focus calls"]
+        FocusClient["Focus Engine<br/>remote inference + local fallback"]
+        Collector["Data Collector<br/>/collect"]
+        ZipExport[("Local Dataset ZIP<br/>download export")]
+
+        AppUI --> ClientData
+        AppUI --> FnGateway
+        AppUI --> FocusClient
+        ClientData --> FnGateway
+        Collector --> ZipExport
+    end
+
+    subgraph Backend["Backend / Firebase Platform"]
+        direction TB
+        Functions["Cloud Functions API"]
+        Auth["Firebase Auth"]
+    end
+
+    subgraph Persistence["Persistence"]
+        direction TB
+        FirestoreCore[("Firestore Core Data<br/>courses, chats, messages,<br/>focus/study documents")]
+        FirestoreInternal[("Firestore Internal Collections<br/>material_chunks, genkit_sessions")]
+        Storage[("Cloud Storage<br/>uploaded source files")]
+    end
+
+    subgraph Runtime["ML Runtime + External Services"]
+        direction TB
+        Inference["FastAPI Inference Service<br/>separate runtime"]
+        OpenAI(["OpenAI API<br/>generation + OCR"])
+        MediaPipe(["MediaPipe Assets<br/>WASM + face models"])
+    end
+
+    Student -->|main app flow| AppUI
+    Student -->|data collection flow| Collector
+
+    AppUI -->|sign-in / sign-up| Auth
+    ClientData <-->|realtime reads/writes| FirestoreCore
+    ClientData -->|material upload| Storage
+    FnGateway -->|HTTPS calls| Functions
+
+    Functions <-->|chat, study sets,<br/>focus summaries, gamification| FirestoreCore
+    Functions <-->|material_chunks,<br/>genkit_sessions| FirestoreInternal
+    Functions <-->|read / delete files| Storage
+    Functions -->|generation + OCR| OpenAI
+
+    FocusClient -->|frame stream + summary| Inference
+    FocusClient -.->|detector fallback| MediaPipe
+    Collector -.->|calibration + labeling| MediaPipe
+
+    style Frontend fill:#F3FAFF,stroke:#78A9C7,stroke-width:2px,color:#0F172A
+    style Backend fill:#F3FBF6,stroke:#7DA88D,stroke-width:2px,color:#0F172A
+    style Persistence fill:#FFF9E7,stroke:#C7A94A,stroke-width:2px,color:#0F172A
+    style Runtime fill:#F7F7FA,stroke:#A7AFBC,stroke-width:2px,color:#0F172A
+
+    classDef actor fill:#FFFFFF,stroke:#475569,stroke-width:1.8px,color:#0F172A
+    classDef client fill:#DCEFFF,stroke:#3E82B5,stroke-width:1.6px,color:#10253A
+    classDef service fill:#DFF5E8,stroke:#3F8A61,stroke-width:1.6px,color:#102A1C
+    classDef data fill:#FFF1C9,stroke:#B8860B,stroke-width:1.6px,color:#3B2A08
+    classDef ml fill:#EEE4FF,stroke:#7C5AC2,stroke-width:1.6px,color:#2E1F57
+    classDef ext fill:#ECEFF3,stroke:#6B7280,stroke-width:1.6px,color:#1F2937
+
+    linkStyle default stroke:#5A6472,stroke-width:1.4px
+
+    class Student actor
+    class AppUI,ClientData,FnGateway,Collector client
+    class Functions,Auth service
+    class FirestoreCore,FirestoreInternal,Storage,ZipExport data
+    class FocusClient,Inference ml
+    class OpenAI,MediaPipe ext

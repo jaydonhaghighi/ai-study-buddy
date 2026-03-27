@@ -1,0 +1,68 @@
+@startuml
+left to right direction
+
+title Backend Architecture (High-Level)
+
+skinparam shadowing false
+skinparam roundcorner 12
+skinparam defaultFontSize 13
+skinparam packageStyle rectangle
+skinparam componentStyle rectangle
+skinparam linetype ortho
+skinparam nodesep 80
+skinparam ranksep 90
+skinparam ArrowColor #5A6472
+skinparam ArrowThickness 1
+skinparam BackgroundColor #FFFFFF
+skinparam PackageBorderColor #9AA5B1
+skinparam RectangleBorderColor #9AA5B1
+skinparam CloudBorderColor #9AA5B1
+skinparam DatabaseBorderColor #9AA5B1
+skinparam FolderBorderColor #9AA5B1
+
+actor "Web Client" as Client
+
+package "Firebase Cloud Functions (Modular Monolith)" #EAF7E9 {
+  rectangle "HTTP API Layer\n(onRequest endpoints)" as ApiLayer #EAF7E9
+  rectangle "Chat + Study Generation\nchat, studyCoach, studyGenerate,\nflashcardReview" as AIServices #F1ECFF
+  rectangle "Focus + Gamification\nfocusStart, focusStop,\nreward application" as FocusServices
+  rectangle "Material Ingestion + Retrieval\nmaterialIndex, materialDelete,\nchunk indexing" as MaterialServices
+  rectangle "Session Persistence Adapter\nGenkit session store" as SessionStore
+
+  ApiLayer --> AIServices
+  ApiLayer --> FocusServices
+  ApiLayer --> MaterialServices
+  ApiLayer --> SessionStore
+}
+
+package "Persistence" #FFF8D9 {
+  database "Firestore Core Data\ncourses/chats/messages/\nfocus/study documents" as Firestore
+  database "Firestore Internal Collections\nmaterial_chunks,\ngenkit_sessions" as FirestoreInternal
+  folder "Cloud Storage\n(uploaded source files)" as Storage
+}
+
+package "External AI" #F2F2F2 {
+  cloud "OpenAI API\n(Genkit + OCR calls)" as OpenAI
+}
+
+Client --> ApiLayer : HTTPS calls
+
+AIServices <--> Firestore : chats, messages,\nstudy sets, reviews
+AIServices --> FirestoreInternal : session history read/write
+SessionStore <--> FirestoreInternal : genkit_sessions
+
+FocusServices <--> Firestore : focus sessions,\nfocus summaries,\ngamification docs
+MaterialServices <--> Storage : read/delete files
+MaterialServices <--> Firestore : materials metadata
+MaterialServices <--> FirestoreInternal : material_chunks
+
+AIServices --> OpenAI : generation
+MaterialServices --> OpenAI : image OCR
+
+' keep storage lane visually spread
+Firestore -[hidden]- FirestoreInternal
+FirestoreInternal -[hidden]- Storage
+AIServices -[hidden]- FocusServices
+FocusServices -[hidden]- MaterialServices
+
+@enduml

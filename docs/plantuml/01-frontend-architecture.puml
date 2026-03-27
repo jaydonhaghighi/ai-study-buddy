@@ -1,0 +1,71 @@
+@startuml
+left to right direction
+
+title Frontend Architecture (High-Level)
+
+skinparam shadowing false
+skinparam roundcorner 12
+skinparam defaultFontSize 13
+skinparam packageStyle rectangle
+skinparam componentStyle rectangle
+skinparam linetype ortho
+skinparam nodesep 80
+skinparam ranksep 90
+skinparam ArrowColor #5A6472
+skinparam ArrowThickness 1
+skinparam BackgroundColor #FFFFFF
+skinparam PackageBorderColor #9AA5B1
+skinparam RectangleBorderColor #9AA5B1
+skinparam CloudBorderColor #9AA5B1
+skinparam DatabaseBorderColor #9AA5B1
+skinparam FolderBorderColor #9AA5B1
+
+actor "Student" as Student
+
+package "Browser Client" #E8F3FF {
+  rectangle "App UI\nChat, Study Mode, Dashboard" as AppUI
+  rectangle "Client Data Layer\nFirestore listeners + mutations" as ClientData
+  rectangle "Functions Gateway\nSSE chat + study/focus calls" as FnGateway
+  rectangle "Focus Engine\nremote inference + local fallback" as FocusClient #F1ECFF
+  rectangle "Data Collector (/collect)" as Collector
+  folder "Local Dataset ZIP\n(download export)" as ZipExport #FFF8D9
+
+  AppUI --> ClientData
+  AppUI --> FnGateway
+  AppUI --> FocusClient
+  ClientData --> FnGateway
+}
+
+package "Firebase Platform" #EAF7E9 {
+  rectangle "Cloud Functions API" as Functions
+  rectangle "Firebase Auth" as Auth #FFF8D9
+  database "Firestore" as Firestore #FFF8D9
+  folder "Cloud Storage\n(course materials)" as Storage #FFF8D9
+}
+
+package "External/Adjacent Services" #F2F2F2 {
+  rectangle "FastAPI Inference Service\n(separate runtime)" as Inference #F1ECFF
+  cloud "MediaPipe Assets\nWASM + Face Models" as MediaPipe
+}
+
+Student --> AppUI : main app flow
+Student --> Collector : data collection flow
+
+AppUI --> Auth : sign-in / sign-up
+ClientData <--> Firestore : realtime reads/writes
+ClientData --> Storage : material upload
+FnGateway --> Functions : HTTPS calls
+
+FocusClient --> Inference : frame stream + summary
+FocusClient ..> MediaPipe : detector fallback
+
+Collector ..> MediaPipe : calibration + labeling
+Collector --> ZipExport : export run_*.zip
+
+' keep platform nodes spread in one lane
+Auth -[hidden]- Firestore
+Firestore -[hidden]- Storage
+Functions -[hidden]- Auth
+Inference -[hidden]- MediaPipe
+
+@enduml
