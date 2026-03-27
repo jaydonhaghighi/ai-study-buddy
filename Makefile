@@ -7,7 +7,10 @@
 
 # Dataset root: in-repo ml/artifacts/data (run_*/face/...) or override with PI_AGENT_DATA_ROOT
 PI_AGENT_DATA_ROOT ?= $(CURDIR)/ml/artifacts/data
+DOCKER ?= docker
 DOCKER_COMPOSE ?= docker compose
+GCLOUD ?= gcloud
+FIREBASE_CLI ?= firebase
 LOCAL_UID ?= $(shell id -u)
 LOCAL_GID ?= $(shell id -g)
 ML_COMPOSE = PI_AGENT_DATA_ROOT="$(PI_AGENT_DATA_ROOT)" LOCAL_UID="$(LOCAL_UID)" LOCAL_GID="$(LOCAL_GID)" $(DOCKER_COMPOSE) -f ml/docker-compose.yml
@@ -19,8 +22,16 @@ ML_CONFIG_STABILITY_V1 = /app/configs/exp_stability_v1.yaml
 ML_CONFIG_REGULARIZED_V2 = /app/configs/exp_regularized_v2.yaml
 ML_CONFIG_HIRES_V3 = /app/configs/exp_hires_v3.yaml
 ML_CONFIG_V4 = /app/configs/exp_v4.yaml
+GCP_PROJECT ?= ai-study-buddy-32ed7
+GCP_REGION ?= us-central1
+ARTIFACT_REPO ?= studybuddy
+CLOUD_RUN_SERVICE ?= studybuddy-inference
+CLOUDRUN_DOCKERFILE ?= ml/Dockerfile.cloudrun
+CLOUDRUN_ENV_FILE ?= ml/cloudrun.env.yaml
+CLOUDRUN_LOCAL_IMAGE ?= studybuddy-inference:latest
+CLOUDRUN_REMOTE_IMAGE ?= $(GCP_REGION)-docker.pkg.dev/$(GCP_PROJECT)/$(ARTIFACT_REPO)/studybuddy-inference:latest
 
-.PHONY: compose-check ml-build mlflow-up mlflow-down validate split-loso train-loso eval-loso train-production export-best serve-gpu serve-gpu-detached smoke-inference ml-pipeline ml-run capstone-report ml-clean ml-clean-all fix-artifact-perms ml-fresh-pipeline ml-fresh-run ml-exp-stability-v1 ml-exp-regularized-v2 ml-exp-hires-v3 ml-exp-v4
+.PHONY: compose-check ml-build mlflow-up mlflow-down validate split-loso train-loso eval-loso train-production export-best serve-gpu serve-gpu-detached smoke-inference ml-pipeline ml-run capstone-report ml-clean ml-clean-all fix-artifact-perms ml-fresh-pipeline ml-fresh-run ml-exp-stability-v1 ml-exp-regularized-v2 ml-exp-hires-v3 ml-exp-v4 deploy-inference-prod deploy-hosting-prod deploy-functions-prod deploy-prod
 
 # -----------------------------------------------------------------------------
 # Prerequisites & infrastructure
@@ -131,6 +142,39 @@ ml-run: compose-check
 	$(MAKE) serve-gpu-detached
 	$(MAKE) smoke-inference
 	@echo "Done. MLflow: http://localhost:5001 | Inference: $(INFERENCE_URL)"
+
+# -----------------------------------------------------------------------------
+# Production deployment
+# -----------------------------------------------------------------------------
+
+# Build, push, and deploy the Cloud Run inference service with the latest exported model.
+deploy-inference-prod: compose-check
+	$(MAKE) export-best
+	$(DOCKER) build -f $(CLOUDRUN_DOCKERFILE) -t $(CLOUDRUN_LOCAL_IMAGE) ./ml
+	$(DOCKER) tag $(CLOUDRUN_LOCAL_IMAGE) $(CLOUDRUN_REMOTE_IMAGE)
+	$(DOCKER) push $(CLOUDRUN_REMOTE_IMAGE)
+	$(GCLOUD) run deploy $(CLOUD_RUN_SERVICE) \
+		--project $(GCP_PROJECT) \
+		--image $(CLOUDRUN_REMOTE_IMAGE) \
+		--region $(GCP_REGION) \
+		--allow-unauthenticated \
+		--memory 2Gi \
+		--cpu 2 \
+		--timeout 60 \
+		--env-vars-file $(CLOUDRUN_ENV_FILE)
+
+# Build and deploy Firebase Hosting, including the Hosting -> Cloud Run rewrites.
+deploy-hosting-prod:
+	npm run build
+	$(FIREBASE_CLI) deploy --only hosting --project $(GCP_PROJECT)
+
+# Deploy Firebase Cloud Functions when backend function code has changed.
+deploy-functions-prod:
+	$(FIREBASE_CLI) deploy --only functions --project $(GCP_PROJECT)
+
+# Full production refresh: exported model -> Cloud Run -> Firebase Hosting.
+deploy-prod: deploy-inference-prod deploy-hosting-prod
+	@echo "Production deploy complete."
 
 # -----------------------------------------------------------------------------
 # Cleanup & report

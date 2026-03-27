@@ -13,9 +13,10 @@
    - Suggested UX:
      - Setting label: `Nudge me after X minutes unfocused`
      - Range: 1-15 minutes
-     - Default: current hardcoded value (for backward compatibility)
-     - Optional toggles: sound on/off, nudge volume
+     - Default: `1 minute` (v1)
+     - Includes: sound on/off, nudge volume
    - Why it matters: students have different attention styles and should control reminder sensitivity.
+   - Execution plan: see `feature-2-implementation-tracker.md`.
 
 3. **Auto-generated Study Recap after each session (shareable)**
    - One-click recap card with:

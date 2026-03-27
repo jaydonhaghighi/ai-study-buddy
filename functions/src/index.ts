@@ -109,6 +109,9 @@ type StudyDifficulty = "easy" | "medium" | "hard";
 type StudySourceType = "chat" | "material";
 type StudyQuizQuestionType = "mcq" | "short";
 type FlashcardReviewRating = "again" | "hard" | "good" | "easy";
+type FocusSessionMode = "study_mode" | "exam_simulation";
+type ExamSimulationStatus = "generating" | "ready" | "in_progress" | "completed" | "timed_out" | "abandoned" | "failed";
+type ExamConfidence = "low" | "medium" | "high";
 type GamificationBadgeId =
   | "first_focus_day"
   | "streak_3"
@@ -125,6 +128,9 @@ type FocusSessionDoc = {
   status: string;
   startedAt: Date | null;
   endedAt: Date | null;
+  mode?: FocusSessionMode | null;
+  chatId?: string | null;
+  examSimulationId?: string | null;
 };
 
 type FocusSummaryDoc = {
@@ -134,6 +140,8 @@ type FocusSummaryDoc = {
   focusPercent: number;
   endTs: number | null;
   createdAt: Date | null;
+  distractions?: number;
+  firstDriftOffsetSec?: number | null;
 };
 
 type GamificationProfileDoc = {
@@ -281,6 +289,143 @@ type StudySetDoc = {
   updatedAt: Date;
 };
 
+type ExamSimulationSectionDoc = {
+  id: string;
+  label: string;
+  questionTargetCount: number;
+  targetDurationSec: number;
+  cumulativeTargetSec: number;
+};
+
+type ExamSimulationQuestionDoc = {
+  id: string;
+  prompt: string;
+  options: string[];
+  difficulty: StudyDifficulty;
+  topic: string;
+  sourceIds: string[];
+  sectionId: string;
+  orderIndex: number;
+};
+
+type ExamSimulationResponseDoc = {
+  questionId: string;
+  questionOrder: number;
+  selectedOptionIndex: number;
+  confidence: ExamConfidence;
+  elapsedSec: number;
+  answeredAt: Date;
+  difficulty: StudyDifficulty;
+  topic: string;
+  sectionId: string;
+};
+
+type ExamSimulationWeakTopicDoc = {
+  topic: string;
+  accuracyPercent: number;
+  questionCount: number;
+  correctCount: number;
+};
+
+type ExamSimulationDifficultyBreakdownDoc = {
+  difficulty: StudyDifficulty;
+  accuracyPercent: number;
+  questionCount: number;
+  correctCount: number;
+};
+
+type ExamSimulationSectionResultDoc = {
+  sectionId: string;
+  label: string;
+  targetDurationSec: number;
+  actualElapsedSec: number;
+  overrunSec: number;
+  answeredCount: number;
+};
+
+type ExamSimulationFocusInsightDoc = {
+  focusSessionId: string;
+  focusPercent: number;
+  distractions: number;
+  firstDriftOffsetSec: number | null;
+};
+
+type ExamSimulationRecapDoc = {
+  answeredCount: number;
+  totalQuestionCount: number;
+  correctCount: number;
+  scorePercent: number;
+  completionPercent: number;
+  overconfidenceMisses: number;
+  weakTopics: ExamSimulationWeakTopicDoc[];
+  accuracyByDifficulty: ExamSimulationDifficultyBreakdownDoc[];
+  sectionResults: ExamSimulationSectionResultDoc[];
+  timeLossMoments: string[];
+  recoveryPlan: string[];
+  weakTopicSummary: string;
+  focusInsight: ExamSimulationFocusInsightDoc | null;
+};
+
+type ExamSimulationDoc = {
+  id: string;
+  userId: string;
+  chatId: string;
+  courseId: string | null;
+  sessionId: string | null;
+  status: ExamSimulationStatus;
+  preset: "standard_mock";
+  durationSec: number;
+  servedQuestionCount: number;
+  questionBankCount: number;
+  model: string;
+  sections: ExamSimulationSectionDoc[];
+  servedQuestions: ExamSimulationQuestionDoc[];
+  responses: ExamSimulationResponseDoc[];
+  currentQuestionId: string | null;
+  recap: ExamSimulationRecapDoc | null;
+  errorMessage: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  startedAt: Date | null;
+  endsAt: Date | null;
+  finishedAt: Date | null;
+};
+
+type ExamSimulationQuestionStateDoc = {
+  id: string;
+  prompt: string;
+  options: string[];
+  correctOptionIndex: number;
+  correctOption: string;
+  explanation: string;
+  difficulty: StudyDifficulty;
+  topic: string;
+  sourceIds: string[];
+};
+
+type ExamSimulationInternalResponseDoc = ExamSimulationResponseDoc & {
+  isCorrect: boolean;
+};
+
+type ExamSimulationStateDoc = {
+  id: string;
+  examSimulationId: string;
+  userId: string;
+  status: ExamSimulationStatus;
+  currentDifficulty: StudyDifficulty;
+  questionBank: ExamSimulationQuestionStateDoc[];
+  allSources: StudySourceDoc[];
+  remainingQuestionIds: string[];
+  servedQuestionIds: string[];
+  currentQuestionId: string | null;
+  internalResponses: ExamSimulationInternalResponseDoc[];
+  createdAt: Date;
+  updatedAt: Date;
+  startedAt: Date | null;
+  endsAt: Date | null;
+  finishedAt: Date | null;
+};
+
 const SYSTEM_INSTRUCTION = `You are an AI Study Buddy - a knowledgeable, patient, and encouraging learning companion designed to help students succeed academically.
 
 Your core principles:
@@ -317,6 +462,33 @@ const MAX_STUDY_TRANSCRIPT_CHARS = 14000;
 const DEFAULT_QUIZ_COUNT = 10;
 const DEFAULT_FLASHCARD_COUNT = 14;
 const DEFAULT_EXAM_COUNT = 4;
+const EXAM_SIMULATION_DURATION_SEC = 30 * 60;
+const EXAM_SIMULATION_SERVED_QUESTION_COUNT = 10;
+const EXAM_SIMULATION_BANK_COUNT = 15;
+const EXAM_SIMULATION_MIN_SOURCE_CHAR_COUNT = 240;
+const EXAM_SIMULATION_SECTION_SPECS: ExamSimulationSectionDoc[] = [
+  {
+    id: "section_1",
+    label: "Section 1",
+    questionTargetCount: 3,
+    targetDurationSec: 10 * 60,
+    cumulativeTargetSec: 10 * 60,
+  },
+  {
+    id: "section_2",
+    label: "Section 2",
+    questionTargetCount: 3,
+    targetDurationSec: 10 * 60,
+    cumulativeTargetSec: 20 * 60,
+  },
+  {
+    id: "section_3",
+    label: "Section 3",
+    questionTargetCount: 4,
+    targetDurationSec: 10 * 60,
+    cumulativeTargetSec: 30 * 60,
+  },
+];
 const DAILY_STREAK_TARGET_MINUTES = 25;
 const WEEKLY_GOAL_TARGET_MINUTES = 180;
 const XP_PER_LEVEL = 100;
@@ -515,6 +687,9 @@ function parseFocusSessionDoc(docId: string, data: Record<string, unknown>): Foc
     status: asString(data.status),
     startedAt: asDate(data.startedAt),
     endedAt: asDate(data.endedAt),
+    mode: normalizeFocusSessionMode(data.mode),
+    chatId: asString(data.chatId) || null,
+    examSimulationId: asString(data.examSimulationId) || null,
   };
 }
 
@@ -530,6 +705,8 @@ function parseFocusSummaryDoc(data: Record<string, unknown>): FocusSummaryDoc {
     focusPercent: Math.round(focusPercent * 10) / 10,
     endTs: asOptionalNumber(data.endTs),
     createdAt: asDate(data.createdAt),
+    distractions: Math.max(0, clampInteger(asOptionalNumber(data.distractions), 0, 0, 1000000)),
+    firstDriftOffsetSec: asOptionalNumber(data.firstDriftOffsetSec),
   };
 }
 
@@ -670,6 +847,51 @@ function normalizeDifficulty(value: unknown): StudyDifficulty {
   return "medium";
 }
 
+function normalizeFocusSessionMode(value: unknown): FocusSessionMode | null {
+  const candidate = asString(value).toLowerCase();
+  if (candidate === "study_mode" || candidate === "exam_simulation") return candidate;
+  return null;
+}
+
+function normalizeExamConfidence(value: unknown): ExamConfidence | null {
+  const candidate = asString(value).toLowerCase();
+  if (candidate === "low" || candidate === "medium" || candidate === "high") return candidate;
+  return null;
+}
+
+function cloneExamSections(): ExamSimulationSectionDoc[] {
+  return EXAM_SIMULATION_SECTION_SPECS.map((section) => ({ ...section }));
+}
+
+function getExamSectionForOrder(orderIndex: number): ExamSimulationSectionDoc {
+  let cursor = 0;
+  for (const section of EXAM_SIMULATION_SECTION_SPECS) {
+    cursor += section.questionTargetCount;
+    if (orderIndex < cursor) {
+      return section;
+    }
+  }
+  return EXAM_SIMULATION_SECTION_SPECS[EXAM_SIMULATION_SECTION_SPECS.length - 1];
+}
+
+function getHarderDifficulty(difficulty: StudyDifficulty): StudyDifficulty {
+  if (difficulty === "easy") return "medium";
+  if (difficulty === "medium") return "hard";
+  return "hard";
+}
+
+function getEasierDifficulty(difficulty: StudyDifficulty): StudyDifficulty {
+  if (difficulty === "hard") return "medium";
+  if (difficulty === "medium") return "easy";
+  return "easy";
+}
+
+function getExamFallbackDifficultyOrder(target: StudyDifficulty): StudyDifficulty[] {
+  if (target === "easy") return ["easy", "medium", "hard"];
+  if (target === "hard") return ["hard", "medium", "easy"];
+  return ["medium", "hard", "easy"];
+}
+
 function normalizeSourceIds(value: unknown, allowed: Set<string>): string[] {
   if (!Array.isArray(value)) return [];
   const out: string[] = [];
@@ -705,6 +927,12 @@ function parseJsonObject(raw: string): Record<string, unknown> {
     throw new Error("Study generation response must be a JSON object");
   }
   return parsed as Record<string, unknown>;
+}
+
+function createHttpError(statusCode: number, message: string): Error & { statusCode: number } {
+  const error = new Error(message) as Error & { statusCode: number };
+  error.statusCode = statusCode;
+  return error;
 }
 
 function getFileExtension(fileName: string | null | undefined): string {
@@ -1464,6 +1692,798 @@ function parseStudyExamQuestions(
   return out;
 }
 
+function buildExamSimulationPrompt({
+  transcript,
+  sources,
+}: {
+  transcript: string;
+  sources: StudySourceDoc[];
+}): string {
+  const sourceCatalog = sources
+    .map((source) => `- ${source.id} [${source.type}] ${source.label}: ${source.snippet}`)
+    .join("\n");
+
+  return [
+    "Generate a source-grounded mock exam question bank.",
+    "Output only valid JSON (no markdown, no prose) with this exact top-level shape:",
+    "{",
+    '  "questions": [',
+    "    {",
+    '      "prompt": "string",',
+    '      "choices": ["string", "string", "string", "string"],',
+    '      "answerIndex": 0,',
+    '      "explanation": "string",',
+    '      "difficulty": "easy" | "medium" | "hard",',
+    '      "topic": "string",',
+    '      "sourceIds": ["M1","C1"]',
+    "    }",
+    "  ]",
+    "}",
+    "",
+    `Return exactly ${EXAM_SIMULATION_BANK_COUNT} questions total.`,
+    "Return exactly 5 easy, 5 medium, and 5 hard questions.",
+    "All questions must be MCQ with exactly 4 choices.",
+    "Every question must include at least one valid source id from the source catalog.",
+    "Keep prompts concise, exam-like, and non-trivial.",
+    "Avoid duplicate prompts or near-duplicate answer choices.",
+    "Use only facts supported by the transcript and source catalog.",
+    "",
+    "Source catalog:",
+    sourceCatalog || "- none",
+    "",
+    "Chat transcript:",
+    transcript || "(empty)",
+  ].join("\n");
+}
+
+function parseExamSimulationQuestionBank(
+  value: unknown,
+  allowedSourceIds: Set<string>,
+): ExamSimulationQuestionStateDoc[] {
+  if (!Array.isArray(value)) return [];
+  const out: ExamSimulationQuestionStateDoc[] = [];
+  const seenPrompts = new Set<string>();
+  const fallbackSourceId = allowedSourceIds.values().next().value as string | undefined;
+
+  for (const row of value) {
+    if (out.length >= EXAM_SIMULATION_BANK_COUNT) break;
+    if (!row || typeof row !== "object") continue;
+    const data = row as Record<string, unknown>;
+    const prompt = asString(data.prompt) || asString(data.question);
+    const promptKey = normalizeWhitespace(prompt).toLowerCase();
+    if (prompt.length < 8 || seenPrompts.has(promptKey)) continue;
+
+    const options = Array.isArray(data.choices)
+      ? data.choices.map((item) => asString(item)).filter((item) => item.length > 0).slice(0, 4)
+      : [];
+    if (options.length !== 4) continue;
+
+    let correctOptionIndex =
+      typeof data.answerIndex === "number" && Number.isFinite(data.answerIndex)
+        ? Math.floor(data.answerIndex)
+        : -1;
+    if (correctOptionIndex < 0 || correctOptionIndex >= options.length) {
+      const answerText = asString(data.answer).toLowerCase();
+      const matchIndex = answerText ? options.findIndex((option) => option.toLowerCase() === answerText) : -1;
+      correctOptionIndex = matchIndex >= 0 ? matchIndex : -1;
+    }
+    if (correctOptionIndex < 0 || correctOptionIndex >= options.length) continue;
+
+    const difficulty = normalizeDifficulty(data.difficulty);
+    const topic = asString(data.topic) || `${difficulty} review`;
+    const explanation = asString(data.explanation) || "Review the cited material and compare each option carefully.";
+    const sourceIds = normalizeSourceIds(data.sourceIds, allowedSourceIds);
+    const normalizedSourceIds = sourceIds.length > 0
+      ? sourceIds
+      : (fallbackSourceId ? [fallbackSourceId] : []);
+    if (normalizedSourceIds.length === 0) continue;
+
+    seenPrompts.add(promptKey);
+    out.push({
+      id: `B${out.length + 1}`,
+      prompt,
+      options,
+      correctOptionIndex,
+      correctOption: options[correctOptionIndex] || "",
+      explanation,
+      difficulty,
+      topic,
+      sourceIds: normalizedSourceIds,
+    });
+  }
+
+  return out;
+}
+
+function hasExpectedExamDifficultyDistribution(questionBank: ExamSimulationQuestionStateDoc[]): boolean {
+  if (questionBank.length !== EXAM_SIMULATION_BANK_COUNT) return false;
+  const counts: Record<StudyDifficulty, number> = {
+    easy: 0,
+    medium: 0,
+    hard: 0,
+  };
+  for (const question of questionBank) {
+    counts[question.difficulty] += 1;
+  }
+  return counts.easy === 5 && counts.medium === 5 && counts.hard === 5;
+}
+
+function determineNextExamTargetDifficulty(
+  currentDifficulty: StudyDifficulty,
+  isCorrect: boolean,
+  confidence: ExamConfidence,
+): StudyDifficulty {
+  if (isCorrect && confidence === "high") {
+    return getHarderDifficulty(currentDifficulty);
+  }
+  if (!isCorrect && (confidence === "medium" || confidence === "high")) {
+    return getEasierDifficulty(currentDifficulty);
+  }
+  return currentDifficulty;
+}
+
+function pickNextExamQuestion(
+  questionBank: ExamSimulationQuestionStateDoc[],
+  remainingQuestionIds: string[],
+  targetDifficulty: StudyDifficulty,
+): ExamSimulationQuestionStateDoc | null {
+  const remaining = new Set(remainingQuestionIds);
+  for (const difficulty of getExamFallbackDifficultyOrder(targetDifficulty)) {
+    const match = questionBank.find((question) => remaining.has(question.id) && question.difficulty === difficulty);
+    if (match) return match;
+  }
+  return null;
+}
+
+function toPublicExamQuestion(
+  question: ExamSimulationQuestionStateDoc,
+  orderIndex: number,
+): ExamSimulationQuestionDoc {
+  const section = getExamSectionForOrder(orderIndex);
+  return {
+    id: question.id,
+    prompt: question.prompt,
+    options: [...question.options],
+    difficulty: question.difficulty,
+    topic: question.topic,
+    sourceIds: [...question.sourceIds],
+    sectionId: section.id,
+    orderIndex,
+  };
+}
+
+function formatDurationLabel(totalSec: number): string {
+  const minutes = Math.max(0, Math.floor(totalSec / 60));
+  const seconds = Math.max(0, totalSec % 60);
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function roundPercent(value: number): number {
+  return Math.round(clampNumber(value, 0, 100) * 10) / 10;
+}
+
+function buildFallbackWeakTopicSummary(weakTopics: ExamSimulationWeakTopicDoc[], answeredCount: number): string {
+  if (answeredCount === 0) {
+    return "No graded answers yet, so the main opportunity is to complete a full mock exam under time pressure.";
+  }
+  if (weakTopics.length === 0) {
+    return "Your accuracy stayed steady across topics, so the next gain is likely pacing rather than raw content review.";
+  }
+  if (weakTopics.length === 1) {
+    return `Your biggest gap was ${weakTopics[0].topic}, where accuracy landed at ${weakTopics[0].accuracyPercent}%.`;
+  }
+  return `Your weakest topics were ${weakTopics[0].topic} and ${weakTopics[1].topic}, where accuracy dropped most under exam pacing.`;
+}
+
+function buildFallbackRecoveryPlan(args: {
+  weakTopics: ExamSimulationWeakTopicDoc[];
+  timeLossMoments: string[];
+  overconfidenceMisses: number;
+  focusInsight: ExamSimulationFocusInsightDoc | null;
+}): string[] {
+  const primaryTopic = args.weakTopics[0]?.topic || "the missed concepts from this run";
+  const recoveryPlan = [
+    `Review ${primaryTopic} first and rebuild the core rule or concept before attempting another timed set.`,
+    args.overconfidenceMisses > 0
+      ? "Slow down on medium and hard questions where you feel certain quickly, and force a brief elimination check before locking an answer."
+      : "Keep confidence honest by marking unsure questions early and deciding faster when you know the answer.",
+    args.timeLossMoments.length > 0
+      ? "Run one more 30-minute mock within 48 hours and focus on staying inside section pace, not just improving raw accuracy."
+      : "Run one more 30-minute mock within 48 hours to confirm the same topics stay stable under time pressure.",
+  ];
+  if (args.focusInsight && args.focusInsight.firstDriftOffsetSec != null) {
+    recoveryPlan[2] = `Run one more 30-minute mock within 48 hours and reset your attention before ${formatDurationLabel(args.focusInsight.firstDriftOffsetSec)} if you feel drift starting.`;
+  }
+  return recoveryPlan.slice(0, 3);
+}
+
+function buildExamRecoveryPrompt(args: {
+  weakTopics: ExamSimulationWeakTopicDoc[];
+  accuracyByDifficulty: ExamSimulationDifficultyBreakdownDoc[];
+  sectionResults: ExamSimulationSectionResultDoc[];
+  timeLossMoments: string[];
+  overconfidenceMisses: number;
+  focusInsight: ExamSimulationFocusInsightDoc | null;
+  allSources: StudySourceDoc[];
+}): string {
+  const sourceCatalog = args.allSources
+    .slice(0, 12)
+    .map((source) => `- ${source.id} [${source.type}] ${source.label}`)
+    .join("\n");
+
+  return [
+    "You are generating a post-exam recovery summary.",
+    "Use only the supplied metrics and topics. Do not invent topics, scores, or time events.",
+    "Return valid JSON only with this shape:",
+    "{",
+    '  "weakTopicSummary": "string",',
+    '  "timeLossMoments": ["string"],',
+    '  "recoveryPlan": ["string", "string", "string"]',
+    "}",
+    "",
+    `Weak topics: ${JSON.stringify(args.weakTopics)}`,
+    `Accuracy by difficulty: ${JSON.stringify(args.accuracyByDifficulty)}`,
+    `Section pacing: ${JSON.stringify(args.sectionResults)}`,
+    `Time-loss moments: ${JSON.stringify(args.timeLossMoments)}`,
+    `Overconfidence misses: ${args.overconfidenceMisses}`,
+    `Focus insight: ${JSON.stringify(args.focusInsight)}`,
+    "",
+    "Keep the summary concise, actionable, and student-friendly.",
+    "The recovery plan must contain exactly 3 steps.",
+    "",
+    "Source labels for topic naming context:",
+    sourceCatalog || "- none",
+  ].join("\n");
+}
+
+async function loadExamFocusInsight(
+  focusSessionId: string | null,
+  userId: string,
+): Promise<ExamSimulationFocusInsightDoc | null> {
+  if (!focusSessionId) return null;
+  const snapshot = await db.collection("focusSummaries").doc(focusSessionId).get();
+  if (!snapshot.exists) return null;
+  const summary = parseFocusSummaryDoc((snapshot.data() || {}) as Record<string, unknown>);
+  if (summary.userId !== userId) return null;
+  return {
+    focusSessionId,
+    focusPercent: roundPercent(summary.focusPercent),
+    distractions: Math.max(0, summary.distractions ?? 0),
+    firstDriftOffsetSec: summary.firstDriftOffsetSec ?? null,
+  };
+}
+
+function buildExamWeakTopics(responses: ExamSimulationInternalResponseDoc[]): ExamSimulationWeakTopicDoc[] {
+  const topicMap = new Map<string, { total: number; correct: number }>();
+  for (const response of responses) {
+    const existing = topicMap.get(response.topic) || { total: 0, correct: 0 };
+    existing.total += 1;
+    if (response.isCorrect) existing.correct += 1;
+    topicMap.set(response.topic, existing);
+  }
+
+  return [...topicMap.entries()]
+    .map(([topic, stats]) => ({
+      topic,
+      questionCount: stats.total,
+      correctCount: stats.correct,
+      accuracyPercent: stats.total > 0 ? roundPercent((stats.correct / stats.total) * 100) : 0,
+    }))
+    .sort((a, b) => {
+      if (a.accuracyPercent !== b.accuracyPercent) return a.accuracyPercent - b.accuracyPercent;
+      return b.questionCount - a.questionCount;
+    })
+    .slice(0, 3);
+}
+
+function buildExamDifficultyBreakdown(responses: ExamSimulationInternalResponseDoc[]): ExamSimulationDifficultyBreakdownDoc[] {
+  const difficulties: StudyDifficulty[] = ["easy", "medium", "hard"];
+  return difficulties.map((difficulty) => {
+    const filtered = responses.filter((response) => response.difficulty === difficulty);
+    const correctCount = filtered.filter((response) => response.isCorrect).length;
+    return {
+      difficulty,
+      questionCount: filtered.length,
+      correctCount,
+      accuracyPercent: filtered.length > 0 ? roundPercent((correctCount / filtered.length) * 100) : 0,
+    };
+  });
+}
+
+function buildExamSectionResults(
+  responses: ExamSimulationInternalResponseDoc[],
+  sections: ExamSimulationSectionDoc[],
+): ExamSimulationSectionResultDoc[] {
+  const sorted = [...responses].sort((a, b) => a.questionOrder - b.questionOrder);
+  let previousElapsedSec = 0;
+  return sections.map((section) => {
+    const sectionResponses = sorted.filter((response) => response.sectionId === section.id);
+    const maxElapsedSec = sectionResponses.reduce((max, response) => Math.max(max, response.elapsedSec), previousElapsedSec);
+    const actualElapsedSec = Math.max(0, maxElapsedSec - previousElapsedSec);
+    previousElapsedSec = maxElapsedSec;
+    return {
+      sectionId: section.id,
+      label: section.label,
+      targetDurationSec: section.targetDurationSec,
+      actualElapsedSec,
+      overrunSec: Math.max(0, actualElapsedSec - section.targetDurationSec),
+      answeredCount: sectionResponses.length,
+    };
+  });
+}
+
+function buildExamTimeLossMoments(args: {
+  responses: ExamSimulationInternalResponseDoc[];
+  sectionResults: ExamSimulationSectionResultDoc[];
+  focusInsight: ExamSimulationFocusInsightDoc | null;
+}): string[] {
+  const moments: string[] = [];
+  for (const sectionResult of args.sectionResults) {
+    if (sectionResult.overrunSec <= 0) continue;
+    moments.push(
+      `${sectionResult.label} ran ${formatDurationLabel(sectionResult.overrunSec)} over pace.`
+    );
+  }
+
+  const sortedResponses = [...args.responses].sort((a, b) => a.questionOrder - b.questionOrder);
+  let previousElapsedSec = 0;
+  const slowQuestions: Array<{ questionOrder: number; deltaSec: number; targetSec: number }> = [];
+  for (const response of sortedResponses) {
+    const section = EXAM_SIMULATION_SECTION_SPECS.find((item) => item.id === response.sectionId) || EXAM_SIMULATION_SECTION_SPECS[0];
+    const targetPerQuestionSec = Math.max(1, Math.round(section.targetDurationSec / section.questionTargetCount));
+    const deltaSec = Math.max(0, response.elapsedSec - previousElapsedSec);
+    previousElapsedSec = response.elapsedSec;
+    if (deltaSec > targetPerQuestionSec * 1.35) {
+      slowQuestions.push({
+        questionOrder: response.questionOrder,
+        deltaSec,
+        targetSec: targetPerQuestionSec,
+      });
+    }
+  }
+
+  slowQuestions
+    .sort((a, b) => b.deltaSec - a.deltaSec)
+    .slice(0, 2)
+    .forEach((item) => {
+      moments.push(
+        `Question ${item.questionOrder + 1} used ${formatDurationLabel(item.deltaSec)} against a ${formatDurationLabel(item.targetSec)} target.`
+      );
+    });
+
+  if (args.focusInsight) {
+    if (args.focusInsight.firstDriftOffsetSec != null) {
+      moments.push(
+        `Focus drift started around ${formatDurationLabel(args.focusInsight.firstDriftOffsetSec)}.`
+      );
+    }
+    if (args.focusInsight.distractions > 0) {
+      moments.push(
+        `${args.focusInsight.distractions} distraction event${args.focusInsight.distractions === 1 ? "" : "s"} were detected during the run.`
+      );
+    }
+  }
+
+  return moments.slice(0, 5);
+}
+
+async function buildExamSimulationRecap(args: {
+  userId: string;
+  modelName: string;
+  sections: ExamSimulationSectionDoc[];
+  allSources: StudySourceDoc[];
+  responses: ExamSimulationInternalResponseDoc[];
+  focusSessionId: string | null;
+}): Promise<ExamSimulationRecapDoc> {
+  const answeredCount = args.responses.length;
+  const correctCount = args.responses.filter((response) => response.isCorrect).length;
+  const weakTopics = buildExamWeakTopics(args.responses);
+  const accuracyByDifficulty = buildExamDifficultyBreakdown(args.responses);
+  const sectionResults = buildExamSectionResults(args.responses, args.sections);
+  const focusInsight = await loadExamFocusInsight(args.focusSessionId, args.userId);
+  const overconfidenceMisses = args.responses.filter(
+    (response) => !response.isCorrect && response.confidence === "high",
+  ).length;
+  const fallbackTimeLossMoments = buildExamTimeLossMoments({
+    responses: args.responses,
+    sectionResults,
+    focusInsight,
+  });
+  const fallbackWeakTopicSummary = buildFallbackWeakTopicSummary(weakTopics, answeredCount);
+  const fallbackRecoveryPlan = buildFallbackRecoveryPlan({
+    weakTopics,
+    timeLossMoments: fallbackTimeLossMoments,
+    overconfidenceMisses,
+    focusInsight,
+  });
+
+  let weakTopicSummary = fallbackWeakTopicSummary;
+  let timeLossMoments = fallbackTimeLossMoments;
+  let recoveryPlan = fallbackRecoveryPlan;
+
+  try {
+    const selectedChatModel = getChatModel(resolveRequestedChatModelName(args.modelName));
+    const generation: GenerateResponse = await ai.generate({
+      model: selectedChatModel,
+      system: "You turn exam performance metrics into a concise study recovery plan. Return JSON only.",
+      prompt: buildExamRecoveryPrompt({
+        weakTopics,
+        accuracyByDifficulty,
+        sectionResults,
+        timeLossMoments: fallbackTimeLossMoments,
+        overconfidenceMisses,
+        focusInsight,
+        allSources: args.allSources,
+      }),
+      config: {
+        temperature: 0.25,
+        maxOutputTokens: 900,
+      },
+    });
+
+    const parsed = parseJsonObject(generation.text || "");
+    const parsedWeakTopicSummary = asString(parsed.weakTopicSummary);
+    const parsedTimeLossMoments = Array.isArray(parsed.timeLossMoments)
+      ? parsed.timeLossMoments.map((item) => asString(item)).filter((item) => item.length > 0).slice(0, 5)
+      : [];
+    const parsedRecoveryPlan = Array.isArray(parsed.recoveryPlan)
+      ? parsed.recoveryPlan.map((item) => asString(item)).filter((item) => item.length > 0).slice(0, 3)
+      : [];
+
+    if (parsedWeakTopicSummary) {
+      weakTopicSummary = parsedWeakTopicSummary;
+    }
+    if (parsedTimeLossMoments.length > 0) {
+      timeLossMoments = parsedTimeLossMoments;
+    }
+    if (parsedRecoveryPlan.length === 3) {
+      recoveryPlan = parsedRecoveryPlan;
+    }
+  } catch (error) {
+    console.warn("Exam recovery plan generation failed, using fallback recap.", error);
+  }
+
+  return {
+    answeredCount,
+    totalQuestionCount: EXAM_SIMULATION_SERVED_QUESTION_COUNT,
+    correctCount,
+    scorePercent: answeredCount > 0 ? roundPercent((correctCount / answeredCount) * 100) : 0,
+    completionPercent: roundPercent((answeredCount / EXAM_SIMULATION_SERVED_QUESTION_COUNT) * 100),
+    overconfidenceMisses,
+    weakTopics,
+    accuracyByDifficulty,
+    sectionResults,
+    timeLossMoments,
+    recoveryPlan,
+    weakTopicSummary,
+    focusInsight,
+  };
+}
+
+function normalizeExamSimulationStatus(value: unknown): ExamSimulationStatus {
+  const candidate = asString(value).toLowerCase();
+  if (
+    candidate === "generating" ||
+    candidate === "ready" ||
+    candidate === "in_progress" ||
+    candidate === "completed" ||
+    candidate === "timed_out" ||
+    candidate === "abandoned" ||
+    candidate === "failed"
+  ) {
+    return candidate;
+  }
+  return "ready";
+}
+
+function parseExamSimulationSections(value: unknown): ExamSimulationSectionDoc[] {
+  if (!Array.isArray(value)) return cloneExamSections();
+  const sections = value
+    .map((row) => {
+      if (!row || typeof row !== "object") return null;
+      const data = row as Record<string, unknown>;
+      const id = asString(data.id);
+      const label = asString(data.label);
+      const questionTargetCount = clampInteger(asOptionalNumber(data.questionTargetCount), 0, 0, 100);
+      const targetDurationSec = clampInteger(asOptionalNumber(data.targetDurationSec), 0, 0, 100000);
+      const cumulativeTargetSec = clampInteger(asOptionalNumber(data.cumulativeTargetSec), 0, 0, 100000);
+      if (!id || !label || questionTargetCount <= 0 || targetDurationSec <= 0 || cumulativeTargetSec <= 0) return null;
+      return {
+        id,
+        label,
+        questionTargetCount,
+        targetDurationSec,
+        cumulativeTargetSec,
+      } satisfies ExamSimulationSectionDoc;
+    })
+    .filter((section): section is ExamSimulationSectionDoc => section !== null);
+
+  return sections.length > 0 ? sections : cloneExamSections();
+}
+
+function parseExamSimulationQuestions(value: unknown): ExamSimulationQuestionDoc[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((row) => {
+      if (!row || typeof row !== "object") return null;
+      const data = row as Record<string, unknown>;
+      const id = asString(data.id);
+      const prompt = asString(data.prompt);
+      const sectionId = asString(data.sectionId);
+      if (!id || !prompt || !sectionId) return null;
+      const options = Array.isArray(data.options)
+        ? data.options.map((item) => asString(item)).filter((item) => item.length > 0)
+        : [];
+      if (options.length === 0) return null;
+      const sourceIds = Array.isArray(data.sourceIds)
+        ? data.sourceIds.map((item) => asString(item)).filter((item) => item.length > 0)
+        : [];
+      return {
+        id,
+        prompt,
+        options,
+        difficulty: normalizeDifficulty(data.difficulty),
+        topic: asString(data.topic) || "General review",
+        sourceIds,
+        sectionId,
+        orderIndex: clampInteger(asOptionalNumber(data.orderIndex), 0, 0, 100000),
+      } satisfies ExamSimulationQuestionDoc;
+    })
+    .filter((question): question is ExamSimulationQuestionDoc => question !== null)
+    .sort((a, b) => a.orderIndex - b.orderIndex);
+}
+
+function parseExamSimulationResponses(value: unknown): ExamSimulationResponseDoc[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((row) => {
+      if (!row || typeof row !== "object") return null;
+      const data = row as Record<string, unknown>;
+      const questionId = asString(data.questionId);
+      const sectionId = asString(data.sectionId);
+      const confidence = normalizeExamConfidence(data.confidence);
+      if (!questionId || !sectionId || !confidence) return null;
+      return {
+        questionId,
+        questionOrder: clampInteger(asOptionalNumber(data.questionOrder), 0, 0, 100000),
+        selectedOptionIndex: clampInteger(asOptionalNumber(data.selectedOptionIndex), 0, 0, 100),
+        confidence,
+        elapsedSec: clampInteger(asOptionalNumber(data.elapsedSec), 0, 0, 100000),
+        answeredAt: asDate(data.answeredAt) || new Date(0),
+        difficulty: normalizeDifficulty(data.difficulty),
+        topic: asString(data.topic) || "General review",
+        sectionId,
+      } satisfies ExamSimulationResponseDoc;
+    })
+    .filter((response): response is ExamSimulationResponseDoc => response !== null)
+    .sort((a, b) => a.questionOrder - b.questionOrder);
+}
+
+function parseExamSimulationRecap(value: unknown): ExamSimulationRecapDoc | null {
+  if (!value || typeof value !== "object") return null;
+  const data = value as Record<string, unknown>;
+
+  const weakTopics = Array.isArray(data.weakTopics)
+    ? data.weakTopics
+        .map((row) => {
+          if (!row || typeof row !== "object") return null;
+          const item = row as Record<string, unknown>;
+          const topic = asString(item.topic);
+          if (!topic) return null;
+          return {
+            topic,
+            accuracyPercent: roundPercent(asOptionalNumber(item.accuracyPercent) ?? 0),
+            questionCount: clampInteger(asOptionalNumber(item.questionCount), 0, 0, 1000),
+            correctCount: clampInteger(asOptionalNumber(item.correctCount), 0, 0, 1000),
+          } satisfies ExamSimulationWeakTopicDoc;
+        })
+        .filter((item): item is ExamSimulationWeakTopicDoc => item !== null)
+    : [];
+
+  const accuracyByDifficulty = Array.isArray(data.accuracyByDifficulty)
+    ? data.accuracyByDifficulty
+        .map((row) => {
+          if (!row || typeof row !== "object") return null;
+          const item = row as Record<string, unknown>;
+          return {
+            difficulty: normalizeDifficulty(item.difficulty),
+            accuracyPercent: roundPercent(asOptionalNumber(item.accuracyPercent) ?? 0),
+            questionCount: clampInteger(asOptionalNumber(item.questionCount), 0, 0, 1000),
+            correctCount: clampInteger(asOptionalNumber(item.correctCount), 0, 0, 1000),
+          } satisfies ExamSimulationDifficultyBreakdownDoc;
+        })
+        .filter((item): item is ExamSimulationDifficultyBreakdownDoc => item !== null)
+    : [];
+
+  const sectionResults = Array.isArray(data.sectionResults)
+    ? data.sectionResults
+        .map((row) => {
+          if (!row || typeof row !== "object") return null;
+          const item = row as Record<string, unknown>;
+          const sectionId = asString(item.sectionId);
+          const label = asString(item.label);
+          if (!sectionId || !label) return null;
+          return {
+            sectionId,
+            label,
+            targetDurationSec: clampInteger(asOptionalNumber(item.targetDurationSec), 0, 0, 100000),
+            actualElapsedSec: clampInteger(asOptionalNumber(item.actualElapsedSec), 0, 0, 100000),
+            overrunSec: clampInteger(asOptionalNumber(item.overrunSec), 0, 0, 100000),
+            answeredCount: clampInteger(asOptionalNumber(item.answeredCount), 0, 0, 1000),
+          } satisfies ExamSimulationSectionResultDoc;
+        })
+        .filter((item): item is ExamSimulationSectionResultDoc => item !== null)
+    : [];
+
+  const timeLossMoments = Array.isArray(data.timeLossMoments)
+    ? data.timeLossMoments.map((item) => asString(item)).filter((item) => item.length > 0)
+    : [];
+  const recoveryPlan = Array.isArray(data.recoveryPlan)
+    ? data.recoveryPlan.map((item) => asString(item)).filter((item) => item.length > 0).slice(0, 3)
+    : [];
+
+  const focusInsight =
+    data.focusInsight && typeof data.focusInsight === "object"
+      ? (() => {
+          const insight = data.focusInsight as Record<string, unknown>;
+          const focusSessionId = asString(insight.focusSessionId);
+          if (!focusSessionId) return null;
+          return {
+            focusSessionId,
+            focusPercent: roundPercent(asOptionalNumber(insight.focusPercent) ?? 0),
+            distractions: clampInteger(asOptionalNumber(insight.distractions), 0, 0, 100000),
+            firstDriftOffsetSec: asOptionalNumber(insight.firstDriftOffsetSec),
+          } satisfies ExamSimulationFocusInsightDoc;
+        })()
+      : null;
+
+  return {
+    answeredCount: clampInteger(asOptionalNumber(data.answeredCount), 0, 0, 1000),
+    totalQuestionCount: clampInteger(asOptionalNumber(data.totalQuestionCount), EXAM_SIMULATION_SERVED_QUESTION_COUNT, 0, 1000),
+    correctCount: clampInteger(asOptionalNumber(data.correctCount), 0, 0, 1000),
+    scorePercent: roundPercent(asOptionalNumber(data.scorePercent) ?? 0),
+    completionPercent: roundPercent(asOptionalNumber(data.completionPercent) ?? 0),
+    overconfidenceMisses: clampInteger(asOptionalNumber(data.overconfidenceMisses), 0, 0, 1000),
+    weakTopics,
+    accuracyByDifficulty,
+    sectionResults,
+    timeLossMoments,
+    recoveryPlan,
+    weakTopicSummary: asString(data.weakTopicSummary),
+    focusInsight,
+  };
+}
+
+function parseExamSimulationDoc(docId: string, data: Record<string, unknown>): ExamSimulationDoc {
+  return {
+    id: docId,
+    userId: asString(data.userId),
+    chatId: asString(data.chatId),
+    courseId: asString(data.courseId) || null,
+    sessionId: asString(data.sessionId) || null,
+    status: normalizeExamSimulationStatus(data.status),
+    preset: "standard_mock",
+    durationSec: clampInteger(asOptionalNumber(data.durationSec), EXAM_SIMULATION_DURATION_SEC, 1, 100000),
+    servedQuestionCount: clampInteger(asOptionalNumber(data.servedQuestionCount), EXAM_SIMULATION_SERVED_QUESTION_COUNT, 1, 1000),
+    questionBankCount: clampInteger(asOptionalNumber(data.questionBankCount), EXAM_SIMULATION_BANK_COUNT, 1, 1000),
+    model: asString(data.model) || DEFAULT_MODEL_NAME,
+    sections: parseExamSimulationSections(data.sections),
+    servedQuestions: parseExamSimulationQuestions(data.servedQuestions),
+    responses: parseExamSimulationResponses(data.responses),
+    currentQuestionId: asString(data.currentQuestionId) || null,
+    recap: parseExamSimulationRecap(data.recap),
+    errorMessage: asString(data.errorMessage) || null,
+    createdAt: asDate(data.createdAt) || new Date(0),
+    updatedAt: asDate(data.updatedAt) || new Date(0),
+    startedAt: asDate(data.startedAt),
+    endsAt: asDate(data.endsAt),
+    finishedAt: asDate(data.finishedAt),
+  };
+}
+
+function parseExamSimulationStateDoc(examSimulationId: string, data: Record<string, unknown>): ExamSimulationStateDoc {
+  const questionBank = Array.isArray(data.questionBank)
+    ? data.questionBank
+        .map((row) => {
+          if (!row || typeof row !== "object") return null;
+          const item = row as Record<string, unknown>;
+          const id = asString(item.id);
+          const prompt = asString(item.prompt);
+          if (!id || !prompt) return null;
+          const options = Array.isArray(item.options)
+            ? item.options.map((entry) => asString(entry)).filter((entry) => entry.length > 0)
+            : [];
+          if (options.length === 0) return null;
+          const sourceIds = Array.isArray(item.sourceIds)
+            ? item.sourceIds.map((entry) => asString(entry)).filter((entry) => entry.length > 0)
+            : [];
+          return {
+            id,
+            prompt,
+            options,
+            correctOptionIndex: clampInteger(asOptionalNumber(item.correctOptionIndex), 0, 0, Math.max(0, options.length - 1)),
+            correctOption: asString(item.correctOption) || options[0] || "",
+            explanation: asString(item.explanation) || "",
+            difficulty: normalizeDifficulty(item.difficulty),
+            topic: asString(item.topic) || "General review",
+            sourceIds,
+          } satisfies ExamSimulationQuestionStateDoc;
+        })
+        .filter((question): question is ExamSimulationQuestionStateDoc => question !== null)
+    : [];
+
+  const allSources = Array.isArray(data.allSources)
+    ? data.allSources
+        .map((row) => {
+          if (!row || typeof row !== "object") return null;
+          const item = row as Record<string, unknown>;
+          const id = asString(item.id);
+          const type = asString(item.type);
+          const label = asString(item.label);
+          const snippet = asString(item.snippet);
+          if (!id || !label || !snippet || (type !== "chat" && type !== "material")) return null;
+          return {
+            id,
+            type: type as StudySourceType,
+            label,
+            snippet,
+          } satisfies StudySourceDoc;
+        })
+        .filter((source): source is StudySourceDoc => source !== null)
+    : [];
+
+  const remainingQuestionIds = Array.isArray(data.remainingQuestionIds)
+    ? data.remainingQuestionIds.map((item) => asString(item)).filter((item) => item.length > 0)
+    : [];
+  const servedQuestionIds = Array.isArray(data.servedQuestionIds)
+    ? data.servedQuestionIds.map((item) => asString(item)).filter((item) => item.length > 0)
+    : [];
+  const internalResponses = Array.isArray(data.internalResponses)
+    ? data.internalResponses
+        .map((row) => {
+          if (!row || typeof row !== "object") return null;
+          const item = row as Record<string, unknown>;
+          const questionId = asString(item.questionId);
+          const sectionId = asString(item.sectionId);
+          const confidence = normalizeExamConfidence(item.confidence);
+          if (!questionId || !sectionId || !confidence) return null;
+          return {
+            questionId,
+            questionOrder: clampInteger(asOptionalNumber(item.questionOrder), 0, 0, 100000),
+            selectedOptionIndex: clampInteger(asOptionalNumber(item.selectedOptionIndex), 0, 0, 100),
+            confidence,
+            elapsedSec: clampInteger(asOptionalNumber(item.elapsedSec), 0, 0, 100000),
+            answeredAt: asDate(item.answeredAt) || new Date(0),
+            difficulty: normalizeDifficulty(item.difficulty),
+            topic: asString(item.topic) || "General review",
+            sectionId,
+            isCorrect: !!item.isCorrect,
+          } satisfies ExamSimulationInternalResponseDoc;
+        })
+        .filter((response): response is ExamSimulationInternalResponseDoc => response !== null)
+        .sort((a, b) => a.questionOrder - b.questionOrder)
+    : [];
+
+  return {
+    id: asString(data.id) || examSimulationId,
+    examSimulationId,
+    userId: asString(data.userId),
+    status: normalizeExamSimulationStatus(data.status),
+    currentDifficulty: normalizeDifficulty(data.currentDifficulty),
+    questionBank,
+    allSources,
+    remainingQuestionIds,
+    servedQuestionIds,
+    currentQuestionId: asString(data.currentQuestionId) || null,
+    internalResponses,
+    createdAt: asDate(data.createdAt) || new Date(0),
+    updatedAt: asDate(data.updatedAt) || new Date(0),
+    startedAt: asDate(data.startedAt),
+    endsAt: asDate(data.endsAt),
+    finishedAt: asDate(data.finishedAt),
+  };
+}
+
 function applyFlashcardRating(card: StudyFlashcardDoc, rating: FlashcardReviewRating, now: Date): StudyFlashcardDoc {
   let easeFactor = card.easeFactor || 2.5;
   let repetitions = Math.max(0, card.repetitions || 0);
@@ -1574,7 +2594,7 @@ async function buildChunksForMaterial(material: CourseMaterialDoc): Promise<{ fi
 
 /**
  * POST /focus/start
- * Body: { userId: string, courseId?: string, sessionId?: string }
+ * Body: { userId: string, courseId?: string, sessionId?: string, mode?: "study_mode"|"exam_simulation", chatId?: string, examSimulationId?: string }
  */
 export const focusStart = onRequest(
   FUNCTION_CONFIG,
@@ -1588,6 +2608,9 @@ export const focusStart = onRequest(
       const userId = asRequiredString(body.userId);
       const courseId = asOptionalString(body.courseId);
       const sessionId = asOptionalString(body.sessionId);
+      const mode = normalizeFocusSessionMode(body.mode);
+      const chatId = asOptionalString(body.chatId);
+      const examSimulationId = asOptionalString(body.examSimulationId);
       if (!userId) {
         badRequest(res, "Missing required field: userId");
         return;
@@ -1601,6 +2624,9 @@ export const focusStart = onRequest(
         status: "active",
         courseId: courseId ?? null,
         sessionId: sessionId ?? null,
+        mode,
+        chatId: chatId ?? null,
+        examSimulationId: examSimulationId ?? null,
         startedAt: new Date(),
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -2325,6 +3351,574 @@ export const studyGenerate = onRequest(
         updatedAt: new Date(),
       }, { merge: true });
       sendErrorResponse(res, 500, message);
+    }
+  }
+);
+
+/**
+ * POST /examSimulationCreate
+ * Body: { userId: string, chatId: string, model?: string }
+ */
+export const examSimulationCreate = onRequest(
+  FUNCTION_CONFIG,
+  async (req, res) => {
+    if (req.method !== "POST") {
+      sendErrorResponse(res, 405, "Method not allowed");
+      return;
+    }
+
+    const body = req.body || {};
+    const userId = asRequiredString(body.userId);
+    const chatId = asRequiredString(body.chatId);
+    const selectedModelName = resolveRequestedChatModelName(body.model);
+    const selectedChatModel = getChatModel(selectedModelName);
+
+    if (!userId || !chatId) {
+      badRequest(res, "Missing required fields: userId, chatId");
+      return;
+    }
+
+    const ownership = await loadChatOwnership(chatId);
+    if (!ownership) {
+      sendErrorResponse(res, 404, "Chat not found");
+      return;
+    }
+    if (ownership.userId !== userId) {
+      sendErrorResponse(res, 403, "Not allowed");
+      return;
+    }
+
+    const now = new Date();
+    const examSimulationRef = db.collection("examSimulations").doc();
+    const examSimulationStateRef = db.collection("examSimulationStates").doc(examSimulationRef.id);
+
+    await examSimulationRef.set({
+      id: examSimulationRef.id,
+      userId,
+      chatId,
+      courseId: ownership.courseId,
+      sessionId: ownership.sessionId,
+      status: "generating",
+      preset: "standard_mock",
+      durationSec: EXAM_SIMULATION_DURATION_SEC,
+      servedQuestionCount: EXAM_SIMULATION_SERVED_QUESTION_COUNT,
+      questionBankCount: EXAM_SIMULATION_BANK_COUNT,
+      model: selectedModelName,
+      sections: cloneExamSections(),
+      servedQuestions: [],
+      responses: [],
+      currentQuestionId: null,
+      recap: null,
+      errorMessage: null,
+      createdAt: now,
+      updatedAt: now,
+      startedAt: null,
+      endsAt: null,
+      finishedAt: null,
+    } satisfies ExamSimulationDoc);
+
+    try {
+      const recentMessages = await loadRecentChatMessages(chatId, userId, MAX_CHAT_MESSAGES_FOR_STUDY_SET);
+      const retrievalSeed = recentMessages
+        .filter((msg) => !msg.isAI)
+        .slice(-6)
+        .map((msg) => msg.text)
+        .join("\n");
+      const ragCitations = await retrieveRankedCitations(
+        chatId,
+        userId,
+        retrievalSeed || recentMessages[recentMessages.length - 1]?.text || "exam prep topic",
+      );
+
+      if (recentMessages.length < 3 && ragCitations.length === 0) {
+        throw createHttpError(400, "Add more chat context or indexed materials before generating a mock exam.");
+      }
+
+      const { sources: chatSources, transcript } = buildChatSourcesAndTranscript(recentMessages);
+      const materialSources = buildMaterialSources(ragCitations);
+      const allSources = [...chatSources, ...materialSources];
+      const allowedSourceIds = new Set(allSources.map((source) => source.id));
+      if (transcript.length < EXAM_SIMULATION_MIN_SOURCE_CHAR_COUNT && materialSources.length === 0) {
+        throw createHttpError(400, "The current chat is still too sparse for a grounded mock exam. Add a few more study messages first.");
+      }
+
+      const generation: GenerateResponse = await ai.generate({
+        model: selectedChatModel,
+        system: "You create source-grounded mock exam question banks. Return JSON only.",
+        prompt: buildExamSimulationPrompt({
+          transcript,
+          sources: allSources,
+        }),
+        config: {
+          temperature: 0.25,
+          maxOutputTokens: 3200,
+        },
+      });
+
+      const rawOutput = generation.text || "";
+      if (!rawOutput.trim()) {
+        throw new Error("Model returned an empty exam question bank");
+      }
+
+      const parsed = parseJsonObject(rawOutput);
+      const questionBank = parseExamSimulationQuestionBank(parsed.questions, allowedSourceIds);
+      if (!hasExpectedExamDifficultyDistribution(questionBank)) {
+        throw new Error("Generated exam bank was incomplete. Try again with richer source context.");
+      }
+
+      await Promise.all([
+        examSimulationStateRef.set({
+          id: examSimulationRef.id,
+          examSimulationId: examSimulationRef.id,
+          userId,
+          status: "ready",
+          currentDifficulty: "medium",
+          questionBank,
+          allSources,
+          remainingQuestionIds: questionBank.map((question) => question.id),
+          servedQuestionIds: [],
+          currentQuestionId: null,
+          internalResponses: [],
+          createdAt: now,
+          updatedAt: now,
+          startedAt: null,
+          endsAt: null,
+          finishedAt: null,
+        } satisfies ExamSimulationStateDoc),
+        examSimulationRef.set({
+          status: "ready",
+          updatedAt: new Date(),
+          errorMessage: null,
+        }, { merge: true }),
+      ]);
+
+      okJson(res, {
+        ok: true,
+        examSimulationId: examSimulationRef.id,
+      });
+    } catch (error) {
+      const statusCode = typeof (error as { statusCode?: unknown })?.statusCode === "number"
+        ? (error as { statusCode: number }).statusCode
+        : 500;
+      const message = error instanceof Error ? error.message : "Exam simulation generation failed";
+      await examSimulationRef.set({
+        status: "failed",
+        errorMessage: message,
+        updatedAt: new Date(),
+      }, { merge: true });
+      sendErrorResponse(res, statusCode, message);
+    }
+  }
+);
+
+/**
+ * POST /examSimulationStart
+ * Body: { userId: string, examSimulationId: string }
+ */
+export const examSimulationStart = onRequest(
+  FUNCTION_CONFIG,
+  async (req, res) => {
+    if (req.method !== "POST") {
+      sendErrorResponse(res, 405, "Method not allowed");
+      return;
+    }
+
+    const body = req.body || {};
+    const userId = asRequiredString(body.userId);
+    const examSimulationId = asRequiredString(body.examSimulationId);
+    if (!userId || !examSimulationId) {
+      badRequest(res, "Missing required fields: userId, examSimulationId");
+      return;
+    }
+
+    const examSimulationRef = db.collection("examSimulations").doc(examSimulationId);
+    const examSimulationStateRef = db.collection("examSimulationStates").doc(examSimulationId);
+
+    try {
+      const result = await db.runTransaction(async (tx) => {
+        const [examSimulationSnap, examSimulationStateSnap] = await Promise.all([
+          tx.get(examSimulationRef),
+          tx.get(examSimulationStateRef),
+        ]);
+
+        if (!examSimulationSnap.exists || !examSimulationStateSnap.exists) {
+          throw createHttpError(404, "Exam simulation not found");
+        }
+
+        const examSimulation = parseExamSimulationDoc(
+          examSimulationSnap.id,
+          (examSimulationSnap.data() || {}) as Record<string, unknown>,
+        );
+        const examSimulationState = parseExamSimulationStateDoc(
+          examSimulationId,
+          (examSimulationStateSnap.data() || {}) as Record<string, unknown>,
+        );
+
+        if (examSimulation.userId !== userId || examSimulationState.userId !== userId) {
+          throw createHttpError(403, "Not allowed");
+        }
+
+        if (examSimulation.status === "ready") {
+          const firstQuestion = pickNextExamQuestion(
+            examSimulationState.questionBank,
+            examSimulationState.remainingQuestionIds,
+            "medium",
+          );
+          if (!firstQuestion) {
+            throw createHttpError(409, "Exam simulation is missing a valid starting question");
+          }
+
+          const publicQuestion = toPublicExamQuestion(firstQuestion, 0);
+          const now = new Date();
+          const endsAt = new Date(now.getTime() + examSimulation.durationSec * 1000);
+          tx.set(examSimulationRef, {
+            status: "in_progress",
+            servedQuestions: [publicQuestion],
+            currentQuestionId: publicQuestion.id,
+            startedAt: now,
+            endsAt,
+            updatedAt: now,
+            errorMessage: null,
+          }, { merge: true });
+          tx.set(examSimulationStateRef, {
+            status: "in_progress",
+            currentDifficulty: publicQuestion.difficulty,
+            remainingQuestionIds: examSimulationState.remainingQuestionIds.filter((id) => id !== publicQuestion.id),
+            servedQuestionIds: [publicQuestion.id],
+            currentQuestionId: publicQuestion.id,
+            startedAt: now,
+            endsAt,
+            updatedAt: now,
+          }, { merge: true });
+
+          return {
+            status: "in_progress" as ExamSimulationStatus,
+            currentQuestion: publicQuestion,
+            startedAt: now.toISOString(),
+            endsAt: endsAt.toISOString(),
+          };
+        }
+
+        if (examSimulation.status === "in_progress") {
+          const currentQuestion = examSimulation.servedQuestions.find(
+            (question) => question.id === examSimulation.currentQuestionId,
+          ) || null;
+          return {
+            status: examSimulation.status,
+            currentQuestion,
+            startedAt: examSimulation.startedAt ? examSimulation.startedAt.toISOString() : null,
+            endsAt: examSimulation.endsAt ? examSimulation.endsAt.toISOString() : null,
+          };
+        }
+
+        throw createHttpError(409, "This exam simulation cannot be started again");
+      });
+
+      okJson(res, {
+        ok: true,
+        examSimulationId,
+        ...result,
+      });
+    } catch (error) {
+      if (typeof (error as { statusCode?: unknown })?.statusCode === "number") {
+        sendErrorResponse(res, (error as { statusCode: number }).statusCode, error instanceof Error ? error.message : "Request failed");
+        return;
+      }
+      sendServerError(res, error);
+    }
+  }
+);
+
+/**
+ * POST /examSimulationAnswer
+ * Body: { userId: string, examSimulationId: string, questionId: string, selectedOptionIndex: number, confidence: "low"|"medium"|"high", elapsedSec: number }
+ */
+export const examSimulationAnswer = onRequest(
+  FUNCTION_CONFIG,
+  async (req, res) => {
+    if (req.method !== "POST") {
+      sendErrorResponse(res, 405, "Method not allowed");
+      return;
+    }
+
+    const body = req.body || {};
+    const userId = asRequiredString(body.userId);
+    const examSimulationId = asRequiredString(body.examSimulationId);
+    const questionId = asRequiredString(body.questionId);
+    const selectedOptionIndex = asRequiredNumber(body.selectedOptionIndex);
+    const confidence = normalizeExamConfidence(body.confidence);
+    const elapsedSec = clampInteger(asOptionalNumber(body.elapsedSec), 0, 0, EXAM_SIMULATION_DURATION_SEC);
+
+    if (!userId || !examSimulationId || !questionId || selectedOptionIndex == null || !confidence) {
+      badRequest(res, "Missing required fields: userId, examSimulationId, questionId, selectedOptionIndex, confidence");
+      return;
+    }
+
+    const examSimulationRef = db.collection("examSimulations").doc(examSimulationId);
+    const examSimulationStateRef = db.collection("examSimulationStates").doc(examSimulationId);
+
+    try {
+      const result = await db.runTransaction(async (tx) => {
+        const [examSimulationSnap, examSimulationStateSnap] = await Promise.all([
+          tx.get(examSimulationRef),
+          tx.get(examSimulationStateRef),
+        ]);
+
+        if (!examSimulationSnap.exists || !examSimulationStateSnap.exists) {
+          throw createHttpError(404, "Exam simulation not found");
+        }
+
+        const examSimulation = parseExamSimulationDoc(
+          examSimulationSnap.id,
+          (examSimulationSnap.data() || {}) as Record<string, unknown>,
+        );
+        const examSimulationState = parseExamSimulationStateDoc(
+          examSimulationId,
+          (examSimulationStateSnap.data() || {}) as Record<string, unknown>,
+        );
+
+        if (examSimulation.userId !== userId || examSimulationState.userId !== userId) {
+          throw createHttpError(403, "Not allowed");
+        }
+        if (examSimulation.status !== "in_progress") {
+          throw createHttpError(409, "Exam simulation is not running");
+        }
+        if (examSimulation.currentQuestionId !== questionId || examSimulationState.currentQuestionId !== questionId) {
+          throw createHttpError(409, "This is not the active question");
+        }
+        if (examSimulation.endsAt && Date.now() > examSimulation.endsAt.getTime()) {
+          throw createHttpError(409, "Exam time has already expired");
+        }
+        if (examSimulationState.internalResponses.some((response) => response.questionId === questionId)) {
+          throw createHttpError(409, "This question has already been answered");
+        }
+
+        const privateQuestion = examSimulationState.questionBank.find((question) => question.id === questionId);
+        if (!privateQuestion) {
+          throw createHttpError(404, "Question not found in exam state");
+        }
+        if (!Number.isInteger(selectedOptionIndex) || selectedOptionIndex < 0 || selectedOptionIndex >= privateQuestion.options.length) {
+          throw createHttpError(400, "Selected option is out of range");
+        }
+
+        const questionOrder = examSimulationState.internalResponses.length;
+        const currentPublicQuestion = examSimulation.servedQuestions.find((question) => question.id === questionId);
+        const sectionId = currentPublicQuestion?.sectionId || getExamSectionForOrder(questionOrder).id;
+        const answeredAt = new Date();
+        const responseBase = {
+          questionId,
+          questionOrder,
+          selectedOptionIndex,
+          confidence,
+          elapsedSec,
+          answeredAt,
+          difficulty: privateQuestion.difficulty,
+          topic: privateQuestion.topic,
+          sectionId,
+        } satisfies ExamSimulationResponseDoc;
+        const isCorrect = selectedOptionIndex === privateQuestion.correctOptionIndex;
+        const internalResponse: ExamSimulationInternalResponseDoc = {
+          ...responseBase,
+          isCorrect,
+        };
+        const publicResponses = [...examSimulation.responses, responseBase];
+        const internalResponses = [...examSimulationState.internalResponses, internalResponse];
+        const answeredCount = internalResponses.length;
+        const reachedQuestionLimit = answeredCount >= examSimulation.servedQuestionCount;
+        const targetDifficulty = determineNextExamTargetDifficulty(privateQuestion.difficulty, isCorrect, confidence);
+
+        let nextPublicQuestion: ExamSimulationQuestionDoc | null = null;
+        let nextCurrentDifficulty = targetDifficulty;
+        let remainingQuestionIds = [...examSimulationState.remainingQuestionIds];
+        let servedQuestionIds = [...examSimulationState.servedQuestionIds];
+        let servedQuestions = [...examSimulation.servedQuestions];
+
+        if (!reachedQuestionLimit) {
+          const nextQuestion = pickNextExamQuestion(
+            examSimulationState.questionBank,
+            remainingQuestionIds,
+            targetDifficulty,
+          );
+          if (nextQuestion) {
+            nextPublicQuestion = toPublicExamQuestion(nextQuestion, answeredCount);
+            nextCurrentDifficulty = nextQuestion.difficulty;
+            remainingQuestionIds = remainingQuestionIds.filter((id) => id !== nextQuestion.id);
+            servedQuestionIds = [...servedQuestionIds, nextQuestion.id];
+            servedQuestions = [...servedQuestions, nextPublicQuestion];
+          }
+        }
+
+        tx.set(examSimulationRef, {
+          responses: publicResponses,
+          servedQuestions,
+          currentQuestionId: nextPublicQuestion?.id ?? null,
+          updatedAt: answeredAt,
+        }, { merge: true });
+        tx.set(examSimulationStateRef, {
+          internalResponses,
+          servedQuestionIds,
+          remainingQuestionIds,
+          currentDifficulty: nextCurrentDifficulty,
+          currentQuestionId: nextPublicQuestion?.id ?? null,
+          updatedAt: answeredAt,
+        }, { merge: true });
+
+        return {
+          status: "in_progress" as ExamSimulationStatus,
+          done: nextPublicQuestion == null || reachedQuestionLimit,
+          currentQuestion: nextPublicQuestion,
+        };
+      });
+
+      okJson(res, {
+        ok: true,
+        examSimulationId,
+        ...result,
+      });
+    } catch (error) {
+      if (typeof (error as { statusCode?: unknown })?.statusCode === "number") {
+        sendErrorResponse(res, (error as { statusCode: number }).statusCode, error instanceof Error ? error.message : "Request failed");
+        return;
+      }
+      sendServerError(res, error);
+    }
+  }
+);
+
+/**
+ * POST /examSimulationFinish
+ * Body: { userId: string, examSimulationId: string, completionReason: "submitted"|"time_up"|"abandoned", focusSessionId?: string }
+ */
+export const examSimulationFinish = onRequest(
+  FUNCTION_CONFIG,
+  async (req, res) => {
+    if (req.method !== "POST") {
+      sendErrorResponse(res, 405, "Method not allowed");
+      return;
+    }
+
+    const body = req.body || {};
+    const userId = asRequiredString(body.userId);
+    const examSimulationId = asRequiredString(body.examSimulationId);
+    const completionReasonRaw = asRequiredString(body.completionReason);
+    const focusSessionId = asOptionalString(body.focusSessionId);
+
+    if (!userId || !examSimulationId || !completionReasonRaw) {
+      badRequest(res, "Missing required fields: userId, examSimulationId, completionReason");
+      return;
+    }
+
+    const completionReason = completionReasonRaw === "time_up" || completionReasonRaw === "abandoned" || completionReasonRaw === "submitted"
+      ? completionReasonRaw
+      : null;
+    if (!completionReason) {
+      badRequest(res, "completionReason must be one of: submitted, time_up, abandoned");
+      return;
+    }
+
+    const examSimulationRef = db.collection("examSimulations").doc(examSimulationId);
+    const examSimulationStateRef = db.collection("examSimulationStates").doc(examSimulationId);
+
+    try {
+      const [examSimulationSnap, examSimulationStateSnap] = await Promise.all([
+        examSimulationRef.get(),
+        examSimulationStateRef.get(),
+      ]);
+      if (!examSimulationSnap.exists || !examSimulationStateSnap.exists) {
+        sendErrorResponse(res, 404, "Exam simulation not found");
+        return;
+      }
+
+      const examSimulation = parseExamSimulationDoc(
+        examSimulationSnap.id,
+        (examSimulationSnap.data() || {}) as Record<string, unknown>,
+      );
+      const examSimulationState = parseExamSimulationStateDoc(
+        examSimulationId,
+        (examSimulationStateSnap.data() || {}) as Record<string, unknown>,
+      );
+      if (examSimulation.userId !== userId || examSimulationState.userId !== userId) {
+        sendErrorResponse(res, 403, "Not allowed");
+        return;
+      }
+
+      if (
+        (examSimulation.status === "completed" ||
+          examSimulation.status === "timed_out" ||
+          examSimulation.status === "abandoned") &&
+        examSimulation.recap
+      ) {
+        okJson(res, {
+          ok: true,
+          examSimulationId,
+          status: examSimulation.status,
+          recap: examSimulation.recap,
+        });
+        return;
+      }
+
+      const finalStatus: ExamSimulationStatus =
+        completionReason === "time_up"
+          ? "timed_out"
+          : completionReason === "abandoned"
+            ? "abandoned"
+            : "completed";
+      const recap = await buildExamSimulationRecap({
+        userId,
+        modelName: examSimulation.model,
+        sections: examSimulation.sections,
+        allSources: examSimulationState.allSources,
+        responses: examSimulationState.internalResponses,
+        focusSessionId: focusSessionId ?? null,
+      });
+      const now = new Date();
+
+      await db.runTransaction(async (tx) => {
+        const currentExamSnap = await tx.get(examSimulationRef);
+        const currentStateSnap = await tx.get(examSimulationStateRef);
+        if (!currentExamSnap.exists || !currentStateSnap.exists) {
+          throw createHttpError(404, "Exam simulation not found");
+        }
+        const currentExam = parseExamSimulationDoc(
+          currentExamSnap.id,
+          (currentExamSnap.data() || {}) as Record<string, unknown>,
+        );
+        const currentState = parseExamSimulationStateDoc(
+          examSimulationId,
+          (currentStateSnap.data() || {}) as Record<string, unknown>,
+        );
+        if (currentExam.userId !== userId || currentState.userId !== userId) {
+          throw createHttpError(403, "Not allowed");
+        }
+
+        tx.set(examSimulationRef, {
+          status: finalStatus,
+          currentQuestionId: null,
+          recap,
+          finishedAt: now,
+          updatedAt: now,
+          errorMessage: null,
+        }, { merge: true });
+        tx.set(examSimulationStateRef, {
+          status: finalStatus,
+          currentQuestionId: null,
+          finishedAt: now,
+          updatedAt: now,
+        }, { merge: true });
+      });
+
+      okJson(res, {
+        ok: true,
+        examSimulationId,
+        status: finalStatus,
+        recap,
+      });
+    } catch (error) {
+      if (typeof (error as { statusCode?: unknown })?.statusCode === "number") {
+        sendErrorResponse(res, (error as { statusCode: number }).statusCode, error instanceof Error ? error.message : "Request failed");
+        return;
+      }
+      sendServerError(res, error);
     }
   }
 );

@@ -47,6 +47,22 @@ npm run dev
 
 Open the local URL shown by Vite (usually `http://localhost:5173`).
 
+## Production Focus Inference
+
+Production builds use Firebase Hosting rewrites to proxy focus-inference requests to the
+`studybuddy-inference` Cloud Run service in `us-central1`. This means:
+
+- Local dev can keep using `VITE_INFERENCE_API_BASE_URL=http://localhost:8001`
+- Production builds can omit `VITE_INFERENCE_API_BASE_URL` and use same-origin Hosting paths
+- Firebase Hosting must be deployed with the rewrite rules in `firebase.json`
+
+Typical production deploy flow:
+
+```bash
+npm run build
+firebase deploy --only hosting
+```
+
 ## Frontend
 
 The frontend is a React + TypeScript SPA built with Vite. It has two runtime modes:

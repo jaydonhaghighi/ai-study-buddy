@@ -5,6 +5,13 @@ export interface DataItem {
   createdAt: Date | null;
 }
 
+export type FocusAlertSettings = {
+  nudgeDelayMinutes: number;
+  soundEnabled: boolean;
+  volume: number;
+  updatedAt: Date | null;
+};
+
 export type Citation = {
   id: string;
   materialId: string;
@@ -101,6 +108,120 @@ export type StudySet = {
   errorMessage: string | null;
   createdAt: Date | null;
   updatedAt: Date | null;
+};
+
+export type ExamSimulationStatus =
+  | 'generating'
+  | 'ready'
+  | 'in_progress'
+  | 'completed'
+  | 'timed_out'
+  | 'abandoned'
+  | 'failed';
+
+export type ExamConfidence = 'low' | 'medium' | 'high';
+export type ExamCompletionReason = 'submitted' | 'time_up' | 'abandoned';
+
+export type ExamSimulationSection = {
+  id: string;
+  label: string;
+  questionTargetCount: number;
+  targetDurationSec: number;
+  cumulativeTargetSec: number;
+};
+
+export type ExamSimulationQuestion = {
+  id: string;
+  prompt: string;
+  options: string[];
+  difficulty: StudyDifficulty;
+  topic: string;
+  sourceIds: string[];
+  sectionId: string;
+  orderIndex: number;
+};
+
+export type ExamSimulationResponse = {
+  questionId: string;
+  questionOrder: number;
+  selectedOptionIndex: number;
+  confidence: ExamConfidence;
+  elapsedSec: number;
+  answeredAt: Date | null;
+  difficulty: StudyDifficulty;
+  topic: string;
+  sectionId: string;
+};
+
+export type ExamSimulationWeakTopic = {
+  topic: string;
+  accuracyPercent: number;
+  questionCount: number;
+  correctCount: number;
+};
+
+export type ExamSimulationDifficultyBreakdown = {
+  difficulty: StudyDifficulty;
+  accuracyPercent: number;
+  questionCount: number;
+  correctCount: number;
+};
+
+export type ExamSimulationSectionResult = {
+  sectionId: string;
+  label: string;
+  targetDurationSec: number;
+  actualElapsedSec: number;
+  overrunSec: number;
+  answeredCount: number;
+};
+
+export type ExamSimulationFocusInsight = {
+  focusSessionId: string;
+  focusPercent: number;
+  distractions: number;
+  firstDriftOffsetSec: number | null;
+};
+
+export type ExamSimulationRecap = {
+  answeredCount: number;
+  totalQuestionCount: number;
+  correctCount: number;
+  scorePercent: number;
+  completionPercent: number;
+  overconfidenceMisses: number;
+  weakTopics: ExamSimulationWeakTopic[];
+  accuracyByDifficulty: ExamSimulationDifficultyBreakdown[];
+  sectionResults: ExamSimulationSectionResult[];
+  timeLossMoments: string[];
+  recoveryPlan: string[];
+  weakTopicSummary: string;
+  focusInsight: ExamSimulationFocusInsight | null;
+};
+
+export type ExamSimulation = {
+  id: string;
+  userId: string;
+  chatId: string;
+  courseId: string | null;
+  sessionId: string | null;
+  status: ExamSimulationStatus;
+  preset: 'standard_mock';
+  durationSec: number;
+  servedQuestionCount: number;
+  questionBankCount: number;
+  model: string;
+  sections: ExamSimulationSection[];
+  servedQuestions: ExamSimulationQuestion[];
+  responses: ExamSimulationResponse[];
+  currentQuestionId: string | null;
+  recap: ExamSimulationRecap | null;
+  errorMessage: string | null;
+  createdAt: Date | null;
+  updatedAt: Date | null;
+  startedAt: Date | null;
+  endsAt: Date | null;
+  finishedAt: Date | null;
 };
 
 export type GamificationBadgeId =

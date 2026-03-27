@@ -18,6 +18,7 @@ import {
   InferenceFocusTracker,
   type InferencePredictionPayload,
 } from '../../services/inference-focus-tracker';
+import type { FocusAlertSettings } from '../../types';
 import { acquireWebcamStream } from '../../services/webcam-manager';
 
 type ToastVariant = 'success' | 'warning' | 'info';
@@ -54,7 +55,19 @@ export type FocusSession = {
   status: string;
   courseId?: string | null;
   sessionId?: string | null;
+  mode?: 'study_mode' | 'exam_simulation' | null;
+  chatId?: string | null;
+  examSimulationId?: string | null;
   startedAt?: Date | null;
+};
+
+export type FocusStartOptions = {
+  courseId?: string;
+  sessionId?: string;
+  mode?: 'study_mode' | 'exam_simulation';
+  chatId?: string;
+  examSimulationId?: string;
+  onStarted?: (focusSessionId: string) => Promise<void> | void;
 };
 
 const FAST_UI_CONFIDENCE_THRESHOLD = 0.45;
@@ -65,16 +78,20 @@ type UseFocusTrackingParams = {
   user: User | null;
   expandedCourseId: string | null;
   expandedSessionId: string | null;
+  focusAlertSettings: FocusAlertSettings;
   showToast: (message: string, variant?: ToastVariant) => void;
-  playFocusTransitionSound: (nextState: 'focused' | 'distracted') => void;
+  playFocusRecoverySound: () => void;
+  playDistractedNudgeSound: () => void;
 };
 
 export function useFocusTracking({
   user,
   expandedCourseId,
   expandedSessionId,
+  focusAlertSettings,
   showToast,
-  playFocusTransitionSound,
+  playFocusRecoverySound,
+  playDistractedNudgeSound,
 }: UseFocusTrackingParams) {
   const [activeFocusSession, setActiveFocusSession] = useState<FocusSession | null>(null);
   const [focusBusy, setFocusBusy] = useState(false);
@@ -89,12 +106,17 @@ export function useFocusTracking({
   const [pendingFocusStart, setPendingFocusStart] = useState<{
     courseId?: string;
     sessionId?: string;
+    mode?: 'study_mode' | 'exam_simulation';
+    chatId?: string;
+    examSimulationId?: string;
+    onStarted?: (focusSessionId: string) => Promise<void> | void;
   } | null>(null);
 
   const localFocusTrackerRef = useRef<FocusTrackerRuntime | null>(null);
   const trackerSourceRef = useRef<TrackerSource | null>(null);
   const trackerReleaseRef = useRef<null | (() => void)>(null);
   const focusStartLocalMsRef = useRef<number | null>(null);
+  const activeFocusSessionRef = useRef<FocusSession | null>(null);
 
   const announcedFocusStateRef = useRef<'focused' | 'distracted' | null>(null);
   const candidateFocusStateRef = useRef<'focused' | 'distracted' | null>(null);
@@ -103,8 +125,18 @@ export function useFocusTracking({
   const uiFocusStateRef = useRef<'focused' | 'distracted' | null>(null);
   const uiDistractionsRef = useRef<number>(0);
   const firstDriftOffsetSecRef = useRef<number | null>(null);
+  const distractedSinceMsRef = useRef<number | null>(null);
+  const distractedNudgeTimerRef = useRef<number | null>(null);
+  const distractedNudgePlayedRef = useRef<boolean>(false);
 
-  const announceFocusState = (nextState: 'focused' | 'distracted', mode: 'fast' | 'transitioned') => {
+  const clearPendingDistractedNudge = () => {
+    if (distractedNudgeTimerRef.current != null) {
+      window.clearTimeout(distractedNudgeTimerRef.current);
+      distractedNudgeTimerRef.current = null;
+    }
+  };
+
+  const announceFocusState = (nextState: 'focused' | 'distracted') => {
     if (announcedFocusStateRef.current === nextState) return;
     const now = Date.now();
     if (now - lastAnnounceMsRef.current < 800) return;
@@ -113,18 +145,20 @@ export function useFocusTracking({
     lastAnnounceMsRef.current = now;
 
     if (nextState === 'distracted') {
-      showToast(mode === 'fast' ? 'You are distracted' : 'You are distracted', 'warning');
-      playFocusTransitionSound('distracted');
+      showToast('You are distracted', 'warning');
     } else {
-      showToast(mode === 'fast' ? "You're back in focus" : "You're back in focus", 'success');
-      playFocusTransitionSound('focused');
+      showToast("You're back in focus", 'success');
+      playFocusRecoverySound();
     }
   };
 
   const resetUiDistractionCounter = () => {
+    clearPendingDistractedNudge();
     uiFocusStateRef.current = null;
     uiDistractionsRef.current = 0;
     firstDriftOffsetSecRef.current = null;
+    distractedSinceMsRef.current = null;
+    distractedNudgePlayedRef.current = false;
     setCurrentFocusState(null);
     setStudyDistractions(0);
     setFirstDriftOffsetSec(null);
@@ -137,6 +171,8 @@ export function useFocusTracking({
   const applyUiFocusState = (nextState: 'focused' | 'distracted') => {
     const prev = uiFocusStateRef.current;
     if (prev === 'focused' && nextState === 'distracted') {
+      distractedSinceMsRef.current = Date.now();
+      distractedNudgePlayedRef.current = false;
       uiDistractionsRef.current += 1;
       setStudyDistractions(uiDistractionsRef.current);
       if (firstDriftOffsetSecRef.current == null) {
@@ -146,9 +182,18 @@ export function useFocusTracking({
         setFirstDriftOffsetSec(offsetSec);
       }
     }
+    if (nextState === 'focused') {
+      clearPendingDistractedNudge();
+      distractedSinceMsRef.current = null;
+      distractedNudgePlayedRef.current = false;
+    }
     uiFocusStateRef.current = nextState;
     setCurrentFocusState(nextState);
   };
+
+  useEffect(() => {
+    activeFocusSessionRef.current = activeFocusSession;
+  }, [activeFocusSession]);
 
   useEffect(() => {
     if (!user) {
@@ -172,6 +217,9 @@ export function useFocusTracking({
       setActiveFocusSession({
         id: doc0.id,
         ...data,
+        mode: data.mode === 'study_mode' || data.mode === 'exam_simulation' ? data.mode : null,
+        chatId: typeof data.chatId === 'string' ? data.chatId : null,
+        examSimulationId: typeof data.examSimulationId === 'string' ? data.examSimulationId : null,
         startedAt: data.startedAt instanceof Timestamp ? data.startedAt.toDate() : null,
       } as FocusSession);
     });
@@ -181,6 +229,7 @@ export function useFocusTracking({
 
   useEffect(() => {
     return () => {
+      clearPendingDistractedNudge();
       const tracker = localFocusTrackerRef.current;
       localFocusTrackerRef.current = null;
       if (trackerReleaseRef.current) {
@@ -236,11 +285,58 @@ export function useFocusTracking({
     return () => window.clearInterval(id);
   }, [activeFocusSession]);
 
-  const handleStartFocus = () => {
+  useEffect(() => {
+    if (!activeFocusSession || currentFocusState !== 'distracted') {
+      clearPendingDistractedNudge();
+      return;
+    }
+
+    if (distractedSinceMsRef.current == null) {
+      distractedSinceMsRef.current = Date.now();
+    }
+
+    if (!focusAlertSettings.soundEnabled || distractedNudgePlayedRef.current) {
+      clearPendingDistractedNudge();
+      return;
+    }
+
+    const delayMs = Math.max(1, focusAlertSettings.nudgeDelayMinutes) * 60 * 1000;
+    const elapsedMs = Date.now() - distractedSinceMsRef.current;
+    const remainingMs = Math.max(0, delayMs - elapsedMs);
+
+    clearPendingDistractedNudge();
+    distractedNudgeTimerRef.current = window.setTimeout(() => {
+      distractedNudgeTimerRef.current = null;
+      if (!activeFocusSessionRef.current) return;
+      if (uiFocusStateRef.current !== 'distracted') return;
+      if (distractedNudgePlayedRef.current) return;
+      distractedNudgePlayedRef.current = true;
+      playDistractedNudgeSound();
+    }, remainingMs);
+
+    return () => {
+      clearPendingDistractedNudge();
+    };
+  }, [
+    activeFocusSession,
+    currentFocusState,
+    focusAlertSettings.nudgeDelayMinutes,
+    focusAlertSettings.soundEnabled,
+    playDistractedNudgeSound,
+  ]);
+
+  const handleStartFocus = (options?: FocusStartOptions) => {
     if (!user) return;
-    const courseId = expandedCourseId || undefined;
-    const sessionId = expandedSessionId || undefined;
-    setPendingFocusStart({ courseId, sessionId });
+    const courseId = (options?.courseId ?? expandedCourseId) || undefined;
+    const sessionId = (options?.sessionId ?? expandedSessionId) || undefined;
+    setPendingFocusStart({
+      courseId,
+      sessionId,
+      mode: options?.mode,
+      chatId: options?.chatId,
+      examSimulationId: options?.examSimulationId,
+      onStarted: options?.onStarted,
+    });
     setShowCalibrationModal(true);
   };
 
@@ -266,8 +362,19 @@ export function useFocusTracking({
         userId: user.uid,
         courseId: pendingFocusStart.courseId,
         sessionId: pendingFocusStart.sessionId,
+        mode: pendingFocusStart.mode,
+        chatId: pendingFocusStart.chatId,
+        examSimulationId: pendingFocusStart.examSimulationId,
       });
       focusStartLocalMsRef.current = Date.now();
+      if (pendingFocusStart.onStarted) {
+        try {
+          await pendingFocusStart.onStarted(res.focusSessionId);
+        } catch (callbackError) {
+          console.warn('Linked focus-start callback failed:', callbackError);
+          showToast('Focus tracking started, but the linked exam flow could not continue.', 'warning');
+        }
+      }
 
       try {
         let tracker: FocusTrackerRuntime | null = null;
@@ -301,7 +408,7 @@ export function useFocusTracking({
                       : null;
                 if (transitionedState) {
                   applyUiFocusState(transitionedState);
-                  announceFocusState(transitionedState, 'transitioned');
+                  announceFocusState(transitionedState);
                   candidateFocusStateRef.current = null;
                   candidateSinceMsRef.current = null;
                 }
@@ -332,7 +439,7 @@ export function useFocusTracking({
                     : FAST_UI_REFOCUS_HOLD_MS;
                 if (elapsed >= requiredMs) {
                   applyUiFocusState(uiCandidate);
-                  announceFocusState(uiCandidate, 'fast');
+                  announceFocusState(uiCandidate);
                   candidateFocusStateRef.current = null;
                   candidateSinceMsRef.current = null;
                 }
@@ -358,7 +465,7 @@ export function useFocusTracking({
               }
               if (lastFocused !== isFocused) {
                 applyUiFocusState(nextState);
-                announceFocusState(nextState, 'fast');
+                announceFocusState(nextState);
               }
               lastFocused = isFocused;
             },
@@ -442,6 +549,10 @@ export function useFocusTracking({
             source: trackerSource ?? 'laptop_webcam',
             courseId: activeFocusSession.courseId || null,
             sessionId: activeFocusSession.sessionId || null,
+            mode: activeFocusSession.mode || null,
+            chatId: activeFocusSession.chatId || null,
+            examSimulationId: activeFocusSession.examSimulationId || null,
+            firstDriftOffsetSec: firstDriftSec,
             createdAt: serverTimestamp(),
             ...finalSummary,
           },

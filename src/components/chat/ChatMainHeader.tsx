@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import {
+  BookOpenCheck,
   ChevronUp,
   ChevronDown,
   LayoutDashboard,
@@ -9,7 +10,7 @@ import {
 } from 'lucide-react';
 import type { InferencePredictionPayload } from '../../services/inference-focus-tracker';
 
-type MainView = 'chat' | 'dashboard';
+type MainView = 'chat' | 'exam' | 'dashboard';
 
 type ChatMainHeaderProps = {
   mainView: MainView;
@@ -23,6 +24,7 @@ type ChatMainHeaderProps = {
   lastPose: InferencePredictionPayload | null;
   isRightSidebarOpen: boolean;
   canToggleRightSidebar: boolean;
+  isExamLocked: boolean;
   onChangeModel: (value: string) => void;
   onChangeMainView: (nextView: MainView) => void;
   onToggleRightSidebar: () => void;
@@ -41,6 +43,7 @@ export default function ChatMainHeader({
   lastPose,
   isRightSidebarOpen,
   canToggleRightSidebar,
+  isExamLocked,
   onChangeModel,
   onChangeMainView,
   onToggleRightSidebar,
@@ -49,25 +52,34 @@ export default function ChatMainHeader({
   const [isModelPickerOpen, setIsModelPickerOpen] = useState(false);
   const navBtnClass = (view: MainView) =>
     `chat-header-btn ${mainView === view ? 'chat-header-btn-primary' : ''}`;
+  const titleText = mainView === 'dashboard'
+    ? 'Focus dashboard'
+    : mainView === 'exam'
+      ? (currentChatName ? `${currentChatName} mock exam` : 'Live exam simulation')
+      : (currentChatName || 'Select a Chat');
   const subtitleText = mainView === 'dashboard'
     ? 'Visualize focus sessions captured from your webcam.'
-    : (currentChatName ? '' : 'Choose an existing chat or create a new one to get started');
+    : mainView === 'exam'
+      ? (isExamLocked
+          ? 'Adaptive exam session in progress. Navigation is locked until you submit or exit.'
+          : 'Generate and run a grounded mock exam from the current chat context.')
+      : (currentChatName ? '' : 'Choose an existing chat or create a new one to get started');
+  const showModelPicker = (mainView === 'chat' || mainView === 'exam') && !isExamLocked;
 
   return (
     <div className="chat-header">
       <div className="chat-header-inner">
         <div className="chat-header-left">
-          <h2 className="chat-header-title">
-            {mainView === 'dashboard' ? 'Focus dashboard' : (currentChatName || 'Select a Chat')}
-          </h2>
+          <h2 className="chat-header-title">{titleText}</h2>
           {subtitleText && <p className="chat-header-subtitle">{subtitleText}</p>}
-          {mainView === 'chat' && (
+          {showModelPicker && (
             <div className="chat-header-model-row">
               <div className="chat-header-model-picker">
                 <select
                   id="chat-header-model-select"
                   className="chat-header-model-select"
                   value={selectedModel}
+                  disabled={isExamLocked}
                   onChange={(event) => {
                     onChangeModel(event.target.value);
                     setIsModelPickerOpen(false);
@@ -99,16 +111,25 @@ export default function ChatMainHeader({
               <button
                 onClick={() => onChangeMainView('chat')}
                 className={navBtnClass('chat')}
-                disabled={focusBusy}
+                disabled={focusBusy || isExamLocked}
                 type="button"
               >
                 <MessageSquareText size={16} aria-hidden="true" />
                 <span>Chat</span>
               </button>
               <button
+                onClick={() => onChangeMainView('exam')}
+                className={navBtnClass('exam')}
+                disabled={focusBusy}
+                type="button"
+              >
+                <BookOpenCheck size={16} aria-hidden="true" />
+                <span>Exam</span>
+              </button>
+              <button
                 onClick={() => onChangeMainView('dashboard')}
                 className={navBtnClass('dashboard')}
-                disabled={focusBusy}
+                disabled={focusBusy || isExamLocked}
                 type="button"
               >
                 <LayoutDashboard size={16} aria-hidden="true" />
@@ -118,7 +139,7 @@ export default function ChatMainHeader({
                 <button
                   onClick={onToggleRightSidebar}
                   className="chat-header-btn chat-header-btn-icon-only"
-                  disabled={!canToggleRightSidebar}
+                  disabled={!canToggleRightSidebar || isExamLocked}
                   type="button"
                   title="Show right panel"
                   aria-label="Show right panel"

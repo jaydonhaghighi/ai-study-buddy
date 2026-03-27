@@ -88,6 +88,18 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
+    match /userSettings/{userSettingsId} {
+      allow read: if isSignedIn() && request.auth.uid == userSettingsId;
+      allow create: if isSignedIn()
+        && request.auth.uid == userSettingsId
+        && request.resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn()
+        && request.auth.uid == userSettingsId
+        && resource.data.userId == request.auth.uid
+        && request.resource.data.userId == resource.data.userId;
+      allow delete: if isSignedIn() && request.auth.uid == userSettingsId;
+    }
+
     match /courseMaterials/{materialId} {
       allow read: if isOwnerRead();
       allow create: if isOwnerCreate();
@@ -100,6 +112,15 @@ service cloud.firestore {
       allow create: if isOwnerCreate();
       allow update: if isOwnerUpdate();
       allow delete: if isOwnerRead();
+    }
+
+    match /examSimulations/{examSimulationId} {
+      allow read: if isOwnerRead();
+      allow create, update, delete: if false;
+    }
+
+    match /examSimulationStates/{examSimulationStateId} {
+      allow read, write: if false;
     }
 
     match /flashcardReviews/{reviewId} {
