@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 import {
+  Bell,
   Camera,
   ChevronsUpDown,
   ChevronRight,
@@ -61,9 +62,11 @@ type ChatSidebarProps = {
   onCloseSidebar: () => void;
   settingsOpen: boolean;
   settingsRef: React.RefObject<HTMLDivElement>;
+  focusAlertStatusLabel: string;
   cameraPreviewEnabled: boolean;
   focusBusy: boolean;
   onToggleSettings: () => void;
+  onOpenFocusAlerts: () => void;
   onToggleCameraPreview: () => void;
   onSignOut: () => void;
 };
@@ -98,9 +101,11 @@ export default function ChatSidebar({
   onCloseSidebar,
   settingsOpen,
   settingsRef,
+  focusAlertStatusLabel,
   cameraPreviewEnabled,
   focusBusy,
   onToggleSettings,
+  onOpenFocusAlerts,
   onToggleCameraPreview,
   onSignOut,
 }: ChatSidebarProps) {
@@ -359,6 +364,15 @@ export default function ChatSidebar({
 
             {settingsOpen && (
               <div className="chat-settings-menu" role="menu" aria-label="Settings menu">
+                <button
+                  type="button"
+                  className="chat-settings-item"
+                  role="menuitem"
+                  onClick={onOpenFocusAlerts}
+                >
+                  <Bell size={16} aria-hidden="true" />
+                  <span>Focus alerts: {focusAlertStatusLabel}</span>
+                </button>
                 <button
                   type="button"
                   className="chat-settings-item"

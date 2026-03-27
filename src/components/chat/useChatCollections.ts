@@ -52,7 +52,7 @@ type UseChatCollectionsParams = {
   expandedCourseId: string | null;
   expandedSessionId: string | null;
   selectedChatId: string | null;
-  mainView: 'chat' | 'study' | 'dashboard';
+  mainView: 'chat' | 'exam' | 'dashboard';
 };
 
 export function useChatCollections({

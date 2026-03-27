@@ -8,6 +8,9 @@ export async function startFocusSession(params: {
   userId: string;
   courseId?: string;
   sessionId?: string;
+  mode?: 'study_mode' | 'exam_simulation';
+  chatId?: string;
+  examSimulationId?: string;
 }): Promise<{ ok: boolean; focusSessionId: string }> {
   const res = await fetchFunctionsEndpoint('/focusStart', {
     method: 'POST',

@@ -517,6 +517,7 @@ export default function FocusDashboard({ userId }: { userId: string }) {
                         borderRadius: 10,
                         color: CHART_COLORS.tooltipText,
                       }}
+                      itemStyle={{ color: CHART_COLORS.tooltipText }}
                       labelStyle={{ color: CHART_COLORS.tooltipText, fontWeight: 700 }}
                     />
                     <Line type="monotone" dataKey="focusPercent" stroke={CHART_COLORS.line} strokeWidth={2.5} dot={false} />
@@ -566,6 +567,7 @@ export default function FocusDashboard({ userId }: { userId: string }) {
                             borderRadius: 10,
                             color: CHART_COLORS.tooltipText,
                           }}
+                          itemStyle={{ color: CHART_COLORS.tooltipText }}
                           labelStyle={{ color: CHART_COLORS.tooltipText, fontWeight: 700 }}
                         />
                       </PieChart>

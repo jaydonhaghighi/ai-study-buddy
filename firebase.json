@@ -8,6 +8,41 @@
     ],
     "rewrites": [
       {
+        "source": "/health",
+        "run": {
+          "serviceId": "studybuddy-inference",
+          "region": "us-central1"
+        }
+      },
+      {
+        "source": "/model-info",
+        "run": {
+          "serviceId": "studybuddy-inference",
+          "region": "us-central1"
+        }
+      },
+      {
+        "source": "/predict",
+        "run": {
+          "serviceId": "studybuddy-inference",
+          "region": "us-central1"
+        }
+      },
+      {
+        "source": "/session{,/**}",
+        "run": {
+          "serviceId": "studybuddy-inference",
+          "region": "us-central1"
+        }
+      },
+      {
+        "source": "/ws/session{,/**}",
+        "run": {
+          "serviceId": "studybuddy-inference",
+          "region": "us-central1"
+        }
+      },
+      {
         "source": "**",
         "destination": "/index.html"
       }

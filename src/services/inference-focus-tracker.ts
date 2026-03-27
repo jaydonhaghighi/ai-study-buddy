@@ -44,7 +44,7 @@ type TrackerOptions = {
   stream?: MediaStream;
 };
 
-const DEFAULT_BASE_URL = 'http://localhost:8001';
+const DEFAULT_LOCAL_BASE_URL = 'http://localhost:8001';
 const DEFAULT_SAMPLE_INTERVAL_MS = 200; // 5 FPS
 const DEFAULT_REQUEST_TIMEOUT_MS = 8000;
 const DEFAULT_JPEG_QUALITY = 0.85;
@@ -53,7 +53,12 @@ const DEFAULT_MIRROR_INPUT = (import.meta.env.VITE_INFERENCE_MIRROR_INPUT ?? '1'
 const DEFAULT_FACE_PADDING = 0.5;
 
 function getBaseUrl(url?: string): string {
-  const configured = (url ?? import.meta.env.VITE_INFERENCE_API_BASE_URL ?? DEFAULT_BASE_URL).trim();
+  const envBaseUrl = import.meta.env.VITE_INFERENCE_API_BASE_URL?.trim();
+  const configured = (
+    url
+    ?? envBaseUrl
+    ?? (import.meta.env.PROD ? '' : DEFAULT_LOCAL_BASE_URL)
+  ).trim();
   return configured.replace(/\/+$/, '');
 }
 

@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { auth } from '../firebase-config';
 import { User, signOut } from 'firebase/auth';
 import {
+  Bell,
   Camera,
   FolderPlus,
   LogOut,
@@ -11,6 +12,7 @@ import {
   X,
 } from 'lucide-react';
 import FocusDashboard from './FocusDashboard';
+import ExamSimulationWorkspace from './ExamSimulationWorkspace';
 import StudyMode from './StudyMode';
 import ChatMainHeader from './chat/ChatMainHeader';
 import ChatMessageList from './chat/ChatMessageList';
@@ -21,15 +23,19 @@ import ChatPreviewSidebar from './chat/ChatPreviewSidebar';
 import ChatMaterialsPanel from './chat/ChatMaterialsPanel';
 import ChatStudySetsPanel from './chat/ChatStudySetsPanel';
 import ChatCalibrationModal from './chat/ChatCalibrationModal';
+import FocusAlertSettingsModal from './chat/FocusAlertSettingsModal';
 import { useChatAutoScroll } from './chat/useChatAutoScroll';
 import { useFocusTracking } from './chat/useFocusTracking';
 import { useChatCollections } from './chat/useChatCollections';
 import { useChatMutations } from './chat/useChatMutations';
 import { useChatAuth } from './chat/useChatAuth';
 import { useChatCameraPreview } from './chat/useChatCameraPreview';
+import { useFocusAlertAudio } from './chat/useFocusAlertAudio';
+import { useFocusAlertSettings } from './chat/useFocusAlertSettings';
 import { useChatUiState } from './chat/useChatUiState';
 import { useChatMaterials } from './chat/useChatMaterials';
 import { useStudySets } from './chat/useStudySets';
+import { useExamSimulation } from './chat/useExamSimulation';
 import logo from '../public/logo.png';
 import './Chat.css';
 
@@ -84,7 +90,7 @@ const OPENAI_CHAT_MODEL_OPTIONS = configuredModelOptions.length > 0
 
 export default function Chat({ user }: ChatProps) {
   // Navigation State
-  const [mainView, setMainView] = useState<'chat' | 'dashboard'>('chat');
+  const [mainView, setMainView] = useState<'chat' | 'exam' | 'dashboard'>('chat');
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true);
   const [rightSidebarOpen, setRightSidebarOpen] = useState(true);
   
@@ -92,6 +98,7 @@ export default function Chat({ user }: ChatProps) {
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null);
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
   const [isChatSearchOpen, setIsChatSearchOpen] = useState(false);
+  const [isFocusAlertSettingsOpen, setIsFocusAlertSettingsOpen] = useState(false);
   const [chatSearchQuery, setChatSearchQuery] = useState('');
 
   const {
@@ -155,7 +162,6 @@ export default function Chat({ user }: ChatProps) {
   
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
   const [editChatName, setEditChatName] = useState('');
-  const audioCtxRef = useRef<AudioContext | null>(null);
   const {
     toastMessage,
     toastVariant,
@@ -165,41 +171,28 @@ export default function Chat({ user }: ChatProps) {
     settingsRef,
   } = useChatUiState();
 
-  const playBeep = (frequencyHz: number, durationMs: number, gain: number = 0.06) => {
-    try {
-      const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext;
-      if (!AudioContextCtor) return;
-      if (!audioCtxRef.current) {
-        audioCtxRef.current = new AudioContextCtor();
-      }
-      const ctx = audioCtxRef.current;
-      // best-effort resume; may still be blocked until user gesture (Start Focus counts)
-      if (ctx.state === 'suspended') {
-        void ctx.resume().catch(() => {});
-      }
-      const osc = ctx.createOscillator();
-      const g = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.value = frequencyHz;
-      g.gain.value = gain;
-      osc.connect(g);
-      g.connect(ctx.destination);
-      const now = ctx.currentTime;
-      osc.start(now);
-      osc.stop(now + durationMs / 1000);
-    } catch {
-      // ignore audio failures (permissions/autoplay policy)
-    }
-  };
+  const {
+    focusAlertSettings,
+    focusAlertSettingsLoading,
+    focusAlertSettingsSaving,
+    handleSaveFocusAlertSettings,
+  } = useFocusAlertSettings({
+    user,
+    showToast,
+  });
 
-  const playFocusTransitionSound = (nextState: 'focused' | 'distracted') => {
-    if (nextState === 'distracted') {
-      playBeep(220, 140);
-      window.setTimeout(() => playBeep(220, 140), 170);
-    } else {
-      playBeep(660, 180);
-    }
-  };
+  const {
+    playFocusRecoverySound,
+    playDistractedNudgeSound,
+    playFocusAlertPreviewSound,
+  } = useFocusAlertAudio({
+    soundEnabled: focusAlertSettings.soundEnabled,
+    volume: focusAlertSettings.volume,
+  });
+
+  const focusAlertStatusLabel = focusAlertSettings.soundEnabled
+    ? `${focusAlertSettings.nudgeDelayMinutes} min`
+    : 'Off';
 
   const {
     activeFocusSession,
@@ -222,8 +215,10 @@ export default function Chat({ user }: ChatProps) {
     user,
     expandedCourseId,
     expandedSessionId,
+    focusAlertSettings,
     showToast,
-    playFocusTransitionSound,
+    playFocusRecoverySound,
+    playDistractedNudgeSound,
   });
 
   const {
@@ -311,9 +306,29 @@ export default function Chat({ user }: ChatProps) {
     showToast,
   });
 
+  const {
+    examSimulations,
+    activeExam,
+    activeExamId,
+    setActiveExamId,
+    examGenerating,
+    examActionBusy,
+    handleCreateExam,
+    handleStartExam,
+    handleSubmitAnswer,
+    handleFinishExam,
+  } = useExamSimulation({
+    user,
+    selectedChatId,
+    currentChat,
+    selectedModel,
+    showToast,
+  });
+
   const handleSignOut = async () => {
     try {
       setSettingsOpen(false);
+      setIsFocusAlertSettingsOpen(false);
       await cleanupOnSignOut();
       await signOut(auth);
       clearAllData();
@@ -332,6 +347,11 @@ export default function Chat({ user }: ChatProps) {
   const openChatSearchModal = () => {
     setChatSearchQuery('');
     setIsChatSearchOpen(true);
+  };
+
+  const openFocusAlertSettings = () => {
+    setSettingsOpen(false);
+    setIsFocusAlertSettingsOpen(true);
   };
 
   useEffect(() => {
@@ -372,11 +392,12 @@ export default function Chat({ user }: ChatProps) {
   const hasStreamingAiText = messages.some(
     (m) => m.isAI && m.id.startsWith('temp-') && !!m.text && m.text.trim().length > 0
   );
-  const showRightPanel = mainView === 'chat' && rightSidebarOpen;
+  const examIsLocked = mainView === 'exam' && activeExam?.status === 'in_progress';
+  const showRightPanel = mainView === 'chat' && rightSidebarOpen && !examIsLocked;
 
   return (
     <div className={`chat-container ${showRightPanel ? 'preview-sidebar-open' : ''} ${leftSidebarOpen ? '' : 'left-sidebar-closed'}`}>
-      {leftSidebarOpen && (
+      {!examIsLocked && leftSidebarOpen && (
         <ChatSidebar
           courses={courses}
           sessions={sessions}
@@ -407,14 +428,16 @@ export default function Chat({ user }: ChatProps) {
           onCloseSidebar={() => setLeftSidebarOpen(false)}
           settingsOpen={settingsOpen}
           settingsRef={settingsRef}
+          focusAlertStatusLabel={focusAlertStatusLabel}
           cameraPreviewEnabled={cameraPreviewEnabled}
           focusBusy={focusBusy}
           onToggleSettings={() => setSettingsOpen((value) => !value)}
+          onOpenFocusAlerts={openFocusAlertSettings}
           onToggleCameraPreview={() => setCameraPreviewEnabled((value) => !value)}
           onSignOut={handleSignOut}
         />
       )}
-      {!leftSidebarOpen && (
+      {!examIsLocked && !leftSidebarOpen && (
         <aside className="chat-sidebar-rail" aria-label="Collapsed navigation">
           <button
             type="button"
@@ -481,6 +504,15 @@ export default function Chat({ user }: ChatProps) {
                     type="button"
                     className="chat-settings-item"
                     role="menuitem"
+                    onClick={openFocusAlertSettings}
+                  >
+                    <Bell size={16} aria-hidden="true" />
+                    <span>Focus alerts: {focusAlertStatusLabel}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="chat-settings-item"
+                    role="menuitem"
                     onClick={() => setCameraPreviewEnabled((value) => !value)}
                     disabled={focusBusy}
                   >
@@ -518,13 +550,36 @@ export default function Chat({ user }: ChatProps) {
           onChangeModel={setSelectedModel}
           onChangeMainView={setMainView}
           isRightSidebarOpen={rightSidebarOpen}
-          canToggleRightSidebar={mainView === 'chat'}
+          canToggleRightSidebar={mainView === 'chat' && !examIsLocked}
+          isExamLocked={examIsLocked}
           onToggleRightSidebar={() => setRightSidebarOpen((value) => !value)}
           formatDuration={formatDuration}
         />
 
         {mainView === 'dashboard' ? (
           <FocusDashboard userId={user.uid} />
+        ) : mainView === 'exam' ? (
+          <ExamSimulationWorkspace
+            selectedChatId={selectedChatId}
+            currentChat={currentChat}
+            indexedMaterialsCount={materials.filter((material) => material.status === 'indexed').length}
+            selectedModel={selectedModel}
+            examSimulations={examSimulations}
+            activeExam={activeExam}
+            activeExamId={activeExamId}
+            examGenerating={examGenerating}
+            examActionBusy={examActionBusy}
+            activeFocusSession={activeFocusSession}
+            focusBusy={focusBusy}
+            onSelectExam={setActiveExamId}
+            onCreateExam={handleCreateExam}
+            onStartExam={handleStartExam}
+            onSubmitAnswer={handleSubmitAnswer}
+            onFinishExam={handleFinishExam}
+            onStartFocus={handleStartFocus}
+            onStopFocus={handleStopFocus}
+            showToast={showToast}
+          />
         ) : (
           <>
             <ChatMessageList
@@ -609,6 +664,16 @@ export default function Chat({ user }: ChatProps) {
           setCameraPreviewAfterCalibration(true);
           startFocusAfterCalibration();
         }}
+      />
+
+      <FocusAlertSettingsModal
+        show={isFocusAlertSettingsOpen}
+        settings={focusAlertSettings}
+        loading={focusAlertSettingsLoading}
+        saving={focusAlertSettingsSaving}
+        onClose={() => setIsFocusAlertSettingsOpen(false)}
+        onPreview={playFocusAlertPreviewSound}
+        onSave={handleSaveFocusAlertSettings}
       />
 
       {isChatSearchOpen && (
