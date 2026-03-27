@@ -202,9 +202,14 @@ export default function StudyMode({
     if (stopInFlightRef.current || !activeFocusSession) return;
     stopInFlightRef.current = true;
     setIsStopping(true);
+    const frozenRemainingMs = Math.max(0, phaseRemainingMs);
+    setPhaseEndAtMs(null);
+    setPhaseRemainingMs(frozenRemainingMs);
     try {
       const stopResult = await onStopFocus();
       if (!stopResult || !stopResult.ok) {
+        setPhaseEndAtMs(Date.now() + frozenRemainingMs);
+        setPhaseRemainingMs(frozenRemainingMs);
         showToast('Could not finalize sprint. Try stopping focus again.', 'warning');
         return;
       }
@@ -217,11 +222,17 @@ export default function StudyMode({
       setIsStopping(false);
       stopInFlightRef.current = false;
     }
-  }, [activeFocusSession, onStopFocus, showToast]);
+  }, [activeFocusSession, onStopFocus, phaseRemainingMs, showToast]);
 
   useEffect(() => {
     if (phaseEndAtMs == null) {
-      setPhaseRemainingMs(phase === 'break_running' ? BREAK_SPRINT_MS : focusDurationMs);
+      if (isStopping) return;
+      if (activeFocusSession) return;
+      if (phase === 'break_running') {
+        setPhaseRemainingMs(BREAK_SPRINT_MS);
+        return;
+      }
+      setPhaseRemainingMs(focusDurationMs);
       return;
     }
 
@@ -231,7 +242,7 @@ export default function StudyMode({
     tick();
     const timerId = window.setInterval(tick, 250);
     return () => window.clearInterval(timerId);
-  }, [phase, phaseEndAtMs, focusDurationMs]);
+  }, [activeFocusSession, focusDurationMs, isStopping, phase, phaseEndAtMs]);
 
   useEffect(() => {
     if (!awaitingFocusStart) return;
@@ -241,6 +252,21 @@ export default function StudyMode({
       setAwaitingFocusStart(false);
     }
   }, [activeFocusSession, awaitingFocusStart, focusBusy, showCalibrationModal]);
+
+  useEffect(() => {
+    if (!activeFocusSession || isStopping) return;
+    if (phase === 'focus_running' && phaseEndAtMs != null) return;
+
+    const sprintMs = activeFocusDurationMsRef.current;
+    const startedAtMs = activeFocusSession.startedAt?.getTime?.() ?? focusStartedAtMsRef.current ?? Date.now();
+    const sprintEndAtMs = startedAtMs + sprintMs;
+
+    focusStartedAtMsRef.current = startedAtMs;
+    setAwaitingFocusStart(false);
+    setPhase('focus_running');
+    setPhaseEndAtMs(sprintEndAtMs);
+    setPhaseRemainingMs(Math.max(0, sprintEndAtMs - Date.now()));
+  }, [activeFocusSession, isStopping, phase, phaseEndAtMs]);
 
   useEffect(() => {
     if (!activeFocusSession) return;
@@ -253,7 +279,9 @@ export default function StudyMode({
     setPhase('focus_running');
 
     const sprintMs = activeFocusDurationMsRef.current;
-    setPhaseEndAtMs((focusStartedAtMsRef.current ?? Date.now()) + sprintMs);
+    const sprintEndAtMs = (focusStartedAtMsRef.current ?? Date.now()) + sprintMs;
+    setPhaseEndAtMs(sprintEndAtMs);
+    setPhaseRemainingMs(Math.max(0, sprintEndAtMs - Date.now()));
     nudgeCallsRef.current = 0;
     lastNudgeAtMsRef.current = 0;
     lastMinuteNudgeSentRef.current = false;
@@ -261,7 +289,7 @@ export default function StudyMode({
 
     const remainingSec = Math.max(
       0,
-      Math.floor((((focusStartedAtMsRef.current ?? Date.now()) + sprintMs) - Date.now()) / 1000)
+      Math.floor((sprintEndAtMs - Date.now()) / 1000)
     );
     const timing = buildCoachMetrics(remainingSec);
     void requestCoachMessage({
@@ -280,15 +308,17 @@ export default function StudyMode({
     if (phaseRef.current === 'focus_running' && !stopInFlightRef.current) {
       setPhase('focus_complete');
       setPhaseEndAtMs(null);
+      setPhaseRemainingMs(0);
     }
   }, [activeFocusSession]);
 
   useEffect(() => {
     if (phase !== 'focus_running') return;
-    if (phaseRemainingMs > 0) return;
     if (!activeFocusSession) return;
+    if (phaseEndAtMs == null) return;
+    if (Date.now() < phaseEndAtMs) return;
     void stopFocusSprint();
-  }, [activeFocusSession, phase, phaseRemainingMs, stopFocusSprint]);
+  }, [activeFocusSession, phase, phaseEndAtMs, stopFocusSprint]);
 
   useEffect(() => {
     if (phase !== 'focus_running') return;

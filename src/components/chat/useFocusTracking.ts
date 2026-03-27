@@ -11,6 +11,7 @@ import {
   where,
 } from 'firebase/firestore';
 import { db } from '../../firebase-config';
+import { isFocusedAttentionLabel } from '../../services/focus-attention';
 import { startFocusSession, stopFocusSession } from '../../services/focus-service';
 import { applyGamificationForFocusSession } from '../../services/gamification-service';
 import { LaptopFocusTracker } from '../../services/laptop-focus-tracker';
@@ -117,6 +118,7 @@ export function useFocusTracking({
   const trackerReleaseRef = useRef<null | (() => void)>(null);
   const focusStartLocalMsRef = useRef<number | null>(null);
   const activeFocusSessionRef = useRef<FocusSession | null>(null);
+  const optimisticFocusSessionIdRef = useRef<string | null>(null);
 
   const announcedFocusStateRef = useRef<'focused' | 'distracted' | null>(null);
   const candidateFocusStateRef = useRef<'focused' | 'distracted' | null>(null);
@@ -209,11 +211,15 @@ export function useFocusTracking({
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
       if (snapshot.empty) {
+        if (optimisticFocusSessionIdRef.current) {
+          return;
+        }
         setActiveFocusSession(null);
         return;
       }
       const doc0 = snapshot.docs[0];
       const data = doc0.data() as any;
+      optimisticFocusSessionIdRef.current = null;
       setActiveFocusSession({
         id: doc0.id,
         ...data,
@@ -367,6 +373,20 @@ export function useFocusTracking({
         examSimulationId: pendingFocusStart.examSimulationId,
       });
       focusStartLocalMsRef.current = Date.now();
+      optimisticFocusSessionIdRef.current = res.focusSessionId;
+      const optimisticSession: FocusSession = {
+        id: res.focusSessionId,
+        userId: user.uid,
+        status: 'active',
+        courseId: pendingFocusStart.courseId ?? null,
+        sessionId: pendingFocusStart.sessionId ?? null,
+        mode: pendingFocusStart.mode ?? null,
+        chatId: pendingFocusStart.chatId ?? null,
+        examSimulationId: pendingFocusStart.examSimulationId ?? null,
+        startedAt: new Date(focusStartLocalMsRef.current),
+      };
+      activeFocusSessionRef.current = optimisticSession;
+      setActiveFocusSession(optimisticSession);
       if (pendingFocusStart.onStarted) {
         try {
           await pendingFocusStart.onStarted(res.focusSessionId);
@@ -419,11 +439,11 @@ export function useFocusTracking({
 
               const smoothedCandidate: 'focused' | 'distracted' | null =
                 smoothedConf >= FAST_UI_CONFIDENCE_THRESHOLD
-                  ? (p.smoothed_label === 'screen' ? 'focused' : 'distracted')
+                  ? (isFocusedAttentionLabel(p.smoothed_label) ? 'focused' : 'distracted')
                   : null;
               const rawCandidate: 'focused' | 'distracted' | null =
                 rawConf >= FAST_UI_CONFIDENCE_THRESHOLD
-                  ? (p.raw_label === 'screen' ? 'focused' : 'distracted')
+                  ? (isFocusedAttentionLabel(p.raw_label) ? 'focused' : 'distracted')
                   : null;
               const uiCandidate: 'focused' | 'distracted' | null = smoothedCandidate ?? rawCandidate;
 
@@ -529,6 +549,9 @@ export function useFocusTracking({
         focusSessionId: activeFocusSession.id,
       });
       sessionStopped = true;
+      optimisticFocusSessionIdRef.current = null;
+      activeFocusSessionRef.current = null;
+      setActiveFocusSession(null);
 
       if (tracker) {
         const uiDistractions = uiDistractionsRef.current;
@@ -612,6 +635,8 @@ export function useFocusTracking({
   };
 
   const cleanupOnSignOut = async () => {
+    optimisticFocusSessionIdRef.current = null;
+    activeFocusSessionRef.current = null;
     const tracker = localFocusTrackerRef.current;
     localFocusTrackerRef.current = null;
     trackerSourceRef.current = null;

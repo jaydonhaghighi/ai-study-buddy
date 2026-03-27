@@ -5,7 +5,7 @@ from typing import Any
 
 import numpy as np
 
-from . import LABELS, SCREEN_LABEL
+from . import LABELS, is_focused_label
 
 
 @dataclass
@@ -56,7 +56,7 @@ class TemporalFocusEngine:
 
         candidate_state = self.state
         if smooth_conf >= self.config.confidence_threshold:
-            candidate_state = "focused" if smooth_label == SCREEN_LABEL else "distracted"
+            candidate_state = "focused" if is_focused_label(smooth_label) else "distracted"
 
         transitioned = False
         previous_state = self.state

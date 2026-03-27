@@ -1,5 +1,6 @@
 import type { FaceDetector } from '@mediapipe/tasks-vision';
 import { createFaceDetector } from './mediapipe-face-detector';
+import { isFocusedAttentionLabel } from './focus-attention';
 
 export type AttentionLabel =
   | 'screen'
@@ -131,7 +132,7 @@ export class LaptopFocusTracker {
     const result = this.detector.detectForVideo(this.video, performance.now());
     const box = result.detections?.[0]?.boundingBox;
     const label = this.classifyAttentionLabel(box);
-    const isFocused = label === 'screen';
+    const isFocused = isFocusedAttentionLabel(label);
 
     this.onSample?.({ label, isFocused });
 
@@ -209,4 +210,3 @@ export class LaptopFocusTracker {
     };
   }
 }
-

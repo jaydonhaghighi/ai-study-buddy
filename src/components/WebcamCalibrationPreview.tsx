@@ -41,6 +41,7 @@ export default function WebcamCalibrationPreview({
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -50,8 +51,13 @@ export default function WebcamCalibrationPreview({
   const [alignedSeconds, setAlignedSeconds] = useState(0);
   const autoStartAttemptedRef = useRef(false);
   const alignedStableFiredRef = useRef(false);
+  const startRequestIdRef = useRef(0);
+  const startInFlightRef = useRef(false);
+  const mountedRef = useRef(true);
 
   const stopPreview = async (closeModal: boolean = false) => {
+    startRequestIdRef.current += 1;
+    startInFlightRef.current = false;
     if (pollTimerRef.current != null) {
       window.clearInterval(pollTimerRef.current);
       pollTimerRef.current = null;
@@ -65,6 +71,7 @@ export default function WebcamCalibrationPreview({
       videoRef.current.srcObject = null;
     }
     setOpen(false);
+    setStarting(false);
     setAlignedSeconds(0);
     alignedSinceRef.current = null;
     alignedStableFiredRef.current = false;
@@ -72,6 +79,15 @@ export default function WebcamCalibrationPreview({
   };
 
   const startPreview = async () => {
+    if (startInFlightRef.current || streamRef.current || videoRef.current?.srcObject) {
+      return;
+    }
+
+    const requestId = startRequestIdRef.current + 1;
+    startRequestIdRef.current = requestId;
+    startInFlightRef.current = true;
+
+    setStarting(true);
     setError(null);
     try {
       if (!detectorRef.current) {
@@ -91,6 +107,12 @@ export default function WebcamCalibrationPreview({
         video: true,
         audio: false,
       });
+
+      if (!mountedRef.current || requestId !== startRequestIdRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+
       streamRef.current = stream;
 
       setOpen(true);
@@ -98,27 +120,53 @@ export default function WebcamCalibrationPreview({
         window.requestAnimationFrame(() => resolve());
       });
 
-      if (!videoRef.current) {
+      const video = videoRef.current;
+      if (
+        !video ||
+        !mountedRef.current ||
+        requestId !== startRequestIdRef.current ||
+        !document.contains(video)
+      ) {
         throw new Error('Video element is not available');
       }
-      videoRef.current.srcObject = stream;
-      await videoRef.current.play();
+      video.srcObject = stream;
+      await video.play();
+
+      if (!mountedRef.current || requestId !== startRequestIdRef.current) {
+        if (video.srcObject === stream) {
+          video.pause();
+          video.srcObject = null;
+        }
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
 
       setAlignedSeconds(0);
       alignedSinceRef.current = null;
       alignedStableFiredRef.current = false;
     } catch (e: any) {
+      if (!mountedRef.current || requestId !== startRequestIdRef.current) {
+        return;
+      }
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop());
         streamRef.current = null;
       }
       setError(e?.message || 'Could not access laptop webcam');
       setOpen(false);
+    } finally {
+      if (requestId === startRequestIdRef.current) {
+        startInFlightRef.current = false;
+      }
+      if (mountedRef.current && requestId === startRequestIdRef.current) {
+        setStarting(false);
+      }
     }
   };
 
   // Auto-start preview (useful when shown in a modal)
   useEffect(() => {
+    mountedRef.current = true;
     if (!autoStart) return;
     if (open) return;
     if (autoStartAttemptedRef.current) return;
@@ -213,6 +261,10 @@ export default function WebcamCalibrationPreview({
 
   useEffect(() => {
     return () => {
+      mountedRef.current = false;
+      startRequestIdRef.current += 1;
+      startInFlightRef.current = false;
+      autoStartAttemptedRef.current = false;
       if (pollTimerRef.current != null) {
         window.clearInterval(pollTimerRef.current);
         pollTimerRef.current = null;
@@ -233,18 +285,18 @@ export default function WebcamCalibrationPreview({
     return (
       <div style={{ position: 'fixed', right: 336, bottom: 92, zIndex: 50, width: 320 }}>
         <div style={{ background: 'rgba(20, 20, 20, 0.92)', color: '#fff', borderRadius: 12, padding: 12 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-            <div style={{ fontWeight: 700 }}>{mode === 'monitor' ? 'Laptop camera preview' : 'Laptop camera calibration'}</div>
-            {open ? (
-              <button onClick={() => void stopPreview(false)} style={{ padding: '6px 10px', cursor: 'pointer' }}>
-                Stop
-              </button>
-            ) : (
-              <button onClick={() => void startPreview()} style={{ padding: '6px 10px', cursor: 'pointer' }}>
-                Start
-              </button>
-            )}
-          </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+          <div style={{ fontWeight: 700 }}>{mode === 'monitor' ? 'Laptop camera preview' : 'Laptop camera calibration'}</div>
+          {open ? (
+            <button onClick={() => void stopPreview(false)} style={{ padding: '6px 10px', cursor: 'pointer' }}>
+              Stop
+            </button>
+          ) : (
+            <button onClick={() => void startPreview()} style={{ padding: '6px 10px', cursor: starting ? 'wait' : 'pointer' }} disabled={starting}>
+              {starting ? 'Starting...' : 'Start'}
+            </button>
+          )}
+        </div>
 
           <div style={{ fontSize: 12, opacity: 0.8, marginTop: 6 }}>
             Browser webcam preview. Video is not saved; preview is {autoStopLabel}.
@@ -283,8 +335,13 @@ export default function WebcamCalibrationPreview({
               Stop
             </button>
           ) : (
-            <button className="webcam-calibration-btn webcam-calibration-btn-primary" onClick={() => void startPreview()} type="button">
-              Start preview
+            <button
+              className="webcam-calibration-btn webcam-calibration-btn-primary"
+              onClick={() => void startPreview()}
+              type="button"
+              disabled={starting}
+            >
+              {starting ? 'Starting...' : 'Start preview'}
             </button>
           )}
         </div>

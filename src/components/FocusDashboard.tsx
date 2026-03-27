@@ -13,6 +13,7 @@ import {
 } from 'recharts';
 import { collection, doc, onSnapshot, query, Timestamp, where } from 'firebase/firestore';
 import { db } from '../firebase-config';
+import { isFocusedAttentionLabel } from '../services/focus-attention';
 import type { GamificationBadgeId, GamificationProfile } from '../types';
 import badgeFirstFocusDay from '../public/badges/image.png';
 import badgeStreak3 from '../public/badges/image copy.png';
@@ -290,7 +291,7 @@ export default function FocusDashboard({ userId }: { userId: string }) {
   const topAwayLabel = (counts: Record<string, number> | null | undefined): string | null => {
     if (!counts) return null;
     const entries = Object.entries(counts)
-      .filter(([k]) => k !== 'screen')
+      .filter(([k]) => !isFocusedAttentionLabel(k))
       .sort((a, b) => b[1] - a[1]);
     if (entries.length === 0) return null;
     return entries[0][0];
