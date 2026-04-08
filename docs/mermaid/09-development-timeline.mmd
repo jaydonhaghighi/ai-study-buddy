@@ -1,0 +1,34 @@
+flowchart LR
+
+    Proposal["1. Proposal Stage<br/>Broad intelligent study system<br/>AI tutoring + focus monitoring<br/>hardware-assisted interaction"]
+    Foundation["2. Platform Foundation<br/>Authentication, courses,<br/>sessions, and study workspace"]
+    Streams["3. Parallel Implementation Streams<br/>Web platform<br/>App services + persistence<br/>ML data + training"]
+    Refinement["4. ML Refinement<br/>Calibration discipline, data growth,<br/>LOSO evaluation, tuning<br/>macro F1 improves from low 0.40s<br/>to low 0.70s across archived runs"]
+    Pivot["5. Architecture Pivot<br/>Raspberry Pi path dropped<br/>Cloud-first inference adopted<br/>local FastAPI retained for development"]
+    Final["6. Final Convergence<br/>Focus-aware study platform<br/>directional-attention subsystem<br/>integrated with dashboards,<br/>exam workflows, and gamification"]
+
+    Proposal --> Foundation --> Streams --> Refinement --> Pivot --> Final
+
+    Web["Web Platform<br/>Chat UI, study mode,<br/>dashboard, exam simulation"]
+    Services["Application Services<br/>Cloud Functions, material indexing,<br/>chat orchestration, gamification"]
+    ML["ML Pipeline<br/>Collection, validation,<br/>training, LOSO evaluation,<br/>runtime inference"]
+
+    Streams --> Web
+    Streams --> Services
+    Streams --> ML
+
+    Web --> Final
+    Services --> Final
+    ML --> Final
+
+    style Proposal fill:#EAF4FF,stroke:#4E87B5,stroke-width:1.8px,color:#10253A
+    style Foundation fill:#EAF4FF,stroke:#4E87B5,stroke-width:1.8px,color:#10253A
+    style Streams fill:#EAF4FF,stroke:#4E87B5,stroke-width:1.8px,color:#10253A
+    style Refinement fill:#FFF1D6,stroke:#D48A2F,stroke-width:1.8px,color:#4A2A00
+    style Pivot fill:#FCE7E7,stroke:#C15B5B,stroke-width:1.8px,color:#4A1616
+    style Final fill:#E3F7EC,stroke:#4D9B70,stroke-width:1.8px,color:#133222
+
+    classDef stream fill:#F5F0FF,stroke:#7C5AC2,stroke-width:1.6px,color:#2E1F57
+    class Web,Services,ML stream
+
+    linkStyle default stroke:#5A6472,stroke-width:1.5px
